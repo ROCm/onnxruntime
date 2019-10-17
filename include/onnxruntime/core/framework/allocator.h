@@ -30,6 +30,7 @@ struct OrtDevice {
     // Pre-defined memory types.
     static const MemoryType DEFAULT = 0;
     static const MemoryType CUDA_PINNED = 1;
+    static const MemoryType HIP_PINNED = 2;
   };
 
   constexpr OrtDevice(DeviceType device_type_, MemoryType memory_type_, DeviceId device_id_)

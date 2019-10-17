@@ -1,0 +1,15 @@
+// Copyright 2019 AMD AMDMIGraphX
+
+#include "onnxruntime_c_api.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_AmdMigraphX, _In_ OrtSessionOptions* options);
+
+#ifdef __cplusplus
+}
+#endif
+
+
