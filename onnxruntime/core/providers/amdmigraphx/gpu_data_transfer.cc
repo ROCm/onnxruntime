@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
+#include "migraphx_inc.h"
 #include "gpu_data_transfer.h"
 
 namespace onnxruntime {
