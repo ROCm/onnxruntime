@@ -259,7 +259,7 @@ void Check<TensorSeq>(const OpTester::Data& expected_data, const TensorSeq& outp
   // now check the contents of the tensors
   auto null_deleter = [](void*) {};
 
-  for (int i = 0; i < output_num_tensors; ++i) {
+  for (size_t i = 0; i < output_num_tensors; ++i) {
     OrtValue temp_value;
     // Reason for null_deleter: we don't want the tensor destructor to be called as part of this OrtValue destructor
     // as we're creating this OrtValue only to reuse the Check functionality
@@ -514,6 +514,10 @@ void OpTester::Run(ExpectResult expect_result,
   so.session_logid = op_;
   so.session_log_verbosity_level = 1;
   so.execution_mode = execution_mode;
+  // TODO: Optimizers should be off by default so we test the operator as is, however currently
+  // Scan9.OuterScopeAccess_ShapeInMainGraph_NoTypeAndShapeInSubgraph fails with nuphar. See Bug 525222.
+  // Uncomment this line once that is addressed.
+  // so.graph_optimization_level = TransformerLevel::Default;  // 'Default' == off
   Run(so, expect_result, expected_failure_string, excluded_provider_types, run_options, execution_providers);
 }
 
