@@ -48,6 +48,33 @@ MiGraphExecutionProvider::MiGraphExecutionProvider(MiGraphExecutionProviderInfo&
   };
 
   InsertAllocator(CreateAllocator(cpu_memory_info));
+
+  // create the target based on the device_id
+  hipDeviceProp_t prop;
+  hipGetDeviceProperties(&prop, device_id_);
+
+  // // GPU device
+  // if (contains(prop.name, "gfx"))
+  // {
+  //   t = migraphx::gpu::target{};
+  // }
+  // else
+  // {
+  //   t = migraphx::cpu::target{};
+  // }  
+
+  if (info.target_device == "cpu")
+  {
+    t = migraphx::cpu::target{};    
+  }
+  else if (info.target_device == "gpu")
+  {
+    t = migraphx::gpu::target{};
+  }
+  else
+  {
+    LOGS_DEFAULT(FATAL) << "Device " << info.ng_backend_type << " are not supported";    
+  }
 }
 
 // Returns true only if op is in a mode that is not currently supported
@@ -81,6 +108,34 @@ static bool IsTypeSupported(const NodeArg* node_arg) {
     default:
       return false;
   }
+}
+
+static migraphx::shape::type_t get_migraphx_type(ONNXTensorElementDataType type)
+{
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT16:
+      return migraphx::shape::half_type;
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT:
+      return migraphx::shape::float_type;
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_DOUBLE:
+      return migraphx::shape::double_type;
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT8:
+      return migraphx::shape::int8_type;
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT16:
+      return migraphx::shape::int16_type;
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32:
+      return migraphx::shape::int32_type;
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT64:
+      return migraphx::shape::int64_type;
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT8:
+      return migraphx::shape::uint8_type;
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT16:
+      return migraphx::shape::uint16_type;
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT32:
+      return migraphx::shape::uint32_type;
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT64:
+      return migraphx::shape::uint64_type;
+    default:
+      MIGRAPHX_THROW("Migraphx: unsupported data type");
 }
 
 static bool IsNodeSupported(const std::set<std::string>& op_set,
@@ -124,7 +179,7 @@ static void AppendNodesToSubGraph(const std::vector<NodeIndex>& nodes,
   static size_t op_counter = 0;
 
   auto meta_def = onnxruntime::make_unique<IndexedSubGraph::MetaDef>();
-  meta_def->name = "NGRAPHCustomOp_" + std::to_string(++op_counter);
+  meta_def->name = "MIGraphX_" + std::to_string(++op_counter);
   meta_def->domain = kMiGraphXDomain;
   meta_def->since_version = 1;
   meta_def->status = ONNX_NAMESPACE::EXPERIMENTAL;
@@ -146,6 +201,8 @@ static std::set<std::string> GetMiGraphXSupportedOps() {
   std::map<std::string, std::set<std::string>> mgx_supported_ops = migraphx::get_supported_ops();
   return mgx_supported_ops;
 }
+
+
 
 static std::vector<NodeIndex>
 GetUnsupportedNodeIndices(const GraphViewer& graph_viewer, /*out*/ std::unordered_set<std::string>& mgx_required_initializers) {
@@ -288,7 +345,7 @@ s
 }
 
 std::vector<std::unique_ptr<ComputeCapability>>
-NGRAPHExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_viewer,
+MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_viewer,
                                        const std::vector<const KernelRegistry*>& /*kernel_registries*/) const {
 
   std::vector<std::unique_ptr<ComputeCapability>> result;
@@ -300,7 +357,7 @@ NGRAPHExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_vie
   // Need access to model_path_
   for (const auto& tensor : graph_viewer.GetAllInitializedTensors()) {
     if (tensor.second->has_data_location() && tensor.second->data_location() == ONNX_NAMESPACE::TensorProto_DataLocation_EXTERNAL) {
-      LOGS_DEFAULT(WARNING) << "nGraph EP: Initializers with external data location are not currently supported";
+      LOGS_DEFAULT(WARNING) << "MIGraphX: Initializers with external data location are not currently supported";
       return result;
     }
   }
@@ -335,10 +392,11 @@ NGRAPHExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_vie
   std::string string_buf;
   model_proto.SerializeToString(&string_buf);
 
+  // may not be needed since it can return false in many scenarios
   bool ret = migraphx::parse_model_string(string_buf);
   if (!ret)
   {
-
+    return result;
   }
 
   // This is a list of initializers that migraphx considers as constants. 
@@ -408,29 +466,139 @@ static ONNX_NAMESPACE::ModelProto GetModelProtoFromFusedNode(const onnxruntime::
   return model_proto;
 }
 
-Status NGRAPHExecutionProvider::Compile(const std::vector<onnxruntime::Node*>& fused_nodes,
+Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>& fused_nodes,
                                         std::vector<NodeComputeInfo>& node_compute_funcs) {
   for (const auto& fused_node : fused_nodes) {
+    // record name of each input
+    std::vector<std::string> input_names;
+    const auto& input_defs = fused_node->InputDefs();
+    input_names.reserve(input_defs.size());
+    for (std::size_t i = 0; i < input_defs.size(); ++i) {
+      input_names.push_back(input_defs[i]->Name());
+    }
+    map_input_names_[fused_node->Name()].push_back(input_names);
+
+    // record name of each output
+    std:vectors<std::string> output_names;
+    const auto& output_defs = fused_node->OutputDefs();
+    output_names.reserve(output_defs.size());
+    for (std::size_t i = 0; i < output_defs.size(); ++i) {
+      output_names.push_back(output_defs[i]->Name());
+    }
+    map_output_names_[fused_node->Name()].push_back(output_names);
+
+    // reconstruct the subgraph proto from fused nodes
+    onnx::ModelProto model_proto = GetModelProtoFromFusedNode(fused_node);
+    std::string string_buf;
+    model_proto.SerializeToString(&string_buf);
+
+    // by parsing the model_proto, create a program corresponding to
+    // the input fused_node
+    std::vector<std::string> unsupported_nodes;
+    migraphx::program prog = migraphx::parse_model(string_buf, unsupported_nodes);
+
+    // compile the program
+    prog.compile(t);
+    map_prog_[fused_node->Name()].push_back(prog);
+
+    std::unordered_map<std::string, migraphx::shape> param_shapes = prog.get_parameter_shapes();
+    migraphx::program::parameter_map m;
+    m.reserve(param_shapes);
+    auto num_inputs = param_shapes.size();
+    for (auto&& x : prog.get_parameter_shape()) {
+      const std::string& name = x.first;
+      size_t bindingIndex = trt_engine->getBindingIndex(name.c_str());
+      nvinfer1::Dims dimensions = trt_engine->getBindingDimensions(static_cast<int>(bindingIndex));
+      auto iter = input_map.find(name);
+      if (iter != input_map.end()) {
+        input_indexes[bindingIndex] = iter->second;
+      }
+      size_t dim_size = 1;
+      for (int j = 0, end = dimensions.nbDims; j < end; ++j) {
+        dim_size *= dimensions.d[j];
+      }
+      input_dim_sizes[bindingIndex] = dim_size;
+    }
+
     NodeComputeInfo compute_info;
-
-    // Local copy of backend since, class members cannot be captured.
-    auto ngraph_backend = ng_backend_;
-    compute_info.create_state_func = [model_proto = GetModelProtoFromFusedNode(fused_node), ngraph_backend]
-                                     (ComputeContext* context, FunctionState* state)
-    {
-      auto* p = new ngraph_ep::NGRAPHCustomOp(context, model_proto, ngraph_backend);
-      *state = p;
+    compute_info.create_state_func = [=](ComputeContext* context, FunctionState* state) {
+      std::unique_ptr<TensorrtFuncState> p = onnxruntime::make_unique<MiGraphXFuncState>();
+      *p = {context->allocate_func, context->release_func, context->allocate_handle, map_prog_[context->node_name], 
+            map_input_names_[context->node_name], map_output_names_[context->node_name], &mgx_mu_};
+      *state = p.release();
       return 0;
+    }
+
+    compute_info.release_state_func = [](FunctionState state) {F
+      if (state)
+        delete static_cast<MiGraphXFuncState*>(state);
     };
 
-    compute_info.release_state_func = [](FunctionState state) {
-      if (state)
-        delete reinterpret_cast<onnxruntime::ngraph_ep::NGRAPHCustomOp*>(state);
-    };
+struct MiGraphXFuncState {
+  AllocateFunc allocate_func = nullptr;
+  DestroyFunc release_func = nullptr;
+  AllocatorHandle allocate_handle = nullptr;
+  migprahx::program prog{};
+  std::vector<std::string> input_names;
+  std::vector<std::string> output_names;
+  OrtMutex* mgx_mu_ptr = nullptr;
+};
 
     compute_info.compute_func = [](FunctionState state, const OrtCustomOpApi* api, OrtKernelContext* context) {
-      onnxruntime::ngraph_ep::NGRAPHCustomOp* ng_custom_op = reinterpret_cast<onnxruntime::ngraph_ep::NGRAPHCustomOp*>(state);
-      return ng_custom_op->Compute(api, context);
+      Ort::CustomOpApi ort{*api};
+      MiGraphXFuncState* mgx_state = reinterpret_cast<MiGraphXFuncState*>(state);
+      std::vector<std::string>& input_names = mgx_state->input_names;
+      std::vector<std::string>& output_names = mgx_state->output_names;
+      migraphx::program prog = mgx_state->prog;
+
+      std::unordered_map<std::string, migraphx::shape> param_shapes = prog.get_parameter_shapes();
+      migraphx::program::parameter_map m;
+      m.reserve(param_shapes);
+
+      std::size_t input_num = input_names.size();
+      for (std::size_t i = 0; i < input_num; ++i)
+      {
+        const OrtValue* input_tensor = ort.KernelContext_GetInput(context, i);
+        auto tensor_info = ort.GetTensorTypeAndShape(input_tensor);
+        const auto& tensor_shape = ort.GetTensorShape(tensor_info);
+        auto tensor_type = ort.GetTensorElementType(tensor_info);
+        ort.ReleaseTensorTypeAndShapeInfo(tensor_info);
+
+        auto param_name = input_names[i];
+        auto mgx_type = get_migraphx_type(tensor_type);
+        auto mgx_s = param_shapes[param_name];
+
+        if (mgx_type != mgx_s.type())
+        {
+          MIGRAPHX_THROW("MIGraphX: param type mismatch");
+        }
+        m[param_name] = migraphx::argument(param_shapes[param_name], const_cast<void*>(ort.GetTensorData<void>(input_tensor)));
+      }
+
+      for (auto&& x : param_shapes)
+      {
+        // scratch memory
+        if (!contains(m, x.first))
+        {
+          m[param_name] = t.copy_to(migraphx::generate_argument(x.sceond));
+        }
+      }
+
+      // migraphx can only handle one output now
+      {
+        std::lock_guard<std::mutex> lock(mgx_mu_);
+        auto result = prog.eval(m);
+        auto res_shape = result.get_shape();
+        auto dtype = res_shape.type();
+
+        unsigned int output_index = 0;
+        std::vector<int64_t> ort_shape{res_shape.lens().begin(), res_shape.lens().end()};
+        OrtValue* output_tensor = ort.KernelContext_GetOutput(context, output_index++, ort_shape.data(), ort_shape.size());
+        void* output_data = ort.GetTensorMutableData<void>(output_tensor);
+
+        // copy data from result to output_data
+        hipMemcpy(output_data, result.data(), res_shape.bytes(), hipMemcpyDeviceToDevice);
+      }
     };
 
     node_compute_funcs.push_back(compute_info);

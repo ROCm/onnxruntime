@@ -12,14 +12,25 @@ namespace onnxruntime {
 // Information needed to construct amdmigraphx execution providers.
 struct MiGraphExecutionProviderInfo {
  const std::string target_device;
- const int device_id;
+ const int device_id {0};
+};
+
+// Information to construct kernel function state.
+struct MiGraphXFuncState {
+  AllocateFunc allocate_func = nullptr;
+  DestroyFunc release_func = nullptr;
+  AllocatorHandle allocate_handle = nullptr;
+  migprahx::program prog{};
+  std::vector<std::string> input_names;
+  std::vector<std::string> output_names;
+  OrtMutex* mgx_mu_ptr = nullptr;
 };
 
 // Logical device representation.
-class MiGraphExecutionProvider : public IExecutionProvider {
+class MiGraphXExecutionProvider : public IExecutionProvider {
  public:
-  explicit MiGraphExecutionProvider(MiGraphExecutionProviderInfo& info);
-  ~MiGraphExecutionProvider() = default;
+  explicit MiGraphXExecutionProvider(MiGraphXExecutionProvider& info);
+  ~MiGraphXExecutionProvider() = default;
 
   std::vector<std::unique_ptr<ComputeCapability>>
   GetCapability(const onnxruntime::GraphViewer& graph_viewer,
@@ -30,9 +41,13 @@ class MiGraphExecutionProvider : public IExecutionProvider {
 
 private:
   int device_id_;
-  OrtMutex tensorrt_mu_;
+  migraphx::target t; 
+  OrtMutex mgx_mu_;
 
-//  std::shared_ptr<amdmigraphx::program> prog_;
+  std::unordered_map<std::string, migraphx::program> map_progs_;
+  std::unordered_map<std::string, std::vector<std::string>> map_input_names_;
+  std::unordered_map<std::string, std::vector<std::string>> map_output_names_;
+
 };
 
 }
