@@ -534,16 +534,6 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
         delete static_cast<MiGraphXFuncState*>(state);
     };
 
-struct MiGraphXFuncState {
-  AllocateFunc allocate_func = nullptr;
-  DestroyFunc release_func = nullptr;
-  AllocatorHandle allocate_handle = nullptr;
-  migprahx::program prog{};
-  std::vector<std::string> input_names;
-  std::vector<std::string> output_names;
-  OrtMutex* mgx_mu_ptr = nullptr;
-};
-
     compute_info.compute_func = [](FunctionState state, const OrtCustomOpApi* api, OrtKernelContext* context) {
       Ort::CustomOpApi ort{*api};
       MiGraphXFuncState* mgx_state = reinterpret_cast<MiGraphXFuncState*>(state);
@@ -575,29 +565,28 @@ struct MiGraphXFuncState {
         m[param_name] = migraphx::argument(param_shapes[param_name], const_cast<void*>(ort.GetTensorData<void>(input_tensor)));
       }
 
+      // migraphx can only handle one output now
+      {
+        unsigned int output_index = 0;
+        std::vector<int64_t> ort_shape{res_shape.lens().begin(), res_shape.lens().end()};
+        OrtValue* output_tensor = ort.KernelContext_GetOutput(context, output_index++, ort_shape.data(), ort_shape.size());
+        void* output_data = ort.GetTensorMutableData<void>(output_tensor);
+        m["output"] = migraphx::argument(param_shapes["output"], output_data);
+      }
+
+      // scratch memory
       for (auto&& x : param_shapes)
       {
-        // scratch memory
         if (!contains(m, x.first))
         {
           m[param_name] = t.copy_to(migraphx::generate_argument(x.sceond));
         }
       }
 
-      // migraphx can only handle one output now
       {
+        // lock to avoid race condition
         std::lock_guard<std::mutex> lock(mgx_mu_);
-        auto result = prog.eval(m);
-        auto res_shape = result.get_shape();
-        auto dtype = res_shape.type();
-
-        unsigned int output_index = 0;
-        std::vector<int64_t> ort_shape{res_shape.lens().begin(), res_shape.lens().end()};
-        OrtValue* output_tensor = ort.KernelContext_GetOutput(context, output_index++, ort_shape.data(), ort_shape.size());
-        void* output_data = ort.GetTensorMutableData<void>(output_tensor);
-
-        // copy data from result to output_data
-        hipMemcpy(output_data, result.data(), res_shape.bytes(), hipMemcpyDeviceToDevice);
+        prog.eval(m);
       }
     };
 
