@@ -57,6 +57,7 @@ endif()
 target_link_libraries(onnxruntime PRIVATE
     onnxruntime_session
     ${onnxruntime_libs}
+    ${PROVIDERS_MIGRAPHX}
     ${PROVIDERS_CUDA}
     ${PROVIDERS_MKLDNN}
     ${PROVIDERS_NGRAPH}

@@ -151,6 +151,8 @@ Use the individual flags to only run the specified stages.
     parser.add_argument("--use_nuphar", action='store_true', help="Build with nuphar")
     parser.add_argument("--use_tensorrt", action='store_true', help="Build with TensorRT")
     parser.add_argument("--tensorrt_home", help="Path to TensorRT installation dir")
+    parser.add_argument("--use_migraphx", action='store_true', help="Build with MIGraphX")
+    parser.add_argument("--migraphx_home", help="Path to MIGraphX installation dir")
     parser.add_argument("--use_full_protobuf", action='store_true', help="Use the full protobuf library")
     parser.add_argument("--disable_contrib_ops", action='store_true', help="Disable contrib ops (reduces binary size)")
     parser.add_argument("--skip_onnx_tests", action='store_true', help="Explicitly disable all onnx related tests")
@@ -318,7 +320,7 @@ def setup_test_data(build_dir, configs, test_data_url, test_data_checksum, azure
                 log.debug("creating shortcut %s -> %s"  % (src_model_dir, dest_model_dir))
                 run_subprocess(['mklink', '/D', '/J', dest_model_dir, src_model_dir], shell=True)
 
-def generate_build_tree(cmake_path, source_dir, build_dir, cuda_home, cudnn_home, tensorrt_home, path_to_protoc_exe, configs, cmake_extra_defines, args, cmake_extra_args):
+def generate_build_tree(cmake_path, source_dir, build_dir, cuda_home, cudnn_home, tensorrt_home, migraphx_home, path_to_protoc_exe, configs, cmake_extra_defines, args, cmake_extra_args):
     log.info("Generating CMake build tree")
     cmake_dir = os.path.join(source_dir, "cmake")
     # TODO: fix jemalloc build so it does not conflict with onnxruntime shared lib builds. (e.g. onnxuntime_pybind)
@@ -363,6 +365,9 @@ def generate_build_tree(cmake_path, source_dir, build_dir, cuda_home, cudnn_home
                  "-Donnxruntime_USE_EIGEN_THREADPOOL=" + ("ON" if args.use_eigenthreadpool else "OFF"),
                  "-Donnxruntime_USE_TENSORRT=" + ("ON" if args.use_tensorrt else "OFF"),
                  "-Donnxruntime_TENSORRT_HOME=" + (tensorrt_home if args.use_tensorrt else ""),
+                  # set vars for migraphx
+                 "-Donnxruntime_USE_MIGRAPHX=" + ("ON" if args.use_migraphx else "OFF"),
+                 "-Donnxruntime_MIGRAPHX_HOME=" + (migraphx_home if args.use_migraphx else ""),
                   # By default - we currently support only cross compiling for ARM/ARM64 (no native compilation supported through this script)
                  "-Donnxruntime_CROSS_COMPILING=" + ("ON" if args.arm64 or args.arm else "OFF"),
                  "-Donnxruntime_BUILD_SERVER=" + ("ON" if args.build_server else "OFF"),
@@ -443,7 +448,7 @@ def build_targets(cmake_path, build_dir, configs, parallel):
 
         build_tool_args = []
         if parallel:
-            num_cores = str(multiprocessing.cpu_count())
+            num_cores = str(multiprocessing.cpu_count() / 4)
             if is_windows():
                 build_tool_args += ["/maxcpucount:" + num_cores]
             else:
@@ -548,6 +553,21 @@ def setup_tensorrt_vars(args):
         os.environ["ORT_TENSORRT_MAX_PARSER_ITERATIONS"] = "6"
 
     return tensorrt_home
+
+def setup_migraphx_vars(args):
+
+    migraphx_home = ""
+
+    if (args.use_migraphx):
+        migraphx_home = args.migraphx_home if args.migraphx_home else os.getenv("MIGRAPHX_HOME")
+
+        migraphx_home_valid = (migraphx_home != None and os.path.exists(migraphx_home))
+
+        if (not migraphx_home_valid):
+            raise BuildError("migraphx_home paths must be specified and valid.",
+                             "migraphx_home='{}' valid={}."
+                             .format(migraphx_home, migraphx_home_valid))
+    return migraphx_home
 
 def setup_dml_build(args, cmake_path, build_dir, configs):
     if (args.use_dml):
@@ -914,6 +934,9 @@ def main():
     # if using tensorrt, setup tensorrt paths
     tensorrt_home = setup_tensorrt_vars(args)
 
+    # if using migraphx, setup migraphx paths
+    migraphx_home = setup_tensorrt_vars(args)
+
     os.makedirs(build_dir, exist_ok=True)
 
     log.info("Build started")
@@ -967,7 +990,7 @@ def main():
         if args.path_to_protoc_exe:
             path_to_protoc_exe = args.path_to_protoc_exe
 
-        generate_build_tree(cmake_path, source_dir, build_dir, cuda_home, cudnn_home, tensorrt_home, path_to_protoc_exe, configs, cmake_extra_defines,
+        generate_build_tree(cmake_path, source_dir, build_dir, cuda_home, cudnn_home, tensorrt_home, migraphx_home, path_to_protoc_exe, configs, cmake_extra_defines,
                             args, cmake_extra_args)
 
     if (args.clean):
