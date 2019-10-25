@@ -448,7 +448,7 @@ def build_targets(cmake_path, build_dir, configs, parallel):
 
         build_tool_args = []
         if parallel:
-            num_cores = str(multiprocessing.cpu_count())
+            num_cores = str(round(multiprocessing.cpu_count() / 4))
             if is_windows():
                 build_tool_args += ["/maxcpucount:" + num_cores]
             else:
@@ -559,6 +559,7 @@ def setup_migraphx_vars(args):
     migraphx_home = ""
 
     if (args.use_migraphx):
+        print("migraphx_home = {}".format(args.migraphx_home))
         migraphx_home = args.migraphx_home if args.migraphx_home else os.getenv("MIGRAPHX_HOME")
 
         migraphx_home_valid = (migraphx_home != None and os.path.exists(migraphx_home))
@@ -935,7 +936,7 @@ def main():
     tensorrt_home = setup_tensorrt_vars(args)
 
     # if using migraphx, setup migraphx paths
-    migraphx_home = setup_tensorrt_vars(args)
+    migraphx_home = setup_migraphx_vars(args)
 
     os.makedirs(build_dir, exist_ok=True)
 
