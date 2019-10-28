@@ -1,6 +1,6 @@
-#include "core/providers/amdmigraphx/amdmigraphx_provider_factory.h"
+#include "core/providers/migraphx/migraphx_provider_factory.h"
 #include <atomic>
-#include "amdmigraphx_execution_provider.h"
+#include "migraphx_execution_provider.h"
 #include "core/session/abi_session_options_impl.h"
 
 using namespace onnxruntime;

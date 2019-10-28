@@ -9,7 +9,7 @@
 #include "core/graph/graph_viewer.h"
 #include "core/graph/model.h"
 #include "migraphx_inc.h"
-#include "amdmigraphx_execution_provider.h"
+#include "migraphx_execution_provider.h"
 
 #if defined(_MSC_VER)
 #pragma warning(disable : 4244 4245)
@@ -388,7 +388,7 @@ MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
 
   ORT_ENFORCE(status.IsOK(), status);
   ONNX_NAMESPACE::ModelProto model_proto = model.ToProto();
-  model_proto.set_ir_version(ONNX_NAMESPACE::Version::IR_VERSION);
+  //model_proto.set_ir_version(ONNX_NAMESPACE::Version::IR_VERSION);
   std::string string_buf;
   model_proto.SerializeToString(&string_buf);
 
@@ -455,7 +455,7 @@ static ONNX_NAMESPACE::ModelProto GetModelProtoFromFusedNode(const onnxruntime::
   onnxruntime::Model model{node_subgraph.Name(), true};
 
   ONNX_NAMESPACE::ModelProto model_proto = model.ToProto();
-  model_proto.set_ir_version(ONNX_NAMESPACE::Version::IR_VERSION);
+  //model_proto.set_ir_version(ONNX_NAMESPACE::Version::IR_VERSION);
 
   *(model_proto.mutable_graph()) = node_subgraph.ToGraphProto();
 

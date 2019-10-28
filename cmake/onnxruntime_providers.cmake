@@ -454,19 +454,27 @@ endif()
 
 if (onnxruntime_USE_MIGRAPHX)
 #  add_definitions(-DUSE_MIGRAPHX=1)
+#  add_definitions("-DONNX_ML=0")
   set(AMD_MIGRAPHX_HOME ${onnxruntime_MIGRAPHX_HOME})
   set(AMD_MIGRAPHX_DEPS ${AMD_MIGRAPHX_HOME}/deps_rocblas2.7)
 #  set(CMAKE_CXX_COMPILER /opt/rocm/bin/hcc)
   set(CMAKE_CXX_STANDARD 14)
+  set(CMAKE_VERBOSE_MAKEFILE on)
+
+  message("ONNX Runtime root: " ${ONNXRUNTIME_ROOT})
+  message("source files: " ${onnxruntime_providers_migraphx_cc_srcs})
+  message("AMD_MIGRAPHX_HOME: " ${AMD_MIGRAPHX_HOME})
+  message("AMD_MIGRAPHX_DEPS: " ${AMD_MIGRAPHX_DEPS})
+  message("ONNX_ML = " ${ONNX_ML})
+
+#  include_directories(${PROJECT_SOURCE_DIR}/external/protobuf)
+#  include_directories(${ONNXRUNTIME_ROOT}/../cmake/external/onnx)
 
   include_directories(${AMD_MIGRAPHX_HOME}/src/include
                       ${AMD_MIGRAPHX_HOME}/src/targets/gpu/include
                       ${AMD_MIGRAPHX_HOME}/src/targets/cpu/include
-                      ${AMD_MIGRAPHX_HOME}/test/include
-                      ${AMD_MIGRAPHX_DEPS}/include)
-
-#  include_directories(${PROJECT_SOURCE_DIR}/external/protobuf)
-#  include_directories(${ONNXRUNTIME_ROOT}/../cmake/external/onnx)
+                      ${AMD_MIGRAPHX_HOME}/test/include)
+#                      ${AMD_MIGRAPHX_DEPS}/include)
 
   set(migraphx_libs migraphx migraphx_cpu migraphx_device migraphx_gpu migraphx_onnx hip_hcc MIOpen)
 
@@ -474,11 +482,6 @@ if (onnxruntime_USE_MIGRAPHX)
     "${ONNXRUNTIME_ROOT}/core/providers/migraphx/*.h"
     "${ONNXRUNTIME_ROOT}/core/providers/migraphx/*.cc"
   )
-
-  message("ONNX Runtime root: " ${ONNXRUNTIME_ROOT})
-  message("source files: " ${onnxruntime_providers_migraphx_cc_srcs})
-  message("AMD_MIGRAPHX_HOME: " ${AMD_MIGRAPHX_HOME})
-  message("AMD_MIGRAPHX_DEPS: " ${AMD_MIGRAPHX_DEPS})
 
   source_group(TREE ${ONNXRUNTIME_ROOT}/core FILES ${onnxruntime_providers_migraphx_cc_srcs})
   add_library(onnxruntime_providers_migraphx ${onnxruntime_providers_migraphx_cc_srcs})
