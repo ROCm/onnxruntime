@@ -5,7 +5,7 @@
 #include "hip_allocator.h"
 #include "core/framework/allocatormgr.h"
 #include "core/framework/session_state.h"
-#include "hip_fence.h"
+//#include "hip_fence.h"
 #include "gpu_data_transfer.h"
 
 namespace onnxruntime {
@@ -51,13 +51,13 @@ const OrtMemoryInfo& HIPAllocator::Info() const {
 void* HIPPinnedAllocator::Alloc(size_t size) {
   void* p = nullptr;
   if (size > 0) {
-    CUDA_CALL_THROW(hipMallocHost((void**)&p, size));
+    hipHostMalloc((void**)&p, size);
   }
   return p;
 }
 
 void HIPPinnedAllocator::Free(void* p) {
-  CUDA_CALL_THROW(hipFreeHost(p));
+  hipHostFree(p);
 }
 
 const OrtMemoryInfo& HIPPinnedAllocator::Info() const {

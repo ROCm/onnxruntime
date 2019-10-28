@@ -455,9 +455,13 @@ endif()
 if (onnxruntime_USE_MIGRAPHX)
 #  add_definitions(-DUSE_MIGRAPHX=1)
 #  add_definitions("-DONNX_ML=0")
-  set(AMD_MIGRAPHX_HOME ${onnxruntime_MIGRAPHX_HOME})
-  set(AMD_MIGRAPHX_DEPS ${AMD_MIGRAPHX_HOME}/deps_rocblas2.7)
 #  set(CMAKE_CXX_COMPILER /opt/rocm/bin/hcc)
+  add_definitions(-D__HIP_PLATFORM_HCC__)
+  set(CMAKE_MODULE_PATH "/opt/rocm/hip/cmake" ${CMAKE_MODULE_PATH})
+  find_package(HIP)
+
+  set(AMD_MIGRAPHX_HOME ${onnxruntime_MIGRAPHX_HOME})
+  set(AMD_MIGRAPHX_DEPS ${AMD_MIGRAPHX_HOME}/deps_onnxrt)
   set(CMAKE_CXX_STANDARD 14)
   set(CMAKE_VERBOSE_MAKEFILE on)
 
@@ -467,14 +471,14 @@ if (onnxruntime_USE_MIGRAPHX)
   message("AMD_MIGRAPHX_DEPS: " ${AMD_MIGRAPHX_DEPS})
   message("ONNX_ML = " ${ONNX_ML})
 
-#  include_directories(${PROJECT_SOURCE_DIR}/external/protobuf)
-#  include_directories(${ONNXRUNTIME_ROOT}/../cmake/external/onnx)
-
+  include_directories(${PROJECT_SOURCE_DIR}/external/protobuf)
+  include_directories(${ONNXRUNTIME_ROOT}/../cmake/external/onnx)
+  include_directories(/opt/rocm/hsa/include)
   include_directories(${AMD_MIGRAPHX_HOME}/src/include
                       ${AMD_MIGRAPHX_HOME}/src/targets/gpu/include
                       ${AMD_MIGRAPHX_HOME}/src/targets/cpu/include
-                      ${AMD_MIGRAPHX_HOME}/test/include)
-#                      ${AMD_MIGRAPHX_DEPS}/include)
+                      ${AMD_MIGRAPHX_HOME}/test/include
+                      ${AMD_MIGRAPHX_DEPS}/include)
 
   set(migraphx_libs migraphx migraphx_cpu migraphx_device migraphx_gpu migraphx_onnx hip_hcc MIOpen)
 
@@ -484,16 +488,17 @@ if (onnxruntime_USE_MIGRAPHX)
   )
 
   source_group(TREE ${ONNXRUNTIME_ROOT}/core FILES ${onnxruntime_providers_migraphx_cc_srcs})
-  add_library(onnxruntime_providers_migraphx ${onnxruntime_providers_migraphx_cc_srcs})
+  hip_add_library(onnxruntime_providers_migraphx ${onnxruntime_providers_migraphx_cc_srcs})
   target_link_libraries(onnxruntime_providers_migraphx ${migraphx_libs})
   onnxruntime_add_include_to_target(onnxruntime_providers_migraphx onnxruntime_common onnxruntime_framework onnx onnx_proto protobuf::libprotobuf)
   add_dependencies(onnxruntime_providers_migraphx ${onnxruntime_EXTERNAL_DEPENDENCIES})
   target_include_directories(onnxruntime_providers_migraphx PRIVATE ${ONNXRUNTIME_ROOT})
   install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/migraphx  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
-  set_target_properties(onnxruntime_providers_migraphx PROPERTIES LINKER_LANGUAGE CXX)
+  set_target_properties(onnxruntime_providers_migraphx PROPERTIES LINKER_LANGUAGE HIP)
+  set_target_properties(onnxruntime_providers_migraphx PROPERTIES LINKER_LANGUAGE HIP)
   set_target_properties(onnxruntime_providers_migraphx PROPERTIES FOLDER "ONNXRuntime")
   target_compile_definitions(onnxruntime_providers_migraphx PRIVATE ONNXIFI_BUILD_LIBRARY=1)
-#  target_compile_options(onnxruntime_providers_migraphx PRIVATE ${DISABLED_WARNINGS_FOR_TRT})
+  target_compile_options(onnxruntime_providers_migraphx PRIVATE -Wno-error=sign-compare)
 endif()
 
 
