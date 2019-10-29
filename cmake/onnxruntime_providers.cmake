@@ -462,6 +462,7 @@ if (onnxruntime_USE_MIGRAPHX)
 
   set(AMD_MIGRAPHX_HOME ${onnxruntime_MIGRAPHX_HOME})
   set(AMD_MIGRAPHX_DEPS ${AMD_MIGRAPHX_HOME}/deps_onnxrt)
+  set(AMD_MIGRAPHX_BUILD ${AMD_MIGRAPHX_HOME}/build)
   set(CMAKE_CXX_STANDARD 14)
   set(CMAKE_VERBOSE_MAKEFILE on)
 
@@ -479,6 +480,9 @@ if (onnxruntime_USE_MIGRAPHX)
                       ${AMD_MIGRAPHX_HOME}/src/targets/cpu/include
                       ${AMD_MIGRAPHX_HOME}/test/include
                       ${AMD_MIGRAPHX_DEPS}/include)
+
+  link_directories(${AMD_MIGRAPHX_BUILD}/lib
+                   ${AMD_MIGRAPHX_DEPS}/lib)
 
   set(migraphx_libs migraphx migraphx_cpu migraphx_device migraphx_gpu migraphx_onnx hip_hcc MIOpen)
 

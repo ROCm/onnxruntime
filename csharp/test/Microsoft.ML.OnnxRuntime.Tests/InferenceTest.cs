@@ -1054,6 +1054,9 @@ namespace Microsoft.ML.OnnxRuntime.Tests
 #if USE_TENSORRT
             ,"OrtSessionOptionsAppendExecutionProvider_Tensorrt"
 #endif
+#if USE_MIGRAPHX
+            ,"OrtSessionOptionsAppendExecutionProvider_MiGraphX"
+#endif
 #if USE_NNAPI
             ,"OrtSessionOptionsAppendExecutionProvider_Nnapi"
 #endif

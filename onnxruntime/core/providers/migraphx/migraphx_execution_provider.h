@@ -1,18 +1,16 @@
 #pragma once
 
 #include "core/framework/execution_provider.h"
+#include "core/platform/ort_mutex.h"
 #include <map>
-
-namespace amdmigraphx {
-  struct program;
-}
+#include "migraphx_inc.h"
 
 namespace onnxruntime {
 
 // Information needed to construct amdmigraphx execution providers.
-struct MiGraphExecutionProviderInfo {
- const std::string target_device;
- const int device_id {0};
+struct MiGraphXExecutionProviderInfo {
+  std::string target_device;
+  int device_id {0};
 };
 
 // Information to construct kernel function state.
@@ -20,7 +18,8 @@ struct MiGraphXFuncState {
   AllocateFunc allocate_func = nullptr;
   DestroyFunc release_func = nullptr;
   AllocatorHandle allocate_handle = nullptr;
-  migprahx::program prog{};
+  migraphx::program prog{};
+  migraphx::target t{};
   std::vector<std::string> input_names;
   std::vector<std::string> output_names;
   OrtMutex* mgx_mu_ptr = nullptr;
@@ -29,7 +28,7 @@ struct MiGraphXFuncState {
 // Logical device representation.
 class MiGraphXExecutionProvider : public IExecutionProvider {
  public:
-  explicit MiGraphXExecutionProvider(MiGraphXExecutionProvider& info);
+  explicit MiGraphXExecutionProvider(const MiGraphXExecutionProviderInfo& info);
   ~MiGraphXExecutionProvider() = default;
 
   std::vector<std::unique_ptr<ComputeCapability>>
@@ -41,13 +40,14 @@ class MiGraphXExecutionProvider : public IExecutionProvider {
 
 private:
   int device_id_;
-  migraphx::target t; 
+  migraphx::target t_; 
   OrtMutex mgx_mu_;
 
   std::unordered_map<std::string, migraphx::program> map_progs_;
   std::unordered_map<std::string, std::vector<std::string>> map_input_names_;
   std::unordered_map<std::string, std::vector<std::string>> map_output_names_;
 
+  AllocatorPtr allocator_;
 };
 
 }
