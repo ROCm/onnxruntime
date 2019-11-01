@@ -32,7 +32,7 @@ namespace onnxruntime {
 constexpr const char* MIGRAPHX = "MiGraphX";
 
 MiGraphXExecutionProvider::MiGraphXExecutionProvider(const MiGraphXExecutionProviderInfo& info)
-    : IExecutionProvider{onnxruntime::kMigraphXExecutionProvider} {
+    : IExecutionProvider{onnxruntime::kMiGraphXExecutionProvider} {
 
   // ORT_ENFORCE(info.target_device == "CPU", "nGraph Execution Provider for onnxruntime currently is only supported for CPU backend.");
   // Set GPU device to be used
@@ -148,7 +148,7 @@ static migraphx::shape::type_t get_migraphx_type(ONNXTensorElementDataType type)
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT64:
       return migraphx::shape::uint64_type;
     default:
-      MIGRAPHX_THROW("Migraphx: unsupported data type");
+      MIGRAPHX_THROW("MiGraphx: unsupported data type");
   }
 }
 

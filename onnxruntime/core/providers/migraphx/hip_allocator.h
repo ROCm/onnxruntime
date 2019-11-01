@@ -13,7 +13,7 @@ class HIPAllocator : public IDeviceAllocator {
   virtual void* Alloc(size_t size) override;
   virtual void Free(void* p) override;
   virtual const OrtMemoryInfo& Info() const override;
-//  virtual FencePtr CreateFence(const SessionState* session_state) override;
+  virtual FencePtr CreateFence(const SessionState* session_state) override;
 
  private:
   void CheckDevice() const;

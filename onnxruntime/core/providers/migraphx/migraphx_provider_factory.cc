@@ -13,6 +13,7 @@ struct MiGraphXProviderFactory : IExecutionProviderFactory {
   std::unique_ptr<IExecutionProvider> CreateProvider() override {
     MiGraphXExecutionProviderInfo info;
     info.device_id = device_id_;
+    info.target_device = "gpu";
     return std::make_unique<MiGraphXExecutionProvider>(info);
   }
 

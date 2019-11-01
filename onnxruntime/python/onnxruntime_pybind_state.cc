@@ -14,6 +14,7 @@
 #include "core/common/logging/severity.h"
 #include "core/framework/TensorSeq.h"
 #include "core/framework/session_options.h"
+#include <iostream>
 
 #if USE_CUDA
 #define BACKEND_PROC "GPU"
@@ -90,6 +91,9 @@
 #ifdef USE_TENSORRT
 #include "core/providers/tensorrt/tensorrt_provider_factory.h"
 #endif
+#ifdef USE_MIGRAPHX
+#include "core/providers/migraphx/migraphx_provider_factory.h"
+#endif
 #ifdef USE_MKLDNN
 #include "core/providers/mkldnn/mkldnn_provider_factory.h"
 #endif
@@ -111,6 +115,7 @@ namespace onnxruntime {
 std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory_CPU(int use_arena);
 std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory_CUDA(int device_id);
 std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory_Tensorrt(int device_id);
+std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory_MiGraphX(int device_id);
 std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory_Mkldnn(int use_arena);
 std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory_NGraph(const char* ng_backend_type);
 std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory_OpenVINO(const char* device);
@@ -256,9 +261,9 @@ inline void RegisterExecutionProvider(InferenceSession* sess, onnxruntime::IExec
 
 // ordered by default priority. highest to lowest.
 const std::vector<std::string>& GetAllProviders() {
-  static std::vector<std::string> all_providers = {kTensorrtExecutionProvider, kCudaExecutionProvider, kMklDnnExecutionProvider,
-                                                   kNGraphExecutionProvider, kOpenVINOExecutionProvider, kNupharExecutionProvider,
-                                                   kBrainSliceExecutionProvider, kCpuExecutionProvider};
+  static std::vector<std::string> all_providers = {kTensorrtExecutionProvider, kMiGraphXExecutionProvider, kCudaExecutionProvider, 
+                                                   kMklDnnExecutionProvider, kNGraphExecutionProvider, kOpenVINOExecutionProvider, 
+                                                   kNupharExecutionProvider, kBrainSliceExecutionProvider, kCpuExecutionProvider};
   return all_providers;
 }
 
@@ -267,6 +272,11 @@ const std::vector<std::string>& GetAvailableProviders() {
     std::vector<std::string> available_providers = {kCpuExecutionProvider};
 #ifdef USE_TENSORRT
     available_providers.push_back(kTensorrtExecutionProvider);
+#endif
+    std::cout << "Before MIGRAPHX Registered======================" << std::endl;
+#ifdef USE_MIGRAPHX
+    std::cout << "MIGRAPHX Registered======================" << std::endl;
+    available_providers.push_back(kMiGraphXExecutionProvider);
 #endif
 #ifdef USE_CUDA
     available_providers.push_back(kCudaExecutionProvider);
@@ -299,6 +309,10 @@ void RegisterExecutionProviders(InferenceSession* sess, const std::vector<std::s
     } else if (type == kTensorrtExecutionProvider) {
 #ifdef USE_TENSORRT
       RegisterExecutionProvider(sess, *onnxruntime::CreateExecutionProviderFactory_Tensorrt(0));
+#endif
+    } else if (type == kMiGraphXExecutionProvider) {
+#ifdef USE_MIGRAPHX
+      RegisterExecutionProvider(sess, *onnxruntime::CreateExecutionProviderFactory_MiGraphX(0));
 #endif
     } else if (type == kCudaExecutionProvider) {
 #ifdef USE_CUDA
@@ -409,6 +423,9 @@ void addGlobalMethods(py::module& m) {
 #endif
 #ifdef USE_TENSORRT
             onnxruntime::CreateExecutionProviderFactory_Tensorrt()
+#endif
+#ifdef USE_MIGRAPHX
+            onnxruntime::CreateExecutionProviderFactory_MiGraphX()
 #endif
         };
 

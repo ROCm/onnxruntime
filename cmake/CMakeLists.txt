@@ -634,6 +634,7 @@ if (onnxruntime_USE_MIGRAPHX)
   if (WIN32)
     message(FATAL_ERROR "MIGraphX does not support build in Windows!")
   endif()
+  add_definitions(-DUSE_MIGRAPHX=1)
 endif()
 
 if (onnxruntime_USE_TVM)
