@@ -38,6 +38,10 @@ class MiGraphXExecutionProvider : public IExecutionProvider {
   Status Compile(const std::vector<onnxruntime::Node*>& fused_nodes,
                  std::vector<NodeComputeInfo>& node_compute_funcs) override;
 
+  virtual std::shared_ptr<KernelRegistry> GetKernelRegistry() const override;
+  std::unique_ptr<onnxruntime::IDataTransfer> GetDataTransfer() const override;
+  AllocatorPtr GetAllocator(int id, OrtMemType mem_type) const override;
+
 private:
   int device_id_;
   migraphx::target t_; 

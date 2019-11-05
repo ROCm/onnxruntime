@@ -76,7 +76,10 @@ if(onnxruntime_USE_MIGRAPHX)
   set(PROVIDERS_MIGRAPHX onnxruntime_providers_migraphx)
   list(APPEND ONNXRUNTIME_PROVIDER_NAMES migraphx)
 endif()
-
+if(onnxruntime_USE_ACL)
+  set(PROVIDERS_ACL onnxruntime_providers_acl)
+  list(APPEND ONNXRUNTIME_PROVIDER_NAMES acl)
+endif()
 source_group(TREE ${ONNXRUNTIME_ROOT}/core FILES ${onnxruntime_providers_common_srcs} ${onnxruntime_providers_srcs})
 
 set(onnxruntime_providers_src ${onnxruntime_providers_common_srcs} ${onnxruntime_providers_srcs})
@@ -462,7 +465,7 @@ if (onnxruntime_USE_MIGRAPHX)
 
   set(AMD_MIGRAPHX_HOME ${onnxruntime_MIGRAPHX_HOME})
   set(AMD_MIGRAPHX_DEPS ${AMD_MIGRAPHX_HOME}/deps_onnxrt)
-  set(AMD_MIGRAPHX_BUILD ${AMD_MIGRAPHX_HOME}/build)
+  set(AMD_MIGRAPHX_BUILD ${AMD_MIGRAPHX_HOME}/build_3.6.1)
   set(CMAKE_CXX_STANDARD 14)
   set(CMAKE_VERBOSE_MAKEFILE on)
 
@@ -472,7 +475,7 @@ if (onnxruntime_USE_MIGRAPHX)
   message("AMD_MIGRAPHX_DEPS: " ${AMD_MIGRAPHX_DEPS})
   message("ONNX_ML = " ${ONNX_ML})
 
-  include_directories(${PROJECT_SOURCE_DIR}/external/protobuf)
+#  include_directories(${PROJECT_SOURCE_DIR}/external/protobuf)
   include_directories(${ONNXRUNTIME_ROOT}/../cmake/external/onnx)
   include_directories(/opt/rocm/hsa/include)
   include_directories(${AMD_MIGRAPHX_HOME}/src/include
@@ -499,17 +502,28 @@ if (onnxruntime_USE_MIGRAPHX)
   target_include_directories(onnxruntime_providers_migraphx PRIVATE ${ONNXRUNTIME_ROOT})
   install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/migraphx  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
   set_target_properties(onnxruntime_providers_migraphx PROPERTIES LINKER_LANGUAGE HIP)
-  set_target_properties(onnxruntime_providers_migraphx PROPERTIES LINKER_LANGUAGE HIP)
   set_target_properties(onnxruntime_providers_migraphx PROPERTIES FOLDER "ONNXRuntime")
   target_compile_definitions(onnxruntime_providers_migraphx PRIVATE ONNXIFI_BUILD_LIBRARY=1)
   target_compile_options(onnxruntime_providers_migraphx PRIVATE -Wno-error=sign-compare)
 endif()
 
+if (onnxruntime_USE_ACL)
+  add_definitions(-DUSE_ACL=1)
+  file(GLOB_RECURSE onnxruntime_providers_acl_cc_srcs
+    "${ONNXRUNTIME_ROOT}/core/providers/acl/*.h"
+    "${ONNXRUNTIME_ROOT}/core/providers/acl/*.cc"
+  )
+
+  source_group(TREE ${ONNXRUNTIME_ROOT}/core FILES ${onnxruntime_providers_acl_cc_srcs})
+  add_library(onnxruntime_providers_acl ${onnxruntime_providers_acl_cc_srcs})
+  onnxruntime_add_include_to_target(onnxruntime_providers_acl onnxruntime_common onnxruntime_framework onnx onnx_proto protobuf::libprotobuf)
+  add_dependencies(onnxruntime_providers_acl ${onnxruntime_EXTERNAL_DEPENDENCIES})
+  set_target_properties(onnxruntime_providers_acl PROPERTIES FOLDER "ONNXRuntime")
+  target_include_directories(onnxruntime_providers_acl PRIVATE ${ONNXRUNTIME_ROOT} ${eigen_INCLUDE_DIRS} ${ACL_INCLUDE_DIR})
+  install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/acl  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
+  set_target_properties(onnxruntime_providers_acl PROPERTIES LINKER_LANGUAGE CXX)
+endif()
 
 if (onnxruntime_ENABLE_MICROSOFT_INTERNAL)
   include(onnxruntime_providers_internal.cmake)
-endif()
-
-if(onnxruntime_USE_EIGEN_THREADPOOL)
-    target_compile_definitions(onnxruntime_providers PUBLIC USE_EIGEN_THREADPOOL)
 endif()

@@ -6,12 +6,14 @@
 #include "core/framework/compute_capability.h"
 #include "core/framework/allocatormgr.h"
 #include "core/framework/kernel_registry.h"
+#include "core/framework/memcpy.h"
 #include "core/graph/graph_viewer.h"
 #include "core/graph/model.h"
 #include "core/session/onnxruntime_cxx_api.h"
 #include "migraphx_inc.h"
 #include "migraphx_execution_provider.h"
 #include "hip_allocator.h"
+#include "gpu_data_transfer.h"
 
 #if defined(_MSC_VER)
 #pragma warning(disable : 4244 4245)
@@ -29,11 +31,61 @@
 
 namespace onnxruntime {
 
+
+ONNX_OPERATOR_KERNEL_EX(
+    MemcpyFromHost,
+    kOnnxDomain,
+    1,
+    kMiGraphXExecutionProvider,
+    KernelDefBuilder()
+        .InputMemoryType<OrtMemTypeCPUInput>(0)
+        .ExecQueueId(kHipStreamCopyIn)
+        .TypeConstraint("T", DataTypeImpl::AllFixedSizeTensorTypes()),
+    Memcpy);
+
+ONNX_OPERATOR_KERNEL_EX(
+    MemcpyToHost,
+    kOnnxDomain,
+    1,
+    kMiGraphXExecutionProvider,
+    KernelDefBuilder()
+        .OutputMemoryType<OrtMemTypeCPUOutput>(0)
+        .ExecQueueId(kHipStreamCopyOut)
+        .TypeConstraint("T", DataTypeImpl::AllFixedSizeTensorTypes()),
+    Memcpy);
+
+class ONNX_OPERATOR_KERNEL_CLASS_NAME(kMiGraphXExecutionProvider, kOnnxDomain, 1, MemcpyFromHost);
+class ONNX_OPERATOR_KERNEL_CLASS_NAME(kMiGraphXExecutionProvider, kOnnxDomain, 1, MemcpyToHost);
+
+static void RegisterTensorrtKernels(KernelRegistry& kernel_registry) {
+  static const BuildKernelCreateInfoFn function_table[] = {
+      BuildKernelCreateInfo<ONNX_OPERATOR_KERNEL_CLASS_NAME(kMiGraphXExecutionProvider, kOnnxDomain, 1, MemcpyFromHost)>,
+      BuildKernelCreateInfo<ONNX_OPERATOR_KERNEL_CLASS_NAME(kMiGraphXExecutionProvider, kOnnxDomain, 1, MemcpyToHost)>,
+  };
+
+  for (auto& function_table_entry : function_table) {
+    kernel_registry.Register(function_table_entry());
+  }
+}
+
+std::shared_ptr<KernelRegistry> GetMiGraphXKernelRegistry() {
+  std::shared_ptr<KernelRegistry> kernel_registry = std::make_shared<KernelRegistry>();
+  RegisterTensorrtKernels(*kernel_registry);
+
+  return kernel_registry;
+}
+
+std::shared_ptr<KernelRegistry> MiGraphXExecutionProvider::GetKernelRegistry() const {
+  static std::shared_ptr<KernelRegistry> kernel_registry = onnxruntime::GetMiGraphXKernelRegistry();
+  return kernel_registry;
+}
+
 constexpr const char* MIGRAPHX = "MiGraphX";
 
 MiGraphXExecutionProvider::MiGraphXExecutionProvider(const MiGraphXExecutionProviderInfo& info)
     : IExecutionProvider{onnxruntime::kMiGraphXExecutionProvider} {
 
+  std::cout << "InMigraphxExecutionProvider Constructor" << std::endl;
   // ORT_ENFORCE(info.target_device == "CPU", "nGraph Execution Provider for onnxruntime currently is only supported for CPU backend.");
   // Set GPU device to be used
   hipSetDevice(info.device_id);
@@ -86,6 +138,20 @@ MiGraphXExecutionProvider::MiGraphXExecutionProvider(const MiGraphXExecutionProv
     LOGS_DEFAULT(FATAL) << "Device " << info.target_device << " are not supported";    
   }
 }
+
+AllocatorPtr MiGraphXExecutionProvider::GetAllocator(int id, OrtMemType mem_type) const {
+  if (mem_type == OrtMemTypeDefault) {
+    return allocator_;
+  } else {
+    return IExecutionProvider::GetAllocator(id, mem_type);
+  }
+}
+
+std::unique_ptr<onnxruntime::IDataTransfer> MiGraphXExecutionProvider::GetDataTransfer() const {
+  return onnxruntime::make_unique<onnxruntime::GPUDataTransfer>();
+}
+
+
 
 // Returns true only if op is in a mode that is not currently supported
 static bool IsUnsupportedOpMode(const Node* node, const onnxruntime::GraphViewer& graph_viewer) {
@@ -361,6 +427,7 @@ MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
                                        const std::vector<const KernelRegistry*>& /*kernel_registries*/) const {
 
   std::vector<std::unique_ptr<ComputeCapability>> result;
+  std::cout << "InMigraphxExecutionProvider GetCapacity" << std::endl;
 
   if (graph_viewer.IsSubgraph()) {
     return result;
@@ -480,6 +547,7 @@ static ONNX_NAMESPACE::ModelProto GetModelProtoFromFusedNode(const onnxruntime::
 
 Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>& fused_nodes,
                                         std::vector<NodeComputeInfo>& node_compute_funcs) {
+  std::cout << "InMigraphxExecutionProvider Compile" << std::endl;
   for (const auto& fused_node : fused_nodes) {
     // record name of each input
     std::vector<std::string> input_names;
@@ -534,10 +602,12 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
 
     NodeComputeInfo compute_info;
     compute_info.create_state_func = [=](ComputeContext* context, FunctionState* state) {
+      std::cout << "Create state" << std::endl;
       std::unique_ptr<MiGraphXFuncState> p = onnxruntime::make_unique<MiGraphXFuncState>();
       *p = {context->allocate_func, context->release_func, context->allocator_handle, map_progs_[context->node_name], t_,
             map_input_names_[context->node_name], map_output_names_[context->node_name], &mgx_mu_};
       *state = p.release();
+      std::cout << "Create state complete" << std::endl;
       return 0;
     };
 
@@ -554,9 +624,13 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
       migraphx::target t = mgx_state->t;
       migraphx::program& prog = mgx_state->prog;
 
+      std::cout << "Loc1" << std::endl;
+
       std::unordered_map<std::string, migraphx::shape> param_shapes = prog.get_parameter_shapes();
       migraphx::program::parameter_map m;
       m.reserve(param_shapes.size());
+
+      std::cout << "Loc2" << std::endl;
 
       std::size_t input_num = input_names.size();
       for (std::size_t i = 0; i < input_num; ++i)
@@ -578,16 +652,21 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
         m[param_name] = migraphx::argument(param_shapes[param_name], const_cast<void*>(ort.GetTensorData<void>(input_tensor)));
       }
 
+      std::cout << "Loc3" << std::endl;
+
       // migraphx can only handle one output now
       {
+      std::cout << "Loc4" << std::endl;
         migraphx::shape res_shape = param_shapes["output"];
         unsigned int output_index = 0;
         std::vector<int64_t> ort_shape{res_shape.lens().begin(), res_shape.lens().end()};
         OrtValue* output_tensor = ort.KernelContext_GetOutput(context, output_index++, ort_shape.data(), ort_shape.size());
         void* output_data = ort.GetTensorMutableData<void>(output_tensor);
         m["output"] = migraphx::argument(param_shapes["output"], output_data);
+      std::cout << "Loc5" << std::endl;
       }
 
+      std::cout << "Loc6" << std::endl;
       // scratch memory
       for (auto&& x : param_shapes)
       {
@@ -597,17 +676,21 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
         }
       }
 
+      std::cout << "Loc7" << std::endl;
       {
         // lock to avoid race condition
         std::lock_guard<OrtMutex> lock(*(mgx_state->mgx_mu_ptr));
         prog.eval(m);
       }
+      std::cout << "Loc8" << std::endl;
 
       return Status::OK();
     };
 
     node_compute_funcs.push_back(compute_info);
   }
+
+  std::cout << "InMigraphxExecutionProvider Compile Complete!" << std::endl;
 
   return Status::OK();
 }
