@@ -23,7 +23,7 @@ struct OrtDevice {
 
   // Pre-defined device types.
   static const DeviceType CPU = 0;
-  static const DeviceType GPU = 1;  //CUDA
+  static const DeviceType GPU = 1;  //CUDA or HIP
   static const DeviceType FPGA = 2;
 
   struct MemType {
@@ -139,6 +139,7 @@ namespace onnxruntime {
 constexpr const char* CPU = "Cpu";
 constexpr const char* CUDA = "Cuda";
 constexpr const char* CUDA_PINNED = "CudaPinned";
+constexpr const char* MIGRAPHX_PINNED = "MiGraphXPinned";
 constexpr const char* TRT = "Tensorrt";
 constexpr const char* TRT_PINNED = "TensorrtPinned";
 
