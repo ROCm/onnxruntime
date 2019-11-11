@@ -14,6 +14,7 @@
 #include "migraphx_execution_provider.h"
 #include "hip_allocator.h"
 #include "gpu_data_transfer.h"
+#include <fstream>
 
 #if defined(_MSC_VER)
 #pragma warning(disable : 4244 4245)
@@ -57,7 +58,7 @@ ONNX_OPERATOR_KERNEL_EX(
 class ONNX_OPERATOR_KERNEL_CLASS_NAME(kMiGraphXExecutionProvider, kOnnxDomain, 1, MemcpyFromHost);
 class ONNX_OPERATOR_KERNEL_CLASS_NAME(kMiGraphXExecutionProvider, kOnnxDomain, 1, MemcpyToHost);
 
-static void RegisterTensorrtKernels(KernelRegistry& kernel_registry) {
+static void RegisterMiGraphXKernels(KernelRegistry& kernel_registry) {
   static const BuildKernelCreateInfoFn function_table[] = {
       BuildKernelCreateInfo<ONNX_OPERATOR_KERNEL_CLASS_NAME(kMiGraphXExecutionProvider, kOnnxDomain, 1, MemcpyFromHost)>,
       BuildKernelCreateInfo<ONNX_OPERATOR_KERNEL_CLASS_NAME(kMiGraphXExecutionProvider, kOnnxDomain, 1, MemcpyToHost)>,
@@ -70,7 +71,7 @@ static void RegisterTensorrtKernels(KernelRegistry& kernel_registry) {
 
 std::shared_ptr<KernelRegistry> GetMiGraphXKernelRegistry() {
   std::shared_ptr<KernelRegistry> kernel_registry = std::make_shared<KernelRegistry>();
-  RegisterTensorrtKernels(*kernel_registry);
+  RegisterMiGraphXKernels(*kernel_registry);
 
   return kernel_registry;
 }
@@ -131,17 +132,6 @@ std::unique_ptr<onnxruntime::IDataTransfer> MiGraphXExecutionProvider::GetDataTr
   return onnxruntime::make_unique<onnxruntime::GPUDataTransfer>();
 }
 
-// Returns true only if op is in a mode that is not currently supported
-static bool IsUnsupportedOpMode(const Node* node, const onnxruntime::GraphViewer& graph_viewer) {
-  (void)node;
-  (void)graph_viewer;
-  // const auto& optype = node->OpType();
-  // const auto& initializers = graph_viewer.GetAllInitializedTensors();
-
-  // To do: add unsuppored mode in MIGRAPHX later
-  return false;
-}
-
 static bool IsTypeSupported(const NodeArg* node_arg) {
   const auto* type_proto = node_arg->TypeAsProto();
   if (!type_proto) {
@@ -166,34 +156,51 @@ static bool IsTypeSupported(const NodeArg* node_arg) {
   }
 }
 
-static migraphx::shape::type_t get_migraphx_type(ONNXTensorElementDataType type)
+static bool get_migraphx_type(ONNXTensorElementDataType type, 
+                              migraphx::shape::type_t &mgx_type)
 {
+  mgx_type = migraphx::shape::float_type;
   switch(type) {
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT16:
-      return migraphx::shape::half_type;
+      mgx_type = migraphx::shape::half_type;
+      break;
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT:
-      return migraphx::shape::float_type;
+      mgx_type = migraphx::shape::float_type;
+      break;
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_DOUBLE:
-      return migraphx::shape::double_type;
+      mgx_type = migraphx::shape::double_type;
+      break;
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT8:
-      return migraphx::shape::int8_type;
+      mgx_type = migraphx::shape::int8_type;
+      break;
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT16:
-      return migraphx::shape::int16_type;
+      mgx_type = migraphx::shape::int16_type;
+      break;
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32:
-      return migraphx::shape::int32_type;
+      mgx_type = migraphx::shape::int32_type;
+      break;
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT64:
-      return migraphx::shape::int64_type;
+      mgx_type = migraphx::shape::int64_type;
+      break;
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT8:
-      return migraphx::shape::uint8_type;
+      mgx_type = migraphx::shape::uint8_type;
+      break;
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT16:
-      return migraphx::shape::uint16_type;
+      mgx_type = migraphx::shape::uint16_type;
+      break;
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT32:
-      return migraphx::shape::uint32_type;
+      mgx_type = migraphx::shape::uint32_type;
+      break;
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT64:
-      return migraphx::shape::uint64_type;
+      mgx_type = migraphx::shape::uint64_type;
+      break;
     default:
-      MIGRAPHX_THROW("MiGraphx: unsupported data type");
+      LOGS_DEFAULT(WARNING) << "MiGraphx: unsupported data type " << type << ", fallback to CPU";
+      LOGS_DEFAULT(WARNING) << "implementation" << std::endl;
+      return false;
   }
+
+  return true;
 }
 
 static bool IsNodeSupported(const std::set<std::string>& op_set,
@@ -201,7 +208,7 @@ static bool IsNodeSupported(const std::set<std::string>& op_set,
                             const NodeIndex node_idx) {
   const auto& node = graph_viewer.GetNode(node_idx);
   const auto& optype = node->OpType();
-  const auto& domain = node->Domain();
+  // const auto& domain = node->Domain();
 
   // 1. Check input and output data types are supported.
   // 2. Check Op is supported
@@ -217,12 +224,7 @@ static bool IsNodeSupported(const std::set<std::string>& op_set,
     return false;
   }
 
-  //Check 2a
-  if (domain == kOnnxDomain && IsUnsupportedOpMode(node, graph_viewer)) {
-    return false;
-  }
-
-  // Check 2b
+  // Check 2
   if (op_set.count(optype) > 0) {
     return true;
   } else {
@@ -405,12 +407,10 @@ MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
                                        const std::vector<const KernelRegistry*>& /*kernel_registries*/) const {
 
   std::vector<std::unique_ptr<ComputeCapability>> result;
-
   if (graph_viewer.IsSubgraph()) {
     return result;
   }
 
-  // Need access to model_path_
   for (const auto& tensor : graph_viewer.GetAllInitializedTensors()) {
     if (tensor.second->has_data_location() && tensor.second->data_location() == ONNX_NAMESPACE::TensorProto_DataLocation_EXTERNAL) {
       LOGS_DEFAULT(WARNING) << "MIGraphX: Initializers with external data location are not currently supported";
@@ -444,16 +444,63 @@ MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
 
   ORT_ENFORCE(status.IsOK(), status);
   ONNX_NAMESPACE::ModelProto model_proto = model.ToProto();
-  //model_proto.set_ir_version(ONNX_NAMESPACE::Version::IR_VERSION);
+  model_proto.set_ir_version(ONNX_NAMESPACE::Version::IR_VERSION);
+
+  // migraphx now can only support on output. if there are multiple
+  // outputs, we cannot support this model
+  std::size_t num_outputs = model_proto.graph().output_size();
+  if (num_outputs > 1)
+  {
+      LOGS_DEFAULT(WARNING) << "MIGraphX can support only one output, but input model";
+      LOGS_DEFAULT(WARNING) << "has " << num_outputs << " outputs, so fall back to";
+      LOGS_DEFAULT(WARNING) << "default CPU implementation!";
+
+      return result;
+  }
+
+  // migraphx now cannot support inputs with dynamic shape
+  std::size_t num_inputs = model_proto.graph().input_size();
+  std::cout << "input_num = " << num_inputs << std::endl;
+  for (std::size_t in_index = 0; in_index < num_inputs; ++in_index)
+  {
+    auto in_node = model_proto.graph().input(in_index);
+    const NodeArg* node_arg = graph_viewer.GetNodeArg(in_node.name());
+    if (node_arg == nullptr) continue;
+    auto&& type_as_proto = node_arg->TypeAsProto();
+    auto& dims = type_as_proto->tensor_type().shape().dim();
+    for (auto&& d : dims)
+    {
+      if (not d.has_dim_value())
+      {
+        LOGS_DEFAULT(WARNING) << "MiGraphX, model input " << in_node.name(); 
+        LOGS_DEFAULT(WARNING) << "is dynamic shape, not supported. Fallback";
+        LOGS_DEFAULT(WARNING) << "to default CPU execution!" << std::endl;
+
+        return result;
+      }
+    }
+  }
+
   std::string string_buf;
   model_proto.SerializeToString(&string_buf);
 
-  // // may not be needed since it can return false in many scenarios
-  // bool ret = migraphx::parse_model_string(string_buf);
-  // if (!ret)
-  // {
-  //   return result;
-  // }
+  // may not be needed since it can return false in many scenarios
+  std::vector<std::string> unsupported_nodes_temp;
+  migraphx::program prog = migraphx::parse_model(string_buf, unsupported_nodes_temp);
+  if (prog.size() == 0)
+  {
+    return result;
+  }
+
+  if (unsupported_nodes_temp.size())
+  {
+    std::cout << "Unsupported nodes from onnxruntime check====================: " << std::endl;
+    for (auto& node_name : unsupported_nodes_temp)
+    {
+      std::cout << node_name << std::endl;
+    }
+    std::cout << "End of unsupported nodes from onnxruntime check============" << std::endl;
+  }
 
   // This is a list of initializers that migraphx considers as constants. 
   // Example weights, reshape shape etc.
@@ -546,10 +593,17 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
     std::string string_buf;
     model_proto.SerializeToString(&string_buf);
 
+    // Debugging purpose, write the model out as a binary file
+    // std::ofstream ort_tmp_file("ort_tmp.bin", std::ofstream::binary);
+    // ort_tmp_file.write(string_buf.c_str(), string_buf.size());
+    // ort_tmp_file.close();
+
     // by parsing the model_proto, create a program corresponding to
     // the input fused_node
     std::vector<std::string> unsupported_nodes;
     migraphx::program prog = migraphx::parse_model(string_buf, unsupported_nodes);
+    std::cout << "prog = " << std::endl;
+    std::cout << prog << std::endl;
 
     // compile the program
     prog.compile(t_);
@@ -577,6 +631,14 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
       ++param_index;
     }
 
+    // process the scratch memory
+    auto sit = param_shapes.find("scratch");
+    if (sit != param_shapes.end())
+    {
+      std::cout << "Scartch allocated, shape = " << sit->second << std::endl;
+      map_scratches_[fused_node->Name()] = t_.copy_to(migraphx::generate_argument(sit->second));
+    }
+
     // hack, manually add the output index to the output_index
     output_index_map[99999] = output_name_index.begin()->second;
 
@@ -587,7 +649,7 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
     compute_info.create_state_func = [=](ComputeContext* context, FunctionState* state) {
       std::unique_ptr<MiGraphXFuncState> p = onnxruntime::make_unique<MiGraphXFuncState>();
       *p = {context->allocate_func, context->release_func, context->allocator_handle, map_progs_[context->node_name], t_,
-            map_input_index_[context->node_name], map_output_index_[context->node_name], &mgx_mu_};
+            map_scratches_[context->node_name], map_input_index_[context->node_name], map_output_index_[context->node_name], &mgx_mu_};
       *state = p.release();
       return 0;
     };
@@ -604,6 +666,7 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
       std::unordered_map<std::size_t, std::size_t>& map_output_index = mgx_state->output_indexes;
       migraphx::target t = mgx_state->t;
       migraphx::program& prog = mgx_state->prog;
+      // migraphx::argument& scratch = mgx_state->scratch;
 
       std::unordered_map<std::string, migraphx::shape> param_shapes = prog.get_parameter_shapes();
       migraphx::program::parameter_map m;
@@ -620,7 +683,8 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
           auto tensor_type = ort.GetTensorElementType(tensor_info);
           ort.ReleaseTensorTypeAndShapeInfo(tensor_info);
 
-          auto mgx_type = get_migraphx_type(tensor_type);
+          migraphx::shape::type_t mgx_type;
+          get_migraphx_type(tensor_type, mgx_type);
           auto mgx_s = x.second;
 
           if (mgx_type != mgx_s.type())

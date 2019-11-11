@@ -20,6 +20,7 @@ struct MiGraphXFuncState {
   AllocatorHandle allocate_handle = nullptr;
   migraphx::program prog{};
   migraphx::target t{};
+  migraphx::argument scratch{};
   std::unordered_map<std::size_t, std::size_t> input_indexes;
   std::unordered_map<std::size_t, std::size_t> output_indexes;
   OrtMutex* mgx_mu_ptr = nullptr;
@@ -48,6 +49,7 @@ private:
   OrtMutex mgx_mu_;
 
   std::unordered_map<std::string, migraphx::program> map_progs_;
+  std::unordered_map<std::string, migraphx::argument> map_scratches_;
   std::unordered_map<std::string, std::unordered_map<std::size_t, std::size_t>> map_input_index_;
   std::unordered_map<std::string, std::unordered_map<std::size_t, std::size_t>> map_output_index_;
 

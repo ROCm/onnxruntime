@@ -463,9 +463,9 @@ if (onnxruntime_USE_MIGRAPHX)
   set(CMAKE_MODULE_PATH "/opt/rocm/hip/cmake" ${CMAKE_MODULE_PATH})
   find_package(HIP)
 
-  set(AMD_MIGRAPHX_HOME ${onnxruntime_MIGRAPHX_HOME})
-  set(AMD_MIGRAPHX_DEPS ${AMD_MIGRAPHX_HOME}/deps_onnxrt)
-  set(AMD_MIGRAPHX_BUILD ${AMD_MIGRAPHX_HOME}/build_3.6.1)
+#  set(AMD_MIGRAPHX_HOME ${onnxruntime_MIGRAPHX_HOME})
+#  set(AMD_MIGRAPHX_DEPS ${AMD_MIGRAPHX_HOME}/deps_onnxrt)
+#  set(AMD_MIGRAPHX_BUILD ${AMD_MIGRAPHX_HOME}/build_3.6.1)
   set(CMAKE_CXX_STANDARD 14)
   set(CMAKE_VERBOSE_MAKEFILE on)
 

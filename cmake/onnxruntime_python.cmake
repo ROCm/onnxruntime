@@ -223,6 +223,24 @@ if (onnxruntime_USE_NGRAPH)
   )
 endif()
 
+if (onnxruntime_USE_MIGRAPHX)
+  add_custom_command(
+    TARGET onnxruntime_pybind11_state POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy
+        ${miopen_LIBRARIES}/${MIOPEN_SHARED_LIB}
+        $<TARGET_FILE_DIR:${test_data_target}>/onnxruntime/capi/
+  )
+
+  foreach(lib_name ${MIGRAPHX_SHARED_LIB})
+    add_custom_command(
+      TARGET onnxruntime_pybind11_state POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy
+          ${migraphx_LIBRARIES}/${lib_name}
+          $<TARGET_FILE_DIR:${test_data_target}>/onnxruntime/capi/
+    )
+  endforeach(lib_name)
+endif()
+
 if (onnxruntime_USE_TVM)
   add_custom_command(
     TARGET onnxruntime_pybind11_state POST_BUILD

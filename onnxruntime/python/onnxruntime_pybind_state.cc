@@ -273,9 +273,7 @@ const std::vector<std::string>& GetAvailableProviders() {
 #ifdef USE_TENSORRT
     available_providers.push_back(kTensorrtExecutionProvider);
 #endif
-    std::cout << "Before MIGRAPHX Registered======================" << std::endl;
 #ifdef USE_MIGRAPHX
-    std::cout << "MIGRAPHX Registered======================" << std::endl;
     available_providers.push_back(kMiGraphXExecutionProvider);
 #endif
 #ifdef USE_CUDA
