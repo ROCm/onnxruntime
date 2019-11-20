@@ -224,6 +224,9 @@ if (onnxruntime_USE_NGRAPH)
 endif()
 
 if (onnxruntime_USE_MIGRAPHX)
+  message("miopen_folder = " ${miopen_LIBRARIES})
+  message("migraphx_folder = " ${migraphx_LIBRARIES})
+  message("migraphx_libs = " ${MIGRAPHX_SHARED_LIB})
   add_custom_command(
     TARGET onnxruntime_pybind11_state POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy
@@ -231,14 +234,17 @@ if (onnxruntime_USE_MIGRAPHX)
         $<TARGET_FILE_DIR:${test_data_target}>/onnxruntime/capi/
   )
 
-  foreach(lib_name ${MIGRAPHX_SHARED_LIB})
-    add_custom_command(
-      TARGET onnxruntime_pybind11_state POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy
-          ${migraphx_LIBRARIES}/${lib_name}
-          $<TARGET_FILE_DIR:${test_data_target}>/onnxruntime/capi/
-    )
-  endforeach(lib_name)
+  add_custom_command(
+    TARGET onnxruntime_pybind11_state POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy
+        ${migraphx_LIBRARIES}/libmigraphx.so.0
+        ${migraphx_LIBRARIES}/libmigraphx_onnx.so.0
+        ${migraphx_LIBRARIES}/libmigraphx_gpu.so.0
+        ${migraphx_LIBRARIES}/libmigraphx_device.so.0
+        ${migraphx_LIBRARIES}/libmigraphx_cpu.so.0
+        ${migraphx_LIBRARIES}/libmigraphx_tf.so.0
+        $<TARGET_FILE_DIR:${test_data_target}>/onnxruntime/capi/
+  )
 endif()
 
 if (onnxruntime_USE_TVM)
