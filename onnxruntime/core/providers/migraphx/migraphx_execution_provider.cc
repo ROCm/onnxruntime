@@ -443,7 +443,6 @@ MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
     init_tensor_num++;
     graph_build.AddInitializedTensor(*(tensor.second));
   }
-  std::cout << "init_tensor_num = " << init_tensor_num << std::endl;
 
   ORT_ENFORCE(status.IsOK(), status);
   ONNX_NAMESPACE::ModelProto model_proto = model.ToProto();
@@ -463,7 +462,6 @@ MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
 
   // migraphx now cannot support inputs with dynamic shape
   std::size_t num_inputs = model_proto.graph().input_size();
-  std::cout << "input_num = " << num_inputs << std::endl;
   for (std::size_t in_index = 0; in_index < num_inputs; ++in_index)
   {
     auto in_node = model_proto.graph().input(in_index);
@@ -495,37 +493,35 @@ MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
   // may not be needed since it can return false in many scenarios
   std::vector<std::string> unsupported_nodes_temp;
   migraphx::program prog = migraphx::parse_model(string_buf, unsupported_nodes_temp);
-  std::cout << "In GetCapacity(), prog = " << std::endl;
-  std::cout << prog << std::endl;
   if (prog.size() == 0)
   {
     return result;
   }
 
-  if (unsupported_nodes_temp.size())
-  {
-    std::cout << "Unsupported nodes from migraphx check====================: " << std::endl;
-    for (auto& node_name : unsupported_nodes_temp)
-    {
-      std::cout << node_name << std::endl;
-    }
-    std::cout << "End of unsupported nodes from migraphx check============" << std::endl;
-  }
+  // if (unsupported_nodes_temp.size())
+  // {
+  //   std::cout << "Unsupported nodes from migraphx check====================: " << std::endl;
+  //   for (auto& node_name : unsupported_nodes_temp)
+  //   {
+  //     std::cout << node_name << std::endl;
+  //   }
+  //   std::cout << "End of unsupported nodes from migraphx check============" << std::endl;
+  // }
 
   // This is a list of initializers that migraphx considers as constants. 
   // Example weights, reshape shape etc.
   std::unordered_set<std::string> mgx_required_initializers;
   const auto unsupported_nodes = GetUnsupportedNodeIndices(graph_viewer, mgx_required_initializers);
 
-  if (unsupported_nodes.size())
-  {
-    std::cout << "Unsupported nodes from onnxruntime check====================: " << std::endl;
-    for (auto& node_name : unsupported_nodes)
-    {
-      std::cout << node_name << std::endl;
-    }
-    std::cout << "End of unsupported nodes from onnxruntime check============" << std::endl;
-  }
+  // if (unsupported_nodes.size())
+  // {
+  //   std::cout << "Unsupported nodes from onnxruntime check====================: " << std::endl;
+  //   for (auto& node_name : unsupported_nodes)
+  //   {
+  //     std::cout << node_name << std::endl;
+  //   }
+  //   std::cout << "End of unsupported nodes from onnxruntime check============" << std::endl;
+  // }
 
   //If all ops are supported, no partitioning is required. Short-circuit and avoid splitting.
   if (unsupported_nodes.empty()) {
@@ -608,8 +604,6 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
       output_name_index[output_defs[i]->Name()] = i;
     }
 
-    std::cout << "There are " << output_defs.size() << " outputs!" << std::endl;
-
     // FIXME later, hack
     output_name_index.clear();
     output_name_index["output"] = 0;
@@ -628,8 +622,6 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
     // the input fused_node
     std::vector<std::string> unsupported_nodes;
     migraphx::program prog = migraphx::parse_model(string_buf, unsupported_nodes);
-    std::cout << "In Compile(), prog = " << std::endl;
-    std::cout << prog << std::endl;
 
     // compile the program
     prog.compile(t_);
@@ -708,7 +700,6 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
           m[x.first] = migraphx::argument(x.second, const_cast<void*>(ort.GetTensorData<void>(input_tensor)));
 
           auto arg = migraphx::gpu::from_gpu(m[x.first]);
-          std::cout << x.first << " = " << arg << std::endl;
         }
 
         if (map_output_index.count(param_index) > 0)
@@ -722,52 +713,23 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
         } 
         param_index++;
       }
-      std::cout << "There are " << param_index << " arguments!" << std::endl;
-
-      // process output, there is only one output here
-      // for (auto&& x : param_shapes)
-      // {
-      //   if (x.first == std::string("output"))
-      //   {
-      //     migraphx::shape res_shape = param_shapes["output"];
-      //     std::size_t output_index = map_output_index.begin()->second;
-      //     std::vector<int64_t> ort_shape{res_shape.lens().begin(), res_shape.lens().end()};
-      //     OrtValue* output_tensor = ort.KernelContext_GetOutput(context, output_index, ort_shape.data(), ort_shape.size());
-      //     void* output_data = ort.GetTensorMutableData<void>(output_tensor);
-      //     m["output"] = migraphx::argument(res_shape, output_data);
-      //   }
-      // }
-
-      // scratch memory (not needed anymore with Paul's latest change)
-      // for (auto&& x : param_shapes)
-      // {
-      //   if (m.count(x.first) == 0)
-      //   {
-      //     m[x.first] = t.copy_to(migraphx::generate_argument(x.second));
-      //   }
-      // }
 
       {
         // lock to avoid race condition
         std::lock_guard<OrtMutex> lock(*(mgx_state->mgx_mu_ptr));
-        std::cout << "Begin execution!" << std::endl;
         auto gpu_res = prog.eval(m);
         auto tmp_res = migraphx::gpu::from_gpu(gpu_res);
-        std::cout << "result shape = " << gpu_res.get_shape() << std::endl;
-        std::cout << "result = " << tmp_res << std::endl;
 
         // there is no output in parameter, we need to explicitly copy
         // data from input buffer to output buffer
         if (m.count("output") == 0)
         {
-          migraphx::shape res_shape = gpu_res.get_shape();
+          migraphx::shape res_shape = tmp_res.get_shape();
           std::vector<int64_t> ort_shape{res_shape.lens().begin(), res_shape.lens().end()};
           OrtValue* output_tensor = ort.KernelContext_GetOutput(context, 0, ort_shape.data(), ort_shape.size());
           void* output_data = ort.GetTensorMutableData<void>(output_tensor);
           hipMemcpy(output_data, gpu_res.data(), res_shape.bytes(), hipMemcpyDeviceToDevice);
         }
-
-        std::cout << "End execution!" << std::endl;
       } 
 
       return Status::OK();
