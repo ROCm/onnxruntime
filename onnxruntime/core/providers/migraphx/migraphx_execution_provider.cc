@@ -738,14 +738,14 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
       //   }
       // }
 
-      // scratch memory
-      for (auto&& x : param_shapes)
-      {
-        if (m.count(x.first) == 0)
-        {
-          m[x.first] = t.copy_to(migraphx::generate_argument(x.second));
-        }
-      }
+      // scratch memory (not needed anymore with Paul's latest change)
+      // for (auto&& x : param_shapes)
+      // {
+      //   if (m.count(x.first) == 0)
+      //   {
+      //     m[x.first] = t.copy_to(migraphx::generate_argument(x.second));
+      //   }
+      // }
 
       {
         // lock to avoid race condition

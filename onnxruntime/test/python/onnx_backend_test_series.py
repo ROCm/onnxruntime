@@ -146,6 +146,9 @@ def create_backend_test(testname=None):
         if c2.supports_device('OPENVINO_GPU_FP32') or c2.supports_device('OPENVINO_GPU_FP16'):
             current_failing_tests.append('^test_div_cpu*')
 
+        if c2.supports_device('MIGRAPHX'):
+            current_failing_tests.append('test_constant_pad_cpu')
+
         filters = current_failing_tests + \
                   tests_with_pre_opset7_dependencies_filters() + \
                   unsupported_usages_filters() + \
