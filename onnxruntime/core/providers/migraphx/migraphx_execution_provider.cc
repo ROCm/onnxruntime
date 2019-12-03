@@ -486,9 +486,9 @@ MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
   model_proto.SerializeToString(&string_buf);
 
   // Debugging purpose, wrote model as an onnx file
-  std::ofstream ort_tmp_file("ort_getcapacity.onnx", std::ofstream::binary);
-  ort_tmp_file.write(string_buf.c_str(), string_buf.size());
-  ort_tmp_file.close();
+  // std::ofstream ort_tmp_file("ort_getcapacity.onnx", std::ofstream::binary);
+  // ort_tmp_file.write(string_buf.c_str(), string_buf.size());
+  // ort_tmp_file.close();
 
   // may not be needed since it can return false in many scenarios
   std::vector<std::string> unsupported_nodes_temp;
