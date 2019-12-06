@@ -203,17 +203,148 @@ static bool get_migraphx_type(ONNXTensorElementDataType type,
   return true;
 }
 
+// Returns true only if op is in a mode that is not currently supported
+static bool IsUnsupportedOpMode(const Node* node, const onnxruntime::GraphViewer& graph_viewer) {
+  const auto& optype = node->OpType();
+  const auto& initializers = graph_viewer.GetAllInitializedTensors();
+
+  if (optype == "MaxPool") {
+    //MaxPool "indices" output is not currently supported.
+    if (node->OutputDefs().size() > 1) {
+      return true;
+    }
+
+    // ceil_mode and dilations attrs are not supported in MiGraphX
+    const auto& attributes = node->GetAttributes();
+    const auto ceil_attr = attributes.find("ceil_mode");
+    // default value of ceil_mode (0) is supported.
+    if (ceil_attr != attributes.end() and ceil_attr->second.i() != 0) {
+      return true;
+    }
+
+    if (attributes.find("dilations") != attributes.end()) {
+      return true;
+    }
+
+    // storage order 1 (column major format) is not supported
+    const auto storage_order_attr = attributes.find("storage_order");
+    if (storage_order_attr != attributes.end() and storage_order_attr->second.i() != 0)
+    {
+      return true;
+    }
+
+    // input can only have 4 dims
+    const auto input_shape = node->InputDefs()[0]->Shape();
+    if (input_shape->dim_size() != 4)
+    {
+      return true;
+    }
+
+    // auto_pads only support same upper
+    const auto ap_attr = attributes.find("auto_pad");
+    static const std::set<std::string> allowed_pad_modes = {"same_upper"};
+    if (ap_attr != attributes.end())
+    {
+      return allowed_pad_modes.count(ap_attr->second.s()) == 0;
+    }
+  } else if (optype == "Pad") {
+    // Pad is only supported only up to opset 10 (in opset 11 more inputs were added)
+    if (node->InputDefs().size() > 1) {
+      return true;
+    }
+
+    const auto& attributes = node->GetAttributes();
+    // Pad only support constant mode
+    const auto mode_attr = attributes.find("mode");
+    if(mode_attr != attributes.end())
+    {
+        const auto mode = mode_attr->second.s();
+        static const std::set<std::string> allowed_modes = {"constant"};
+
+        return allowed_modes.count(mode) == 0;
+    }
+  } else if (optype == "Slice") {
+    //Slice in opset 10 is currently not supported.
+    //unsupported inputs: starts, ends, axes, steps
+    if (node->InputDefs().size() > 1) {
+      return true;
+    }
+    //MiGraphX does not properly handle the situation where any 
+    //value of the "starts" attribute is higher than a corresponding 
+    // value in the "ends"
+    const auto& attributes = node->GetAttributes();
+    if (attributes.count("starts") == 0 || attributes.count("ends") == 0) {
+      return true;
+    }
+
+    const auto& starts = attributes.find("starts")->second.ints();
+    const auto& ends = attributes.find("ends")->second.ints();
+    for (int i = 0; i < starts.size(); ++i) {
+      if (starts.Get(i) > ends.Get(i)) {
+        return true;
+      }
+    }
+  } else if (optype == "AveragePool") {
+    // ceil_mode attribute is not supported in MiGraphX
+    const auto& attributes = node->GetAttributes();
+    const auto ceil_attr = attributes.find("ceil_mode");
+    // default value of ceil_mode (0) is supported.
+    if (ceil_attr != attributes.end() && ceil_attr->second.i() != 0) {
+      return true;
+    }
+
+    // auto_pads only support same upper
+    const auto ap_attr = attributes.find("auto_pad");
+    static const std::set<std::string> allowed_pad_modes = {"same_upper"};
+    if (ap_attr != attributes.end())
+    {
+      return allowed_pad_modes.count(ap_attr->second.s()) == 0;
+    }
+
+    // input can only have 4 dims
+    const auto input_shape = node->InputDefs()[0]->Shape();
+    if (input_shape->dim_size() != 4)
+    {
+      return true;
+    }
+  } else if (optype == "Expand") {
+    // MiGraphX only supports constant shape input values
+    const auto& shape_input = node->InputDefs()[1];
+    return !graph_viewer.IsConstantInitializer(shape_input->Name(), true);
+  } else if (optype == "Clip") {
+    // MiGraphX only support opset6 with 1 input
+    return (node->InputDefs().size() != 1);
+  } else if (optype == "Reshape") {
+    // MiGraphX only support opset6 with 1 input
+    const auto& shape_arg = node->InputDefs()[1];
+    return initializers.find(shape_arg->Name()) == initializers.end();
+  } else if (optype == "Conv") {
+    // input can only have 4 dims
+    const auto input_shape = node->InputDefs()[0]->Shape();
+    if (input_shape->dim_size() != 4)
+    {
+      return true;
+    }
+  } else if (optype == "ConstantOfShape") {
+    const auto shape_arg = node->InputDefs()[0];
+    return initializers.find(shape_arg->Name()) == initializers.end();
+  }
+
+  //Op doesn't fall into known any of unsupported modes.
+  return false;
+}
+
 static bool IsNodeSupported(const std::set<std::string>& op_set,
                             const onnxruntime::GraphViewer& graph_viewer,
                             const NodeIndex node_idx) {
   const auto& node = graph_viewer.GetNode(node_idx);
   const auto& optype = node->OpType();
-  // const auto& domain = node->Domain();
+  const auto& domain = node->Domain();
 
   // 1. Check input and output data types are supported.
   // 2. Check Op is supported
 
-  //Check 1
+  //Check 1, data type
   bool are_types_supported = true;
 
   node->ForEachDef([&are_types_supported](const onnxruntime::NodeArg& node_arg, bool /*is_input*/) {
@@ -224,12 +355,18 @@ static bool IsNodeSupported(const std::set<std::string>& op_set,
     return false;
   }
 
-  // Check 2
-  if (op_set.count(optype) > 0) {
-    return true;
-  } else {
+  // Check 2, is operator implemented in migraphx
+  if (op_set.count(optype) == 0) {
     return false;
   }
+
+  // Check 3, since migraphx has implementations, the following
+  // cases are not supported
+  if (domain == kOnnxDomain && IsUnsupportedOpMode(node, graph_viewer)) {
+    return false;
+  }
+
+  return true;
 }
 
 static void AppendNodesToSubGraph(const std::vector<NodeIndex>& nodes,
@@ -493,35 +630,40 @@ MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
   // may not be needed since it can return false in many scenarios
   std::vector<std::string> unsupported_nodes_temp;
   migraphx::program prog = migraphx::parse_model(string_buf, unsupported_nodes_temp);
-  if (prog.size() == 0)
-  {
-    return result;
-  }
+  std::cout << "In get_capacity, prog = " << std::endl;
+  std::cout << prog << std::endl;
+  //if (prog.size() == 0)
+  //{
+  //  return result;
+  //}
 
-  // if (unsupported_nodes_temp.size())
-  // {
-  //   std::cout << "Unsupported nodes from migraphx check====================: " << std::endl;
-  //   for (auto& node_name : unsupported_nodes_temp)
-  //   {
-  //     std::cout << node_name << std::endl;
-  //   }
-  //   std::cout << "End of unsupported nodes from migraphx check============" << std::endl;
-  // }
+  //if (unsupported_nodes_temp.size())
+  //{
+  //  std::cout << "Unsupported nodes from migraphx check====================: " << std::endl;
+  //  for (auto& node_name : unsupported_nodes_temp)
+  //  {
+  //    std::cout << node_name << std::endl;
+  //  }
+  //  std::cout << "End of unsupported nodes from migraphx check============" << std::endl;
+  //}
 
   // This is a list of initializers that migraphx considers as constants. 
   // Example weights, reshape shape etc.
   std::unordered_set<std::string> mgx_required_initializers;
   const auto unsupported_nodes = GetUnsupportedNodeIndices(graph_viewer, mgx_required_initializers);
 
-  // if (unsupported_nodes.size())
-  // {
-  //   std::cout << "Unsupported nodes from onnxruntime check====================: " << std::endl;
-  //   for (auto& node_name : unsupported_nodes)
-  //   {
-  //     std::cout << node_name << std::endl;
-  //   }
-  //   std::cout << "End of unsupported nodes from onnxruntime check============" << std::endl;
-  // }
+  if (unsupported_nodes.size())
+  {
+   std::cout << "Unsupported nodes from onnxruntime check====================: " << std::endl;
+   for (auto& node_index : unsupported_nodes)
+   {
+     const auto& node = graph_viewer.GetNode(node_index);
+     const auto& optype = node->OpType();
+
+     std::cout << "Node " << node_index << ", name = " << node->Name() << ", optype = " << optype << std::endl;
+   }
+   std::cout << "End of unsupported nodes from onnxruntime check============" << std::endl;
+  }
 
   //If all ops are supported, no partitioning is required. Short-circuit and avoid splitting.
   if (unsupported_nodes.empty()) {
@@ -587,6 +729,7 @@ static ONNX_NAMESPACE::ModelProto GetModelProtoFromFusedNode(const onnxruntime::
 
 Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>& fused_nodes,
                                         std::vector<NodeComputeInfo>& node_compute_funcs) {
+  std::size_t fused_node_index = 0;
   for (const auto& fused_node : fused_nodes) {
     // map parameter input name to index
     std::unordered_map<std::string, std::size_t> input_name_index;
@@ -622,6 +765,8 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
     // the input fused_node
     std::vector<std::string> unsupported_nodes;
     migraphx::program prog = migraphx::parse_model(string_buf, unsupported_nodes);
+    std::cout << "In compile, prog_" << fused_node_index++ << " = " << std::endl;
+    std::cout << prog << std::endl;
 
     // compile the program
     prog.compile(t_);
