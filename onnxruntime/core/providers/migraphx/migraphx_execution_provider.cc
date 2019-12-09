@@ -258,10 +258,10 @@ static bool IsUnsupportedOpMode(const Node* node, const onnxruntime::GraphViewer
     const auto mode_attr = attributes.find("mode");
     if(mode_attr != attributes.end())
     {
-        const auto mode = mode_attr->second.s();
-        static const std::set<std::string> allowed_modes = {"constant"};
+      const auto mode = mode_attr->second.s();
+      static const std::set<std::string> allowed_modes = {"constant"};
 
-        return allowed_modes.count(mode) == 0;
+      return allowed_modes.count(mode) == 0;
     }
   } else if (optype == "Slice") {
     //Slice in opset 10 is currently not supported.
