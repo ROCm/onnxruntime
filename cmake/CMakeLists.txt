@@ -334,7 +334,7 @@ set(onnxruntime_EXTERNAL_DEPENDENCIES onnx_proto re2)
 
 # MiGraphX
 if (onnxruntime_USE_MIGRAPHX)
-  list(APPEND onnxruntime_EXTERNAL_LIBRARIES migraphx migraphx_cpu migraphx_device migraphx_gpu migraphx_onnx hip_hcc MIOpen)
+  list(APPEND onnxruntime_EXTERNAL_LIBRARIES migraphx migraphx_cpu migraphx_device migraphx_gpu hip_hcc MIOpen)
 endif()
 
 # ACL
@@ -645,8 +645,8 @@ if (onnxruntime_USE_MIGRAPHX)
     message(FATAL_ERROR "MIGraphX does not support build in Windows!")
   endif()
   set(AMD_MIGRAPHX_HOME ${onnxruntime_MIGRAPHX_HOME})
-  set(AMD_MIGRAPHX_DEPS ${AMD_MIGRAPHX_HOME}/deps_protobuf3.6.1)
-  set(AMD_MIGRAPHX_BUILD ${AMD_MIGRAPHX_HOME}/build_3.6.1)
+  set(AMD_MIGRAPHX_DEPS ${AMD_MIGRAPHX_HOME}/deps_rocblas2.7)
+  set(AMD_MIGRAPHX_BUILD ${AMD_MIGRAPHX_HOME}/build)
   include(migraphx)
   add_definitions(-DUSE_MIGRAPHX=1)
 endif()
