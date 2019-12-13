@@ -58,12 +58,13 @@ Currently ONNX Runtime supports the following accelerators:
 
 * NVIDIA CUDA
 * Intel MKL-ML
-* [Intel MKL-DNN](./docs/execution_providers/MKL-DNN-ExecutionProvider.md) - [subgraph optimization](./docs/execution_providers/MKL-DNN-Subgraphs.md)
+* [Intel DNNL](./docs/execution_providers/MKL-DNN-ExecutionProvider.md) - [subgraph optimization](./docs/execution_providers/MKL-DNN-Subgraphs.md)
 * [Intel nGraph](./docs/execution_providers/nGraph-ExecutionProvider.md)
 * [NVIDIA TensorRT](./docs/execution_providers/TensorRT-ExecutionProvider.md)
 * [Intel OpenVINO](./docs/execution_providers/OpenVINO-ExecutionProvider.md)
 * [Nuphar Model Compiler](./docs/execution_providers/Nuphar-ExecutionProvider.md)
 * [DirectML](./docs/execution_providers/DirectML-ExecutionProvider.md)
+* [ACL](./docs/execution_providers/ACL-ExecutionProvider.md) (in preview, for ARM Compute Library)
 
 Not all variations are supported in the [official release builds](#apis-and-official-builds), but can be built from source following [these instructions](./BUILD.md).
 
@@ -87,6 +88,7 @@ Additional dockerfiles can be found [here](./dockerfiles).
 * [C](docs/C_API.md)
 * [C#](docs/CSharp_API.md)
 * [C++](./include/onnxruntime/core/session/onnxruntime_cxx_api.h)
+* [Java](docs/Java_API.md)
 * [Ruby](https://github.com/ankane/onnxruntime) (external project)
 
 ### Official Builds
@@ -106,6 +108,7 @@ system.
 	 * Version: **CUDA 10.0** and **cuDNN 7.6**
   * Older ONNX Runtime releases: used **CUDA 9.1** and **cuDNN 7.1** - please refer to [prior release notes](https://github.com/microsoft/onnxruntime/releases) for more details.
 * Python binaries are compatible with **Python 3.5-3.7**. See [Python Dev Notes](./docs/Python_Dev_Notes.md). If using `pip` to be download the Python binaries, run `pip install --upgrade pip` prior to downloading. 
+* The Java API is compatible with **Java 8-13**.
 * Certain operators makes use of system locales. Installation of the **English language package** and configuring `en_US.UTF-8 locale` is required.
   * For Ubuntu install [language-pack-en package](https://packages.ubuntu.com/search?keywords=language-pack-en)
   * Run the following commands:

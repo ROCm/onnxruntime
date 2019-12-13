@@ -1,5 +1,7 @@
 jobs:
 - job: Manylinux2010_py_Wheels
+  workspace:
+    clean: all
   pool: Linux-CPU
   strategy:
     matrix:
@@ -33,7 +35,7 @@ jobs:
     - task: CmdLine@2
       inputs:
         script: |
-          docker build -t onnxruntime-manylinux-$(python.version)  --build-arg BUILD_USER=onnxruntimedev --build-arg BUILD_UID=$(id -u) --build-arg PYTHON_VERSION=$(python.version) -f Dockerfile.manylinux1 .
+          docker build --pull -t onnxruntime-manylinux-$(python.version)  --build-arg BUILD_USER=onnxruntimedev --build-arg BUILD_UID=$(id -u) --build-arg PYTHON_VERSION=$(python.version) -f Dockerfile.manylinux1 .
         workingDirectory: $(Build.SourcesDirectory)/tools/ci_build/github/linux/docker
     - task: CmdLine@2
       inputs:
@@ -59,6 +61,8 @@ jobs:
     - template: templates/clean-agent-build-directory-step.yml
 
 - job: Manylinux2010_py_GPU_Wheels
+  workspace:
+    clean: all
   pool: Linux-GPU-CUDA10
   strategy:
     matrix:
@@ -92,7 +96,7 @@ jobs:
     - task: CmdLine@2
       inputs:
         script: |
-          docker build -t onnxruntime-manylinux-gpu-$(python.version) --build-arg BUILD_USER=onnxruntimedev --build-arg BUILD_UID=$(id -u) --build-arg PYTHON_VERSION=$(python.version) -f Dockerfile.manylinux2010_gpu .
+          docker build --pull -t onnxruntime-manylinux-gpu-$(python.version) --build-arg BUILD_USER=onnxruntimedev --build-arg BUILD_UID=$(id -u) --build-arg PYTHON_VERSION=$(python.version) -f Dockerfile.manylinux2010_gpu .
         workingDirectory: $(Build.SourcesDirectory)/tools/ci_build/github/linux/docker
     - task: CmdLine@2
       inputs:
@@ -118,7 +122,7 @@ jobs:
     - template: templates/clean-agent-build-directory-step.yml
 
 - job: Windows_py_Wheels
-  pool: Win-CPU
+  pool: 'Win-CPU-2019'
   strategy:
     matrix:
       Python35:
@@ -128,41 +132,74 @@ jobs:
       Python37:
         python.version: '3.7'
   variables:
-    buildDirectory: '$(Build.SourcesDirectory)\build'
-  steps:
-    - task: CondaEnvironment@1
-      inputs:
-        createCustomEnvironment: true
-        environmentName: 'py$(python.version)'
-        packageSpecs: 'python=$(python.version)'
-        cleanEnvironment: true
+    OrtPackageId: 'Microsoft.ML.OnnxRuntime'
+    MsbuildArguments: '-maxcpucount'
+    OnnxRuntimeBuildDirectory: '$(Build.BinariesDirectory)'
+    EnvSetupScript: setup_env.bat
+    buildArch: x64
+    setVcvars: true
+    BuildConfig: 'Release'
+  timeoutInMinutes: 60
+  workspace:
+    clean: all
+  steps:    
+  - task: UsePythonVersion@0
+    inputs: 
+      versionSpec: $(python.version) 
+      addToPath: true 
+      architecture: 'x64'
+  - template: templates/set-test-data-variables-step.yml
 
-    - task: BatchScript@1
-      displayName: 'Run build script'
-      inputs:
-        filename: 'build.bat'
-        arguments: ' --build_dir $(buildDirectory) --config Release --use_openmp --build_wheel'
-        workingFolder: "$(Build.SourcesDirectory)"
+  - task: BatchScript@1
+    displayName: 'setup env'
+    inputs:
+      filename: '$(Build.SourcesDirectory)\tools\ci_build\github\windows\$(EnvSetupScript)'
+      modifyEnvironment: true
+      workingFolder: '$(Build.BinariesDirectory)'
 
-    - task: CopyFiles@2
-      displayName: 'Copy Python Wheel to: $(Build.ArtifactStagingDirectory)'
-      inputs:
-        SourceFolder: '$(buildDirectory)'
-        Contents: '**\dist\*.whl'
-        TargetFolder: '$(Build.ArtifactStagingDirectory)'
+  - script: |
+     python -m pip install -q pyopenssl setuptools wheel numpy     
+   
+    workingDirectory: '$(Build.BinariesDirectory)'
+    displayName: 'Install python modules'        
 
-    - task: PublishBuildArtifacts@1
-      displayName: 'Publish Artifact: ONNXRuntime python wheel'
-      inputs:
-        ArtifactName: onnxruntime
+  - task: PythonScript@0
+    displayName: 'Download test data'
+    inputs:
+      scriptPath: '$(Build.SourcesDirectory)\tools\ci_build\github\download_test_data.py'
+      arguments: --test_data_url $(TestDataUrl) --build_dir $(Build.BinariesDirectory)
+      workingDirectory: $(Build.BinariesDirectory)
 
-    - task: ms.vss-governance-buildtask.governance-build-task-component-detection.ComponentGovernanceComponentDetection@0
-      displayName: 'Component Detection'
+  - task: PythonScript@0
+    displayName: 'BUILD'
+    inputs:
+      scriptPath: '$(Build.SourcesDirectory)\tools\ci_build\build.py'
+      arguments: '--config $(BuildConfig) --build_dir $(Build.BinariesDirectory) --skip_submodule_sync --cmake_generator "Visual Studio 16 2019" --build_wheel --use_automl --enable_onnx_tests --parallel'
+      workingDirectory: '$(Build.BinariesDirectory)'     
+  
+  - task: CopyFiles@2
+    displayName: 'Copy Python Wheel to: $(Build.ArtifactStagingDirectory)'
+    inputs:
+      SourceFolder: '$(Build.BinariesDirectory)\$(BuildConfig)'
+      Contents: '**\dist\*.whl'
+      TargetFolder: '$(Build.ArtifactStagingDirectory)'
 
-    - template: templates/clean-agent-build-directory-step.yml
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Artifact: ONNXRuntime python wheel'
+    inputs:
+      ArtifactName: onnxruntime
+
+  - task: ms.vss-governance-buildtask.governance-build-task-component-detection.ComponentGovernanceComponentDetection@0
+    displayName: 'Component Detection'
+    condition: succeeded()
+
+  - template: templates/clean-agent-build-directory-step.yml
 
 - job:  Windows_py_GPU_Wheels
-  pool: Win-GPU
+  workspace:
+    clean: all
+  pool: Win-GPU-CUDA10
+  timeoutInMinutes:  120  
   variables:
     buildDirectory: '$(Build.SourcesDirectory)\build'
     CUDA_VERSION: '10.0'
@@ -175,25 +212,28 @@ jobs:
       Python37:
         python.version: '3.7'
   steps:
-    - task: CondaEnvironment@1
-      inputs:
-        createCustomEnvironment: true
-        environmentName: 'py$(python.version)'
-        packageSpecs: 'python=$(python.version)'
-        cleanEnvironment: true
-
+    - task: UsePythonVersion@0
+      inputs: 
+        versionSpec: $(python.version) 
+        addToPath: true 
+        architecture: 'x64'
     - task: BatchScript@1
       displayName: 'Setup VS2017 env vars'
       inputs:
         filename: 'C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvars64.bat'
         arguments: 'amd64'
         modifyEnvironment: true
+    - task: PowerShell@1
+      displayName: 'Set CUDA path'
+      inputs:
+        scriptName: 'tools/ci_build/github/windows/set_cuda_path.ps1'
+        arguments: '-CudaMsbuildPath C:\local\cudaMsbuildIntegration-10.0.130-win10 -CudaVersion 10.0'
 
     - task: BatchScript@1
       displayName: 'Run build script'
       inputs:
         filename: 'build.bat'
-        arguments: ' --use_cuda --cuda_home="C:\local\cuda_10.0.130_win10_trt6015dll"
+        arguments: ' --use_cuda --cuda_home="C:\local\cuda_10.0.130_win10"
       --cudnn_home="C:\local\cudnn-10.0-windows10-x64-v7.3.1.20\cuda" --build_dir $(buildDirectory) --config Release --build_wheel'
         workingFolder: "$(Build.SourcesDirectory)"
 
@@ -209,12 +249,19 @@ jobs:
       inputs:
         ArtifactName: onnxruntime_gpu
 
+    - task: PowerShell@1
+      displayName: 'Clean up CUDA props files'
+      inputs:
+        scriptName: 'tools/ci_build/github/windows/clean_up_cuda_prop_files.ps1'
+        arguments: '-CudaVersion 10.0'
     - task: ms.vss-governance-buildtask.governance-build-task-component-detection.ComponentGovernanceComponentDetection@0
       displayName: 'Component Detection'
 
     - template: templates/clean-agent-build-directory-step.yml
     
 - job: MacOS_py_Wheels
+  workspace:
+    clean: all
   pool:
     vmImage: 'macOS-10.13'
   strategy:

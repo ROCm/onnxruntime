@@ -23,7 +23,6 @@ if (onnxruntime_BUILD_CSHARP)
   check_language(CSharp)
   if (CMAKE_CSharp_COMPILER)
     enable_language(CSharp)
-    set(CMAKE_DOTNET_TARGET_FRAMEWORK_VERSION v4.6.1)
     set(CMAKE_CSharp_FLAGS ${CMAKE_CSharp_FLAGS} "/langversion:6")
     message(STATUS "CMAKE_Csharp_Compiler = ${CMAKE_CSharp_COMPILER}")
   else()
@@ -53,8 +52,8 @@ option(onnxruntime_USE_OPENVINO "Build with OpenVINO support" OFF)
 option(onnxruntime_USE_NSYNC "Build with NSYNC support. This option only takes effect on Linux" OFF)
 option(onnxruntime_USE_EIGEN_FOR_BLAS "Use eign for blas" ON)
 option(onnxruntime_USE_NNAPI "Build with DNNLibrary for Android NNAPI support" OFF)
-option(onnxruntime_USE_MKLDNN "Build with MKL-DNN support" OFF)
-option(onnxruntime_USE_MKLML "Build MKL-DNN with MKL-ML binary dependency" OFF)
+option(onnxruntime_USE_DNNL "Build with DNNL support" OFF)
+option(onnxruntime_USE_MKLML "Build DNNL with MKL-ML binary dependency" OFF)
 option(onnxruntime_USE_GEMMLOWP "Build with gemmlowp for quantized gemm" OFF)
 option(onnxruntime_USE_AUTOML "Build AutoML support" ON)
 option(onnxruntime_USE_NGRAPH "Build with nGraph support" OFF)
@@ -74,7 +73,7 @@ option(onnxruntime_ENABLE_MICROSOFT_INTERNAL "Use this option to enable/disable 
 option(onnxruntime_USE_NUPHAR "Build with Nuphar" OFF)
 option(onnxruntime_USE_BRAINSLICE "Build with BrainSlice" OFF)
 option(onnxruntime_USE_TENSORRT "Build with TensorRT support" OFF)
-option(onnxruntime_ENABLE_LTO "Enable link time optimization" ON)
+option(onnxruntime_ENABLE_LTO "Enable link time optimization" OFF)
 option(onnxruntime_CROSS_COMPILING "Cross compiling onnx runtime" OFF)
 option(onnxruntime_BUILD_SERVER "Build ONNX Runtime Server" OFF)
 option(onnxruntime_USE_FULL_PROTOBUF "Use full protobuf" OFF)
@@ -85,6 +84,8 @@ option(onnxruntime_DEBUG_NODE_INPUTS_OUTPUTS "Dump node input shapes and output 
 option(onnxruntime_USE_DML "Build with DirectML support" OFF)
 option(onnxruntime_USE_MIGRAPHX "Build with AMDMIGraphX support" OFF)
 option(onnxruntime_USE_ACL "Build with ACL support" OFF)
+option(onnxruntime_ENABLE_INSTRUMENT "Enable Instrument with Event Tracing for Windows (ETW)" OFF)
+option(onnxruntime_USE_TELEMETRY "Build with Telemetry" OFF)
 
 set(protobuf_BUILD_TESTS OFF CACHE BOOL "Build protobuf tests" FORCE)
 #nsync tests failed on Mac Build
@@ -93,6 +94,22 @@ set(ONNX_ML 1)
 if(NOT onnxruntime_ENABLE_PYTHON)
   set(onnxruntime_ENABLE_LANGUAGE_INTEROP_OPS OFF)
 endif()
+
+if(NOT WIN32)
+  #TODO: On Linux we may try https://github.com/microsoft/TraceLogging
+  if(onnxruntime_ENABLE_INSTRUMENT)
+    message(WARNING "Instrument is only supported on Windows now")
+    set(onnxruntime_ENABLE_INSTRUMENT OFF)
+  endif()
+else()
+  check_cxx_compiler_flag(/d2FH4- HAS_D2FH4)
+  if (HAS_D2FH4)
+    message("Enabling /d2FH4-")
+    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /d2FH4-")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /d2FH4-")
+  endif()
+endif()
+
 if(onnxruntime_USE_OPENMP)
   find_package(OpenMP)
   if (OPENMP_FOUND)
@@ -113,17 +130,19 @@ if(onnxruntime_USE_OPENMP)
 endif()
 if(onnxruntime_ENABLE_LTO)
   #TODO: figure out why nsync doesn't work
-  if(onnxruntime_USE_NSYNC)
-    message(WARNING "IPO is not supported when nsync is in use")
-    set(onnxruntime_ENABLE_LTO OFF)
-  else()
+
     include(CheckIPOSupported)
     check_ipo_supported(RESULT ipo_enabled OUTPUT ipo_output)
     if(NOT ipo_enabled)
       message(WARNING "IPO is not supported by this compiler")
       set(onnxruntime_ENABLE_LTO OFF)
     endif()
-  endif()
+    if(UNIX)
+      set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto")
+      set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto")
+      set (CMAKE_LDFLAGS "${CMAKE_CXX_FLAGS} -flto")
+      set (CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+    endif()
 endif()
 
 
@@ -175,9 +194,7 @@ if (MSVC)
     set(gtest_force_shared_crt ON CACHE BOOL "Use shared (DLL) run-time lib for gtest" FORCE)
   endif()
   #Always enable exception handling, even for Windows ARM
-  SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")
-  #Disable 4100 globally. Too many this kind errors in protobuf
-  SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4100")
+  SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")  
   if (NOT onnxruntime_USE_CUDA)
     SET (CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Gw /GL")
     SET (CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} /Gw /GL")
@@ -270,6 +287,12 @@ else()
   add_library(protobuf::libprotobuf ALIAS libprotobuf-lite)
 endif()
 add_executable(protobuf::protoc ALIAS protoc)
+
+if(UNIX AND onnxruntime_ENABLE_LTO)
+  #https://github.com/protocolbuffers/protobuf/issues/5923
+  target_link_options(protoc PRIVATE "-Wl,--no-as-needed")
+endif()
+
 include(protobuf_function.cmake)
 
 if (onnxruntime_DISABLE_CONTRIB_OPS)
@@ -319,7 +342,7 @@ set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -DGSL_UNEN
 
 include(eigen)
 #onnxruntime_EXTERNAL_LIBRARIES could contain onnx, onnx_proto,libprotobuf, cuda/cudnn, jemalloc,
-# mkldnn/mklml, openblas, onnxruntime_codegen_tvm, tvm, nnvm_compiler and pthread
+# dnnl/mklml, openblas, onnxruntime_codegen_tvm, tvm, nnvm_compiler and pthread
 # pthread is always at the last
 set(onnxruntime_EXTERNAL_LIBRARIES onnx onnx_proto protobuf::libprotobuf re2)
 
@@ -342,6 +365,11 @@ if (onnxruntime_USE_ACL)
   list(APPEND onnxruntime_EXTERNAL_LIBRARIES arm_compute acl arm_compute_graph arm_compute_core)
 endif()
 
+# MKLML
+if (onnxruntime_USE_DNNL OR onnxruntime_USE_MKLML)
+  include(dnnl)
+endif()
+
 # TVM
 if (onnxruntime_USE_TVM)
   if (onnxruntime_USE_CUDA)
@@ -351,6 +379,19 @@ if (onnxruntime_USE_TVM)
     set(USE_LLVM ON)
     add_definitions(-DUSE_TVM_WITH_LLVM)
   endif()
+  if (onnxruntime_USE_OPENMP)
+    set(USE_OPENMP "gnu")
+  endif()
+  if (onnxruntime_USE_MKLML)
+    set(USE_OPENMP "intel")
+    # make sure MKLML in ORT is used by TVM
+    if (WIN32)
+      set(OMP_LIBRARY ${MKLML_LIB_DIR}/${IOMP5MD_IMPORT_LIB})
+    else()
+      set(OMP_LIBRARY ${MKLML_LIB_DIR}/${IOMP5MD_SHARED_LIB})
+    endif()
+  endif()
+
   add_subdirectory(${PROJECT_SOURCE_DIR}/external/tvm EXCLUDE_FROM_ALL)
   set_target_properties(tvm PROPERTIES FOLDER "External/tvm")
   set_target_properties(tvm_topi PROPERTIES FOLDER "External/tvm")
@@ -500,10 +541,6 @@ include_directories(
   ${REPO_ROOT}/include/onnxruntime/core/session
 )
 
-if (onnxruntime_USE_MKLDNN OR onnxruntime_USE_MKLML)
-  include(mkldnn)
-endif()
-
 if(onnxruntime_USE_GEMMLOWP)
   add_definitions(-DUSE_GEMMLOWP=1)
 endif()
@@ -520,10 +557,10 @@ if (onnxruntime_USE_MKLML)
   link_directories(${MKLML_LIB_DIR})
 endif()
 
-if (onnxruntime_USE_MKLDNN)
-  list(APPEND onnxruntime_EXTERNAL_LIBRARIES mkldnn)
-  list(APPEND onnxruntime_EXTERNAL_DEPENDENCIES project_mkldnn)
-  link_directories(${MKLDNN_LIB_DIR})
+if (onnxruntime_USE_DNNL)
+  list(APPEND onnxruntime_EXTERNAL_LIBRARIES dnnl)
+  list(APPEND onnxruntime_EXTERNAL_DEPENDENCIES project_dnnl)
+  link_directories(${DNNL_LIB_DIR})
 endif()
 
 if (onnxruntime_USE_NGRAPH)
@@ -536,23 +573,12 @@ if (onnxruntime_USE_NGRAPH)
   add_definitions(-DUSE_NGRAPH=1)
   include(ngraph)
   list(APPEND onnxruntime_EXTERNAL_LIBRARIES ngraph)
-  list(APPEND onnxruntime_EXTERNAL_DEPENDENCIES ngraph)
+  list(APPEND onnxruntime_EXTERNAL_DEPENDENCIES project_ngraph)
 endif()
 
 if(onnxruntime_USE_OPENVINO)
 
-    add_definitions(-DUSE_OPENVINO=1)
-
-	if (onnxruntime_USE_OPENVINO_SOURCE)
-	  include(openvino)
-	  list(APPEND onnxruntime_EXTERNAL_DEPENDENCIES project_openvino)
-	  link_directories(${OPENVINO_LIB_DIR})
-	  #TODO: set plugin path var
-	endif()
-
-	if (onnxruntime_USE_OPENVINO_BINARY)
-	    #TODO: set plugin path var
-	endif()
+  add_definitions(-DUSE_OPENVINO=1)
 
 	if(onnxruntime_USE_OPENVINO_MYRIAD)
 		add_definitions(-DOPENVINO_CONFIG_MYRIAD=1)
@@ -730,6 +756,11 @@ if (onnxruntime_BUILD_SERVER)
   include(onnxruntime_server.cmake)
 endif()
 
+if (onnxruntime_BUILD_JAVA)
+  message(STATUS "Java Build is enabled")
+  include(onnxruntime_java.cmake)
+endif()
+
 # some of the tests rely on the shared libs to be
 # built; hence the ordering
 if (onnxruntime_BUILD_UNIT_TESTS)
@@ -760,3 +791,4 @@ if (onnxruntime_BUILD_CSHARP)
 #  set_property(GLOBAL PROPERTY VS_DOTNET_TARGET_FRAMEWORK_VERSION "netstandard2.0")
   include(onnxruntime_csharp.cmake)
 endif()
+
