@@ -456,16 +456,10 @@ if (onnxruntime_USE_DML)
 endif()
 
 if (onnxruntime_USE_MIGRAPHX)
-#  add_definitions(-DUSE_MIGRAPHX=1)
-#  add_definitions("-DONNX_ML=0")
-#  set(CMAKE_CXX_COMPILER /opt/rocm/bin/hcc)
   add_definitions(-D__HIP_PLATFORM_HCC__)
   set(CMAKE_MODULE_PATH "/opt/rocm/hip/cmake" ${CMAKE_MODULE_PATH})
   find_package(HIP)
 
-#  set(AMD_MIGRAPHX_HOME ${onnxruntime_MIGRAPHX_HOME})
-#  set(AMD_MIGRAPHX_DEPS ${AMD_MIGRAPHX_HOME}/deps_onnxrt)
-#  set(AMD_MIGRAPHX_BUILD ${AMD_MIGRAPHX_HOME}/build_3.6.1)
   set(CMAKE_CXX_STANDARD 14)
   set(CMAKE_VERBOSE_MAKEFILE on)
 
@@ -476,13 +470,11 @@ if (onnxruntime_USE_MIGRAPHX)
   message("ONNX_ML = " ${ONNX_ML})
 
 #  include_directories(${PROJECT_SOURCE_DIR}/external/protobuf)
-  include_directories(${ONNXRUNTIME_ROOT}/../cmake/external/onnx)
+#  include_directories(${ONNXRUNTIME_ROOT}/../cmake/external/onnx)
   include_directories(/opt/rocm/hsa/include)
   include_directories(${AMD_MIGRAPHX_HOME}/src/include
                       ${AMD_MIGRAPHX_HOME}/src/targets/gpu/include
-                      ${AMD_MIGRAPHX_HOME}/src/targets/cpu/include
-                      ${AMD_MIGRAPHX_HOME}/test/include
-                      ${AMD_MIGRAPHX_DEPS}/include)
+                      ${AMD_MIGRAPHX_HOME}/src/targets/cpu/include)
 
   link_directories(${AMD_MIGRAPHX_BUILD}/lib
                    ${AMD_MIGRAPHX_DEPS}/lib)
@@ -499,7 +491,7 @@ if (onnxruntime_USE_MIGRAPHX)
   target_link_libraries(onnxruntime_providers_migraphx ${migraphx_libs})
   onnxruntime_add_include_to_target(onnxruntime_providers_migraphx onnxruntime_common onnxruntime_framework onnx onnx_proto protobuf::libprotobuf)
   add_dependencies(onnxruntime_providers_migraphx ${onnxruntime_EXTERNAL_DEPENDENCIES})
-  target_include_directories(onnxruntime_providers_migraphx PRIVATE ${ONNXRUNTIME_ROOT})
+  target_include_directories(onnxruntime_providers_migraphx PRIVATE ${ONNXRUNTIME_ROOT} ${AMD_MIGRAPHX_DEPS}/include)
   install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/migraphx  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
   set_target_properties(onnxruntime_providers_migraphx PROPERTIES LINKER_LANGUAGE HIP)
   set_target_properties(onnxruntime_providers_migraphx PROPERTIES FOLDER "ONNXRuntime")
