@@ -556,7 +556,8 @@ MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
   }
 
   // Construct modelproto from graph
-  onnxruntime::Model model(graph_viewer.Name(), true, ModelMetaData(), IOnnxRuntimeOpSchemaRegistryList(), graph_viewer.DomainToVersionMap());
+  onnxruntime::Model model(graph_viewer.Name(), true, ModelMetaData(), IOnnxRuntimeOpSchemaRegistryList(),
+          graph_viewer.DomainToVersionMap(), std::vector<ONNX_NAMESPACE::FunctionProto>(), *GetLogger());
   onnxruntime::Graph& graph_build = model.MainGraph();
   for (const auto& node : graph_viewer.Nodes()) {
     std::vector<onnxruntime::NodeArg*> inputs, outputs;
@@ -707,13 +708,16 @@ MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
   return result;
 }
 
-static ONNX_NAMESPACE::ModelProto GetModelProtoFromFusedNode(const onnxruntime::Node* fused_node) {
+static ONNX_NAMESPACE::ModelProto GetModelProtoFromFusedNode(const onnxruntime::Node* fused_node, 
+        const logging::Logger& logger) {
   const auto* node_function = fused_node->GetFunctionBody();
 
   ORT_ENFORCE(node_function != nullptr, "Could not extract function body for node: ", fused_node->Name());
 
   const Graph& node_subgraph = node_function->Body();
-  onnxruntime::Model model{node_subgraph.Name(), true};
+  onnxruntime::Model model{node_subgraph.Name(), true, ModelMetaData{},
+                           IOnnxRuntimeOpSchemaRegistryList{}, node_subgraph.DomainToVersionMap(),
+                           std::vector<ONNX_NAMESPACE::FunctionProto>(), logger};
 
   ONNX_NAMESPACE::ModelProto model_proto = model.ToProto();
   //model_proto.set_ir_version(ONNX_NAMESPACE::Version::IR_VERSION);
@@ -752,7 +756,7 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
     output_name_index["output"] = 0;
 
     // reconstruct the subgraph proto from fused nodes
-    onnx::ModelProto model_proto = GetModelProtoFromFusedNode(fused_node);
+    onnx::ModelProto model_proto = GetModelProtoFromFusedNode(fused_node, *GetLogger());
     std::string string_buf;
     model_proto.SerializeToString(&string_buf);
 
