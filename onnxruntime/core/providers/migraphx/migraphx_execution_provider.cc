@@ -222,8 +222,11 @@ static bool IsUnsupportedOpMode(const Node* node, const onnxruntime::GraphViewer
       return true;
     }
 
-    if (attributes.find("dilations") != attributes.end()) {
-      return true;
+    auto dila_attr = attributes.find("dilations");
+    if (dila_attr != attributes.end()) {
+      auto dilas = dila_attr->second.ints();
+      bool ret = std::all_of(dilas.begin(), dilas.end(), [](auto i) { return i == 1;});
+      return (!ret);
     }
 
     // storage order 1 (column major format) is not supported
@@ -242,7 +245,7 @@ static bool IsUnsupportedOpMode(const Node* node, const onnxruntime::GraphViewer
 
     // auto_pads only support same upper
     const auto ap_attr = attributes.find("auto_pad");
-    static const std::set<std::string> allowed_pad_modes = {"same_upper"};
+    static const std::set<std::string> allowed_pad_modes = {"SAME_UPPER", "NOTSET"};
     if (ap_attr != attributes.end())
     {
       return allowed_pad_modes.count(ap_attr->second.s()) == 0;
@@ -293,19 +296,44 @@ static bool IsUnsupportedOpMode(const Node* node, const onnxruntime::GraphViewer
       return true;
     }
 
-    // auto_pads only support same upper
-    const auto ap_attr = attributes.find("auto_pad");
-    static const std::set<std::string> allowed_pad_modes = {"same_upper"};
-    if (ap_attr != attributes.end())
-    {
-      return allowed_pad_modes.count(ap_attr->second.s()) == 0;
-    }
-
     // input can only have 4 dims
     const auto input_shape = node->InputDefs()[0]->Shape();
     if (input_shape->dim_size() != 4)
     {
       return true;
+    }
+
+    // migraphx does not support count_include_pad to be 1
+    const auto cip_attr = attributes.find("count_include_pad");
+    if (cip_attr != attributes.end() && cip_attr->second.i() != 0)
+    {
+      return true;
+    }
+
+    const auto ap_attr = attributes.find("auto_pad");
+    static const std::set<std::string> allowed_pad_modes = {"SAME_UPPER", "NOTSET"};
+    if (ap_attr != attributes.end())
+    {
+      // explicit pad should be symmetric in migraphx
+      if (ap_attr->second.s() == "NOTSET")
+      {
+        auto pads_attr = attributes.find("pads");
+        if (pads_attr != attributes.end())
+        {
+          auto pads = pads_attr->second.ints();
+          if (pads.size() != 4)
+          {
+            return true;
+          }
+
+          if ((pads[0] != pads[2]) || (pads[1] != pads[3]))
+          {
+            return true;
+          }
+        }
+      }
+
+      return allowed_pad_modes.count(ap_attr->second.s()) == 0;
     }
   } else if (optype == "Expand") {
     // MiGraphX only supports constant shape input values
@@ -341,10 +369,14 @@ static bool IsNodeSupported(const std::set<std::string>& op_set,
   const auto& optype = node->OpType();
   const auto& domain = node->Domain();
 
+  // Three types of checking:
   // 1. Check input and output data types are supported.
-  // 2. Check Op is supported
+  // 2. Check op_type is implemented in migraphx
+  // 3. Check the mode is implemented in migraphx
+  // if 3. is failed, call the constant folding capability in migraphx
+  // to see whether some input parameters can be calculated statically
 
-  //Check 1, data type
+  // check data type
   bool are_types_supported = true;
 
   node->ForEachDef([&are_types_supported](const onnxruntime::NodeArg& node_arg, bool /*is_input*/) {
@@ -355,14 +387,15 @@ static bool IsNodeSupported(const std::set<std::string>& op_set,
     return false;
   }
 
-  // Check 2, is operator implemented in migraphx
+  // whether an operator implemented in migraphx
   if (op_set.count(optype) == 0) {
     return false;
   }
 
-  // Check 3, since migraphx has implementations, the following
-  // cases are not supported
+  // check that some modes might not be supported in migraphx for some operators
   if (domain == kOnnxDomain && IsUnsupportedOpMode(node, graph_viewer)) {
+    // not supported, then check the constant folding capability of migraphx
+    // to see whether it is supported
     return false;
   }
 
@@ -403,8 +436,30 @@ static std::vector<NodeIndex>
 GetUnsupportedNodeIndices(const GraphViewer& graph_viewer, /*out*/ std::unordered_set<std::string>& mgx_required_initializers) {
   const auto mgx_supported_ops = GetMiGraphXSupportedOps();
 
-  std::vector<NodeIndex> unsupported_nodes_idx;
+  // For debugging
+  for (const auto& node_idx : graph_viewer.GetNodesInTopologicalOrder()) {
+    const auto& node = graph_viewer.GetNode(node_idx);
+    const auto& optype = node->OpType();
+    const auto& node_inputs = node->InputDefs();
+    const auto& node_outputs = node->OutputDefs();
 
+    std::cout << "node_index = " << node_idx << ", op_type = " << optype << std::endl;
+    std::cout << "Inputs:";
+    for (auto& input : node_inputs)
+    {
+      std::cout << "\t" << input->Name();
+    }
+    std::cout << std::endl;
+    std::cout << "Outputs:";
+    for (auto& output: node_outputs)
+    {
+      std::cout << "\t" << output->Name();
+    }
+    std::cout << std::endl;
+  }
+  std::cout << std::endl;
+
+  std::vector<NodeIndex> unsupported_nodes_idx;
   for (const auto& node_idx : graph_viewer.GetNodesInTopologicalOrder()) {
     if (IsNodeSupported(mgx_supported_ops, graph_viewer, node_idx)) {
       // Collect inputs that are initializers
@@ -624,9 +679,9 @@ MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
   model_proto.SerializeToString(&string_buf);
 
   // Debugging purpose, wrote model as an onnx file
-  // std::ofstream ort_tmp_file("ort_getcapacity.onnx", std::ofstream::binary);
-  // ort_tmp_file.write(string_buf.c_str(), string_buf.size());
-  // ort_tmp_file.close();
+  std::ofstream ort_tmp_file("ort_getcapacity.onnx", std::ofstream::binary);
+  ort_tmp_file.write(string_buf.c_str(), string_buf.size());
+  ort_tmp_file.close();
 
   // may not be needed since it can return false in many scenarios
   std::vector<std::string> unsupported_nodes_temp;
@@ -761,9 +816,9 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
     model_proto.SerializeToString(&string_buf);
 
     // Debugging purpose, write the model out as a binary file
-    // std::ofstream ort_tmp_file("ort_compile.onnx", std::ofstream::binary);
-    // ort_tmp_file.write(string_buf.c_str(), string_buf.size());
-    // ort_tmp_file.close();
+    std::ofstream ort_tmp_file("ort_compile.onnx", std::ofstream::binary);
+    ort_tmp_file.write(string_buf.c_str(), string_buf.size());
+    ort_tmp_file.close();
 
     // by parsing the model_proto, create a program corresponding to
     // the input fused_node
