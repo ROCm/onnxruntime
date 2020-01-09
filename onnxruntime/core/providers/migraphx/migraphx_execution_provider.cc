@@ -242,14 +242,6 @@ static bool IsUnsupportedOpMode(const Node* node, const onnxruntime::GraphViewer
     {
       return true;
     }
-
-    // auto_pads only support same upper
-    const auto ap_attr = attributes.find("auto_pad");
-    static const std::set<std::string> allowed_pad_modes = {"SAME_UPPER", "NOTSET"};
-    if (ap_attr != attributes.end())
-    {
-      return allowed_pad_modes.count(ap_attr->second.s()) == 0;
-    }
   } else if (optype == "Pad") {
     // Pad is only supported only up to opset 10 (in opset 11 more inputs were added)
     if (node->InputDefs().size() > 1) {
@@ -315,9 +307,10 @@ static bool IsUnsupportedOpMode(const Node* node, const onnxruntime::GraphViewer
     if (ap_attr != attributes.end())
     {
       // explicit pad should be symmetric in migraphx
-      if (ap_attr->second.s() == "NOTSET")
+      auto s_pad = ap_attr->second.s();
+      auto pads_attr = attributes.find("pads");
+      if (s_pad == "NOTSET")
       {
-        auto pads_attr = attributes.find("pads");
         if (pads_attr != attributes.end())
         {
           auto pads = pads_attr->second.ints();
@@ -332,8 +325,56 @@ static bool IsUnsupportedOpMode(const Node* node, const onnxruntime::GraphViewer
           }
         }
       }
+      // either SAME_UPPER or SAME_LOWER
+      else if (s_pad.find("SAME") != std::string::npos)
+      {
+        // pads cannot exist when auto_pad is same_upper or same_lower
+        if (pads_attr != attributes.end())
+        {
+          return true;
+        }
 
-      return allowed_pad_modes.count(ap_attr->second.s()) == 0;
+        // compute the padding size to see whether they are symmetric
+        std::vector<int> strides = {1, 1};
+        auto stride_attr = attributes.find("strides");
+        if (stride_attr != attributes.end())
+        {
+          auto attr_strides = stride_attr->second.ints();
+          std::copy(attr_strides.begin(), attr_strides.end(), strides.begin());
+        }
+
+        std::vector<int> kernel_lens = {1, 1};
+        auto kernel_attr = attributes.find("kernel_shape");
+        if (kernel_attr != attributes.end())
+        {
+          auto attr_k = kernel_attr->second.ints();
+          std::copy(attr_k.begin(), attr_k.end(), kernel_lens.begin());
+        }
+
+        auto tensor_dims = input_shape->dim();
+        std::vector<int> in_lens;
+        std::transform(tensor_dims.begin(),
+                       tensor_dims.end(),
+                       std::back_inserter(in_lens),
+                       [&](auto&& d) -> std::size_t {
+                           if(d.has_dim_value())
+                           {
+                               return d.dim_value();
+                           }
+                           return 1;
+                       });
+
+        std::vector<int> out_lens(2);
+        out_lens[0]  = (in_lens[2] + strides[0] - 1) / strides[0];
+        out_lens[1]  = (in_lens[3] + strides[1] - 1) / strides[1];
+        std::vector<int> explicit_pads(2);
+        explicit_pads[0] = (out_lens[0] - 1) * strides[0] + kernel_lens[0] - in_lens[2];
+        explicit_pads[1] = (out_lens[1] - 1) * strides[1] + kernel_lens[1] - in_lens[3];
+        if ((explicit_pads[0] & 1) != 0 or (explicit_pads[1] & 1) != 0)
+        {
+          return true;
+        }
+      }
     }
   } else if (optype == "Expand") {
     // MiGraphX only supports constant shape input values
