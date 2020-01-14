@@ -463,11 +463,6 @@ static void AppendNodesToSubGraph(const std::vector<NodeIndex>& nodes,
   result.push_back(onnxruntime::make_unique<ComputeCapability>(std::move(sub_graph)));
 }
 
-// static int GetOnnxOpSet(const GraphViewer& graph_viewer) {
-//   const auto& dm_to_ver = graph_viewer.DomainToVersionMap();
-//   return dm_to_ver.at(kOnnxDomain);
-// }
-
 static std::set<std::string> GetMiGraphXSupportedOps() {
   std::set<std::string> mgx_supported_ops = migraphx::get_supported_ops();
   return mgx_supported_ops;
@@ -476,81 +471,6 @@ static std::set<std::string> GetMiGraphXSupportedOps() {
 static std::vector<NodeIndex>
 GetUnsupportedNodeIndices(const GraphViewer& graph_viewer, /*out*/ std::unordered_set<std::string>& mgx_required_initializers) {
   const auto mgx_supported_ops = GetMiGraphXSupportedOps();
-
-  // For debugging
-  for (const auto& node_idx : graph_viewer.GetNodesInTopologicalOrder()) {
-    const auto& node = graph_viewer.GetNode(node_idx);
-    const auto& optype = node->OpType();
-    const auto& node_inputs = node->InputDefs();
-    const auto& node_outputs = node->OutputDefs();
-
-    std::cout << "node_index = " << node_idx << ", op_type = " << optype << std::endl;
-    std::cout << "Inputs:";
-    for (auto& input : node_inputs)
-    {
-      std::cout << "\t" << input->Name();
-      std::size_t batch_size = 1;
-      std::vector<std::size_t> dims;
-      auto tensor_shape = input->Shape();
-      if (tensor_shape == nullptr)
-        continue;
-      auto&& tensor_dims = tensor_shape->dim();;
-      std::transform(tensor_dims.begin(),
-                      tensor_dims.end(),
-                      std::back_inserter(dims),
-                      [&](auto&& d) -> std::size_t {
-                          if(d.has_dim_value())
-                          {
-                              if(static_cast<int>(d.dim_value()) <= 0)
-                                  return batch_size;
-                              return d.dim_value();
-                          }
-                          return batch_size;
-                      });
-
-      std::cout << ", shape = {";
-      for (auto d : dims)
-      {
-        std::cout << d << "\t";
-      }
-      std::cout << "}" << std::endl;
-    }
-    std::cout << std::endl;
-
-    std::cout << "Outputs:";
-    for (auto& output: node_outputs)
-    {
-      std::cout << "\t" << output->Name();
-
-      std::size_t batch_size = 1;
-      std::vector<std::size_t> dims;
-      auto tensor_shape = output->Shape();
-      if (tensor_shape == nullptr)
-        continue;
-      auto&& tensor_dims = tensor_shape->dim();;
-      std::transform(tensor_dims.begin(),
-                      tensor_dims.end(),
-                      std::back_inserter(dims),
-                      [&](auto&& d) -> std::size_t {
-                          if(d.has_dim_value())
-                          {
-                              if(static_cast<int>(d.dim_value()) <= 0)
-                                  return batch_size;
-                              return d.dim_value();
-                          }
-                          return batch_size;
-                      });
-
-      std::cout << ", shape = {";
-      for (auto d : dims)
-      {
-        std::cout << d << "\t";
-      }
-      std::cout << "}" << std::endl;
-    }
-    std::cout << std::endl;
-  }
-  std::cout << std::endl;
 
   std::vector<NodeIndex> unsupported_nodes_idx;
   for (const auto& node_idx : graph_viewer.GetNodesInTopologicalOrder()) {
@@ -599,10 +519,10 @@ GetPartitionedSubgraphs(const std::vector<NodeIndex>& topological_order, const s
 }
 
 static void GetInputsOutputsOfSubgraph(const GraphViewer& graph_viewer,
-                                      const std::vector<NodeIndex>& nodes,
-                                      const std::unordered_set<std::string>& mgx_required_initializers,
-                                      /*output*/ std::vector<std::string>& nodes_inputs,
-                                      /*output*/ std::vector<std::string>& nodes_outputs) {
+                                       const std::vector<NodeIndex>& nodes,
+                                       const std::unordered_set<std::string>& mgx_required_initializers,
+                                       std::vector<std::string>& nodes_inputs,
+                                       std::vector<std::string>& nodes_outputs) {
   std::unordered_set<std::string> input_args;
   std::vector<std::string> ordered_input_args;
   std::unordered_set<std::string> output_args;
