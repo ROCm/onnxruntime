@@ -489,12 +489,64 @@ GetUnsupportedNodeIndices(const GraphViewer& graph_viewer, /*out*/ std::unordere
     for (auto& input : node_inputs)
     {
       std::cout << "\t" << input->Name();
+      std::size_t batch_size = 1;
+      std::vector<std::size_t> dims;
+      auto tensor_shape = input->Shape();
+      if (tensor_shape == nullptr)
+        continue;
+      auto&& tensor_dims = tensor_shape->dim();;
+      std::transform(tensor_dims.begin(),
+                      tensor_dims.end(),
+                      std::back_inserter(dims),
+                      [&](auto&& d) -> std::size_t {
+                          if(d.has_dim_value())
+                          {
+                              if(static_cast<int>(d.dim_value()) <= 0)
+                                  return batch_size;
+                              return d.dim_value();
+                          }
+                          return batch_size;
+                      });
+
+      std::cout << ", shape = {";
+      for (auto d : dims)
+      {
+        std::cout << d << "\t";
+      }
+      std::cout << "}" << std::endl;
     }
     std::cout << std::endl;
+
     std::cout << "Outputs:";
     for (auto& output: node_outputs)
     {
       std::cout << "\t" << output->Name();
+
+      std::size_t batch_size = 1;
+      std::vector<std::size_t> dims;
+      auto tensor_shape = output->Shape();
+      if (tensor_shape == nullptr)
+        continue;
+      auto&& tensor_dims = tensor_shape->dim();;
+      std::transform(tensor_dims.begin(),
+                      tensor_dims.end(),
+                      std::back_inserter(dims),
+                      [&](auto&& d) -> std::size_t {
+                          if(d.has_dim_value())
+                          {
+                              if(static_cast<int>(d.dim_value()) <= 0)
+                                  return batch_size;
+                              return d.dim_value();
+                          }
+                          return batch_size;
+                      });
+
+      std::cout << ", shape = {";
+      for (auto d : dims)
+      {
+        std::cout << d << "\t";
+      }
+      std::cout << "}" << std::endl;
     }
     std::cout << std::endl;
   }
@@ -719,7 +771,7 @@ MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
   std::string string_buf;
   model_proto.SerializeToString(&string_buf);
 
-  // Debugging purpose, wrote model as an onnx file
+  // // Debugging purpose, wrote model as an onnx file
   std::ofstream ort_tmp_file("ort_getcapacity.onnx", std::ofstream::binary);
   ort_tmp_file.write(string_buf.c_str(), string_buf.size());
   ort_tmp_file.close();
@@ -857,9 +909,9 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
     model_proto.SerializeToString(&string_buf);
 
     // Debugging purpose, write the model out as a binary file
-    std::ofstream ort_tmp_file("ort_compile.onnx", std::ofstream::binary);
-    ort_tmp_file.write(string_buf.c_str(), string_buf.size());
-    ort_tmp_file.close();
+    // std::ofstream ort_tmp_file("ort_compile.onnx", std::ofstream::binary);
+    // ort_tmp_file.write(string_buf.c_str(), string_buf.size());
+    // ort_tmp_file.close();
 
     // by parsing the model_proto, create a program corresponding to
     // the input fused_node
