@@ -90,13 +90,13 @@ MiGraphXExecutionProvider::MiGraphXExecutionProvider(const MiGraphXExecutionProv
   hipSetDevice(info.device_id);
 
   DeviceAllocatorRegistrationInfo default_memory_info(
-      {OrtMemTypeDefault, [](int id) { return onnxruntime::make_unique<HIPAllocator>(id, TRT); }, std::numeric_limits<size_t>::max()});
+      {OrtMemTypeDefault, [](int id) { return onnxruntime::make_unique<HIPAllocator>(id, MIGRAPHX); }, std::numeric_limits<size_t>::max()});
   allocator_ = CreateAllocator(default_memory_info, device_id_);
   InsertAllocator(allocator_);
 
 
   DeviceAllocatorRegistrationInfo pinned_memory_info(
-      {OrtMemTypeCPUOutput, [](int) { return onnxruntime::make_unique<HIPPinnedAllocator>(0, TRT_PINNED); }, std::numeric_limits<size_t>::max()});
+      {OrtMemTypeCPUOutput, [](int) { return onnxruntime::make_unique<HIPPinnedAllocator>(0, MIGRAPHX_PINNED); }, std::numeric_limits<size_t>::max()});
   InsertAllocator(CreateAllocator(pinned_memory_info, device_id_));
 
 
@@ -529,7 +529,7 @@ static void GetInputsOutputsOfSubgraph(const GraphViewer& graph_viewer,
   std::unordered_set<std::string> external_output_args;
 
   for (const auto& node_idx : nodes) {
-    const auto& node = graph_viewer.GetNode(node_idx);
+    const auto& node = graph_viewer.GetNode(node_idx);  
 
     // Collect all inputs and outputs
     node->ForEachDef(

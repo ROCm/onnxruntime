@@ -142,6 +142,7 @@ namespace onnxruntime {
 constexpr const char* CPU = "Cpu";
 constexpr const char* CUDA = "Cuda";
 constexpr const char* CUDA_PINNED = "CudaPinned";
+constexpr const char* MIGRAPHX = "MiGraphX";
 constexpr const char* MIGRAPHX_PINNED = "MiGraphXPinned";
 constexpr const char* TRT = "Tensorrt";
 constexpr const char* TRT_PINNED = "TensorrtPinned";
