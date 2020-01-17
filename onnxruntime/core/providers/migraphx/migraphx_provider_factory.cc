@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License
+
 #include "core/providers/migraphx/migraphx_provider_factory.h"
 #include <atomic>
 #include "migraphx_execution_provider.h"

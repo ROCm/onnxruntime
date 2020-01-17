@@ -1,4 +1,4 @@
-// Copyright(C) 2019 Intel Corporation
+// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License
 
 #include "core/common/common.h"
@@ -80,8 +80,6 @@ std::shared_ptr<KernelRegistry> MiGraphXExecutionProvider::GetKernelRegistry() c
   static std::shared_ptr<KernelRegistry> kernel_registry = onnxruntime::GetMiGraphXKernelRegistry();
   return kernel_registry;
 }
-
-constexpr const char* MIGRAPHX = "MiGraphX";
 
 MiGraphXExecutionProvider::MiGraphXExecutionProvider(const MiGraphXExecutionProviderInfo& info)
     : IExecutionProvider{onnxruntime::kMiGraphXExecutionProvider} {
@@ -398,6 +396,49 @@ static bool IsUnsupportedOpMode(const Node* node, const onnxruntime::GraphViewer
     const auto shape_arg = node->InputDefs()[0];
     return initializers.find(shape_arg->Name()) == initializers.end();
   }
+  else if (optype == "ConvInteger") {
+    if (node->InputDefs()[0]->Shape()->dim_size() != 4)
+    {
+      return true;
+    }
+
+    // migraphx can handle only two inputs
+    if (node->InputDefs().size() != 2)
+    {
+      return true;
+    }
+
+    // only support int8 type
+    const auto& input_type = node->InputDefs()[0]->TypeAsProto();
+    if (input_type == nullptr)
+    {
+      return true;
+    }
+
+    if (input_type->tensor_type().elem_type() != ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT8)
+    {
+      return true;
+    }
+  }
+  else if (optype == "MatMulInteger") {
+    // migraphx can handle only two inputs
+    if (node->InputDefs().size() != 2)
+    {
+      return true;
+    }
+
+    // only support int8 type
+    const auto& input_type = node->InputDefs()[0]->TypeAsProto();
+    if (input_type == nullptr)
+    {
+      return true;
+    }
+
+    if (input_type->tensor_type().elem_type() != ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT8)
+    {
+      return true;
+    }
+  }
 
   //Op doesn't fall into known any of unsupported modes.
   return false;
@@ -414,7 +455,7 @@ static bool IsNodeSupported(const std::set<std::string>& op_set,
   // 1. Check input and output data types are supported.
   // 2. Check op_type is implemented in migraphx
   // 3. Check the mode is implemented in migraphx
-  // if 3. is failed, call the constant folding capability in migraphx
+  // if 3. failed, call the constant folding capability in migraphx
   // to see whether some input parameters can be calculated statically
 
   // check data type
@@ -656,7 +697,7 @@ MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
 
   // migraphx now can only support on output. if there are multiple
   // outputs, we cannot support this model
-  std::size_t num_outputs = model_proto.graph().output_size();
+  std::size_t num_outputs = model_proto.graph().output().size();
   if (num_outputs > 1)
   {
       LOGS_DEFAULT(WARNING) << "MIGraphX can support only one output, but input model";
