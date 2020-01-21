@@ -504,14 +504,22 @@ static void AppendNodesToSubGraph(const std::vector<NodeIndex>& nodes,
   result.push_back(onnxruntime::make_unique<ComputeCapability>(std::move(sub_graph)));
 }
 
-static std::set<std::string> GetMiGraphXSupportedOps() {
-  std::set<std::string> mgx_supported_ops = migraphx::get_supported_ops();
-  return mgx_supported_ops;
-}
+//static std::set<std::string> GetMiGraphXSupportedOps() {
+//  std::set<std::string> mgx_supported_ops = migraphx::get_supported_ops();
+//  return mgx_supported_ops;
+//}
 
 static std::vector<NodeIndex>
 GetUnsupportedNodeIndices(const GraphViewer& graph_viewer, /*out*/ std::unordered_set<std::string>& mgx_required_initializers) {
-  const auto mgx_supported_ops = GetMiGraphXSupportedOps();
+  // const auto mgx_supported_ops = GetMiGraphXSupportedOps();
+  static std::set<std::string> mgx_supported_ops = {"Abs", "Acos", "Add", "ArgMax", "ArgMin", "Asin", "Atan",
+      "AveragePool", "BatchNormalization", "Cast", "Ceil", "Clip", "Concat", "Constant", "ConstantFill",
+      "ConstantOfShape", "Conv", "Cos", "Cosh", "Div", "Dropout", "Elu", "Erf", "Exp", "Expand", "Flatten", "Floor",
+      "GRU", "Gather", "Gemm", "GlobalAveragePool", "GlobalMaxPool", "Identity", "ImageScaler", "InstanceNormalization",
+  "LRN", "LSTM", "LeakyRelu", "Log", "LogSoftmax", "MatMul", "Max", "MaxPool", "Min", "Mul", "Pad", "Pow", "RNN",
+  "ReduceL1", "ReduceL2", "ReduceLogSum", "ReduceLogSumExp", "ReduceMax", "ReduceMean", "ReduceMin", "ReduceProd",
+  "ReduceSum", "ReduceSumSquare", "Relu", "Reshape", "Round", "Shape", "Sigmoid", "Sign", "Sin", "Sinh", "Slice",
+  "Softmax", "Sqrt", "Squeeze", "Sub", "Sum", "Tan", "Tanh", "Transpose", "Unsqueeze"};
 
   std::vector<NodeIndex> unsupported_nodes_idx;
   for (const auto& node_idx : graph_viewer.GetNodesInTopologicalOrder()) {
