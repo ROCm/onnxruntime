@@ -243,6 +243,7 @@ if (onnxruntime_USE_MIGRAPHX)
         ${migraphx_LIBRARIES}/libmigraphx_device.so.0
         ${migraphx_LIBRARIES}/libmigraphx_cpu.so.0
         ${migraphx_LIBRARIES}/libmigraphx_tf.so.0
+        ${migraphx_LIBRARIES}/libmigraphx_c.so.1
         $<TARGET_FILE_DIR:${test_data_target}>/onnxruntime/capi/
   )
 endif()

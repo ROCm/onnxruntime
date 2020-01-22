@@ -466,17 +466,14 @@ if (onnxruntime_USE_MIGRAPHX)
   message("AMD_MIGRAPHX_DEPS: " ${AMD_MIGRAPHX_DEPS})
   message("ONNX_ML = " ${ONNX_ML})
 
-#  include_directories(${PROJECT_SOURCE_DIR}/external/protobuf)
-#  include_directories(${ONNXRUNTIME_ROOT}/../cmake/external/onnx)
   include_directories(/opt/rocm/hsa/include)
-  include_directories(${AMD_MIGRAPHX_HOME}/src/include
-                      ${AMD_MIGRAPHX_HOME}/src/targets/gpu/include
-                      ${AMD_MIGRAPHX_HOME}/src/targets/cpu/include)
+  include_directories(/opt/rocm/hip/include)
+  include_directories(${AMD_MIGRAPHX_HOME}/src/api/include)
 
   link_directories(${AMD_MIGRAPHX_BUILD}/lib
                    ${AMD_MIGRAPHX_DEPS}/lib)
 
-  set(migraphx_libs migraphx migraphx_cpu migraphx_device migraphx_gpu migraphx_onnx hip_hcc MIOpen)
+  set(migraphx_libs migraphx migraphx_cpu migraphx_device migraphx_gpu migraphx_onnx migraphx_c hip_hcc MIOpen)
 
   file(GLOB_RECURSE onnxruntime_providers_migraphx_cc_srcs CONFIGURE_DEPENDS
     "${ONNXRUNTIME_ROOT}/core/providers/migraphx/*.h"
