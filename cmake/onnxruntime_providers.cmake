@@ -473,7 +473,7 @@ if (onnxruntime_USE_MIGRAPHX)
   link_directories(${AMD_MIGRAPHX_BUILD}/lib
                    ${AMD_MIGRAPHX_DEPS}/lib)
 
-  set(migraphx_libs migraphx migraphx_cpu migraphx_device migraphx_gpu migraphx_onnx migraphx_c hip_hcc MIOpen)
+  set(migraphx_libs migraphx_c)
 
   file(GLOB_RECURSE onnxruntime_providers_migraphx_cc_srcs CONFIGURE_DEPENDS
     "${ONNXRUNTIME_ROOT}/core/providers/migraphx/*.h"

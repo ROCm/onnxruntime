@@ -237,12 +237,6 @@ if (onnxruntime_USE_MIGRAPHX)
   add_custom_command(
     TARGET onnxruntime_pybind11_state POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy
-        ${migraphx_LIBRARIES}/libmigraphx.so.0
-        ${migraphx_LIBRARIES}/libmigraphx_onnx.so.0
-        ${migraphx_LIBRARIES}/libmigraphx_gpu.so.0
-        ${migraphx_LIBRARIES}/libmigraphx_device.so.0
-        ${migraphx_LIBRARIES}/libmigraphx_cpu.so.0
-        ${migraphx_LIBRARIES}/libmigraphx_tf.so.0
         ${migraphx_LIBRARIES}/libmigraphx_c.so.1
         $<TARGET_FILE_DIR:${test_data_target}>/onnxruntime/capi/
   )

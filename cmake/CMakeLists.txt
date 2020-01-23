@@ -355,7 +355,7 @@ set(onnxruntime_EXTERNAL_DEPENDENCIES onnx_proto re2)
 
 # MiGraphX
 if (onnxruntime_USE_MIGRAPHX)
-  list(APPEND onnxruntime_EXTERNAL_LIBRARIES migraphx migraphx_cpu migraphx_device migraphx_gpu migraphx_c hip_hcc MIOpen)
+  list(APPEND onnxruntime_EXTERNAL_LIBRARIES migraphx_c)
 endif()
 
 # ACL
