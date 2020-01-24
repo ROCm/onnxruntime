@@ -471,9 +471,9 @@ if (onnxruntime_USE_MIGRAPHX)
   include_directories(${AMD_MIGRAPHX_HOME}/src/api/include)
 
   link_directories(${AMD_MIGRAPHX_BUILD}/lib
-                   ${AMD_MIGRAPHX_DEPS}/lib)
+                   /opt/rocm/lib)
 
-  set(migraphx_libs migraphx_c)
+  set(migraphx_libs migraphx_c hip_hcc)
 
   file(GLOB_RECURSE onnxruntime_providers_migraphx_cc_srcs CONFIGURE_DEPENDS
     "${ONNXRUNTIME_ROOT}/core/providers/migraphx/*.h"
@@ -483,13 +483,12 @@ if (onnxruntime_USE_MIGRAPHX)
   source_group(TREE ${ONNXRUNTIME_ROOT}/core FILES ${onnxruntime_providers_migraphx_cc_srcs})
   hip_add_library(onnxruntime_providers_migraphx ${onnxruntime_providers_migraphx_cc_srcs})
   target_link_libraries(onnxruntime_providers_migraphx ${migraphx_libs})
-  onnxruntime_add_include_to_target(onnxruntime_providers_migraphx onnxruntime_common onnxruntime_framework onnx onnx_proto protobuf::libprotobuf)
+  onnxruntime_add_include_to_target(onnxruntime_providers_migraphx onnxruntime_common onnxruntime_framework onnx)
   add_dependencies(onnxruntime_providers_migraphx ${onnxruntime_EXTERNAL_DEPENDENCIES})
-  target_include_directories(onnxruntime_providers_migraphx PRIVATE ${ONNXRUNTIME_ROOT} ${AMD_MIGRAPHX_DEPS}/include)
+  target_include_directories(onnxruntime_providers_migraphx PRIVATE ${ONNXRUNTIME_ROOT})
   install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/migraphx  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
   set_target_properties(onnxruntime_providers_migraphx PROPERTIES LINKER_LANGUAGE HIP)
   set_target_properties(onnxruntime_providers_migraphx PROPERTIES FOLDER "ONNXRuntime")
-  target_compile_definitions(onnxruntime_providers_migraphx PRIVATE ONNXIFI_BUILD_LIBRARY=1)
   target_compile_options(onnxruntime_providers_migraphx PRIVATE -Wno-error=sign-compare)
 endif()
 

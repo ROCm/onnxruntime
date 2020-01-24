@@ -504,12 +504,13 @@ GetUnsupportedNodeIndices(const GraphViewer& graph_viewer, /*out*/ std::unordere
   // const auto mgx_supported_ops = GetMiGraphXSupportedOps();
   static std::set<std::string> mgx_supported_ops = {"Abs", "Acos", "Add", "ArgMax", "ArgMin", "Asin", "Atan",
       "AveragePool", "BatchNormalization", "Cast", "Ceil", "Clip", "Concat", "Constant", "ConstantFill",
-      "ConstantOfShape", "Conv", "Cos", "Cosh", "Div", "Dropout", "Elu", "Erf", "Exp", "Expand", "Flatten", "Floor",
-      "GRU", "Gather", "Gemm", "GlobalAveragePool", "GlobalMaxPool", "Identity", "ImageScaler", "InstanceNormalization",
-      "LRN", "LSTM", "LeakyRelu", "Log", "LogSoftmax", "MatMul", "Max", "MaxPool", "Min", "Mul", "Pad", "Pow", "RNN",
-      "ReduceL1", "ReduceL2", "ReduceLogSum", "ReduceLogSumExp", "ReduceMax", "ReduceMean", "ReduceMin", "ReduceProd",
-      "ReduceSum", "ReduceSumSquare", "Relu", "Reshape", "Round", "Shape", "Sigmoid", "Sign", "Sin", "Sinh", "Slice",
-      "Softmax", "Sqrt", "Squeeze", "Sub", "Sum", "Tan", "Tanh", "Transpose", "Unsqueeze"};
+      "ConstantOfShape", "Conv", "Cos", "Cosh", "Div", "Dropout", "Elu", "Erf", "Exp", "Expand", 
+      "Flatten", "Floor", "GRU", "Gather", "Gemm", "GlobalAveragePool", "GlobalMaxPool", "Identity", "ImageScaler", 
+      "InstanceNormalization", "LRN", "LSTM", "LeakyRelu", "Log", "LogSoftmax", "MatMul", "Max", "MaxPool", "Min", 
+      "Mul", "Pad", "Pow", "RNN", "ReduceL1", "ReduceL2", "ReduceLogSum", "ReduceLogSumExp", "ReduceMax", 
+      "ReduceMean", "ReduceMin", "ReduceProd", "ReduceSum", "ReduceSumSquare", "Relu", "Reshape", "Round", "Shape", 
+      "Sigmoid", "Sign", "Sin", "Sinh", "Slice", "Softmax", "Sqrt", "Squeeze", "Sub", "Sum", "Tan", "Tanh", 
+      "Transpose", "Unsqueeze"};
 
   std::vector<NodeIndex> unsupported_nodes_idx;
   for (const auto& node_idx : graph_viewer.GetNodesInTopologicalOrder()) {
@@ -730,16 +731,6 @@ MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
   std::string onnx_string_buffer;
   model_proto.SerializeToString(&onnx_string_buffer);
 
-  // // Debugging purpose, wrote model as an onnx file
-  // std::ofstream ort_tmp_file("ort_getcapacity.onnx", std::ofstream::binary);
-  // ort_tmp_file.write(onnx_string_buffer.c_str(), onnx_string_buffer.size());
-  // ort_tmp_file.close();
-
-  // may not be needed since it can return false in many scenarios
-  // migraphx::program prog = migraphx::parse_onnx_buffer(onnx_string_buffer.data(), onnx_string_buffer.size());
-  // std::cout << "In get_capacity, prog = " << std::endl;
-  // prog.printout();
-
   // This is a list of initializers that migraphx considers as constants. 
   // Example weights, reshape shape etc.
   std::unordered_set<std::string> mgx_required_initializers;
@@ -825,7 +816,7 @@ static ONNX_NAMESPACE::ModelProto GetModelProtoFromFusedNode(const onnxruntime::
 
 Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>& fused_nodes,
                                         std::vector<NodeComputeInfo>& node_compute_funcs) {
-  std::size_t fused_node_index = 0;
+  // std::size_t fused_node_index = 0;
   for (const auto& fused_node : fused_nodes) {
     // map parameter input name to index
     std::unordered_map<std::string, std::size_t> input_name_index;
@@ -854,14 +845,14 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
 
     // Debugging purpose, write the model out as a binary file
     // std::ofstream ort_tmp_file("ort_compile.onnx", std::ofstream::binary);
-    // ort_tmp_file.write(string_buf.c_str(), string_buf.size());
+    // ort_tmp_file.write(onnx_string_buffer.c_str(), onnx_string_buffer.size());
     // ort_tmp_file.close();
 
     // by parsing the model_proto, create a program corresponding to
     // the input fused_node
     migraphx::program prog = migraphx::parse_onnx_buffer(onnx_string_buffer.data(), onnx_string_buffer.size());
-    std::cout << "In compile, prog_" << fused_node_index++ << " = " << std::endl;
-    prog.printout();
+    // std::cout << "In compile, prog_" << fused_node_index++ << " = " << std::endl;
+    // prog.print();
 
     // compile the program
     prog.compile(t_);
@@ -937,16 +928,13 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
             LOGS_DEFAULT(FATAL) << "MIGraphX: param type mismatch";
           }
           m.add(name, migraphx::argument(param_shapes[name], const_cast<void*>(ort.GetTensorData<void>(input_tensor))));
-          //m[x.first] = migraphx::argument(x.second, const_cast<void*>(ort.GetTensorData<void>(input_tensor)));
-
-          //auto arg = migraphx::gpu::from_gpu(m[x.first]);
         }
 
         if (map_output_index.count(param_index) > 0)
         {
           std::size_t output_index = map_output_index.begin()->second;
-          migraphx::shape res_shape = prog.get_shape();
-          auto lens = res_shape.lengths();
+          migraphx::shapes res_shapes = prog.get_output_shapes();
+          auto lens = res_shapes[0].lengths();
           std::vector<int64_t> ort_shape(lens.begin(), lens.end());
           OrtValue* output_tensor = ort.KernelContext_GetOutput(context, output_index, ort_shape.data(), ort_shape.size());
           void* output_data = ort.GetTensorMutableData<void>(output_tensor);
@@ -958,7 +946,7 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
       {
         // lock to avoid race condition
         std::lock_guard<OrtMutex> lock(*(mgx_state->mgx_mu_ptr));
-        auto gpu_res = prog.eval(m);
+        auto prog_outputs = prog.eval(m);
         hipDeviceSynchronize();
 
         // there is no output in parameter, we need to explicitly copy
@@ -966,6 +954,7 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
         auto&& param_names = param_shapes.names();
         if (std::find(param_names.begin(), param_names.end(), std::string("output")) == param_names.end())
         {
+          auto gpu_res = prog_outputs[0];
           migraphx::shape res_shape = gpu_res.get_shape();
           auto res_lens = res_shape.lengths();
           std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
