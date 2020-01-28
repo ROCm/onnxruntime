@@ -736,19 +736,6 @@ MiGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
   std::unordered_set<std::string> mgx_required_initializers;
   const auto unsupported_nodes = GetUnsupportedNodeIndices(graph_viewer, mgx_required_initializers);
 
-  if (unsupported_nodes.size())
-  {
-   std::cout << "Unsupported nodes from onnxruntime check====================: " << std::endl;
-   for (auto& node_index : unsupported_nodes)
-   {
-     const auto& node = graph_viewer.GetNode(node_index);
-     const auto& optype = node->OpType();
-
-     std::cout << "Node " << node_index << ", name = " << node->Name() << ", optype = " << optype << std::endl;
-   }
-   std::cout << "End of unsupported nodes from onnxruntime check============" << std::endl;
-  }
-
   //If all ops are supported, no partitioning is required. Short-circuit and avoid splitting.
   if (unsupported_nodes.empty()) {
     std::vector<std::string> inputs;
@@ -843,16 +830,9 @@ Status MiGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
     std::string onnx_string_buffer;
     model_proto.SerializeToString(&onnx_string_buffer);
 
-    // Debugging purpose, write the model out as a binary file
-    // std::ofstream ort_tmp_file("ort_compile.onnx", std::ofstream::binary);
-    // ort_tmp_file.write(onnx_string_buffer.c_str(), onnx_string_buffer.size());
-    // ort_tmp_file.close();
-
     // by parsing the model_proto, create a program corresponding to
     // the input fused_node
     migraphx::program prog = migraphx::parse_onnx_buffer(onnx_string_buffer.data(), onnx_string_buffer.size());
-    // std::cout << "In compile, prog_" << fused_node_index++ << " = " << std::endl;
-    // prog.print();
 
     // compile the program
     prog.compile(t_);
