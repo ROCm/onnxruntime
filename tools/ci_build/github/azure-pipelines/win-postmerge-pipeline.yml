@@ -66,7 +66,15 @@ jobs:
       workingFolder: '$(Build.BinariesDirectory)\$(BuildConfig)'
       createLogFile: true
 
-  
+ 
+
+  - task: BatchScript@1
+    displayName: 'Setup VS2019 env vars'
+    inputs:
+      filename: 'C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvarsall.bat'
+      arguments: $(buildArch)
+      modifyEnvironment: true
+ 
   - script: |
      set PATH=$(Build.BinariesDirectory)\$(BuildConfig)\$(BuildConfig);%PATH%
      python $(Build.SourcesDirectory)\tools\ci_build\build.py --config $(BuildConfig) --build_dir $(Build.BinariesDirectory) --skip_submodule_sync --build_shared_lib --update --cmake_generator "Visual Studio 16 2019" --enable_onnx_tests --use_vstest --test
