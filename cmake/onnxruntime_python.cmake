@@ -40,8 +40,10 @@ file(GLOB onnxruntime_pybind_srcs CONFIGURE_DEPENDS
   ${onnxruntime_pybind_srcs_pattern}
   )
 
-#TODO(): enable cuda and test it
 add_library(onnxruntime_pybind11_state MODULE ${onnxruntime_pybind_srcs})
+if(MSVC)
+  target_compile_options(onnxruntime_pybind11_state PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:SHELL:--compiler-options /utf-8>" "$<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:/utf-8>")
+endif()
 if(HAS_CAST_FUNCTION_TYPE)
   target_compile_options(onnxruntime_pybind11_state PRIVATE "-Wno-cast-function-type")
 endif()
@@ -150,12 +152,7 @@ file(GLOB onnxruntime_python_datasets_data CONFIGURE_DEPENDS
     "${ONNXRUNTIME_ROOT}/python/datasets/*.onnx"
 )
 
-# adjust based on what target/s onnxruntime_unittests.cmake created
-if (SingleUnitTestProject)
-  set(test_data_target onnxruntime_test_all)
-else()
-  set(test_data_target onnxruntime_test_ir)
-endif()
+set(test_data_target onnxruntime_test_all)
 
 add_custom_command(
   TARGET onnxruntime_pybind11_state POST_BUILD

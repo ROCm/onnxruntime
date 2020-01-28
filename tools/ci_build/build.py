@@ -118,7 +118,7 @@ Use the individual flags to only run the specified stages.
     parser.add_argument("--cmake_path", default="cmake", help="Path to the CMake program.")
     parser.add_argument("--ctest_path", default="ctest", help="Path to the CTest program.")
     parser.add_argument("--skip_submodule_sync", action='store_true', help="Don't do a 'git submodule update'. Makes the Update phase faster.")
-
+    parser.add_argument("--use_vstest", action='store_true', help="Use use_vstest for running unitests.")
     parser.add_argument("--use_jemalloc", action='store_true', help="Use jemalloc.")
     parser.add_argument("--use_mimalloc", action='store_true', help="Use mimalloc.")
     parser.add_argument("--use_openblas", action='store_true', help="Build with OpenBLAS.")
@@ -525,7 +525,7 @@ def adb_push(source_dir, src, dest, **kwargs):
 def adb_shell(*args, **kwargs):
     return run_subprocess(['adb', 'shell', *args], **kwargs)
 
-def run_onnxruntime_tests(args, source_dir, ctest_path, build_dir, configs, enable_python_tests, enable_tvm = False, enable_tensorrt = False, enable_ngraph = False, enable_nnapi=False):
+def run_onnxruntime_tests(args, source_dir, ctest_path, build_dir, configs, enable_python_tests, enable_tvm = False, enable_tensorrt = False):
     for config in configs:
         log.info("Running tests for %s configuration", config)
         cwd = get_config_build_dir(build_dir, config)
@@ -548,7 +548,18 @@ def run_onnxruntime_tests(args, source_dir, ctest_path, build_dir, configs, enab
           dll_path = os.path.join(args.tensorrt_home, 'lib')
         else:
           dll_path = None
-        run_subprocess([ctest_path, "--build-config", config, "--verbose"],
+        if ctest_path is None:
+            #Get the "Google Test Adapter" for vstest
+            if not os.path.exists(os.path.join(cwd,'googletestadapter.0.17.1')):
+                run_subprocess(['nuget.exe', 'restore', os.path.join(source_dir, 'packages.config'), '-ConfigFile',os.path.join(source_dir, 'NuGet.config'),'-PackagesDirectory',cwd])
+            cwd2=os.path.join(cwd,config)
+            executables = ['onnxruntime_test_all.exe']
+            if args.build_shared_lib:
+                executables.append('onnxruntime_shared_lib_test.exe')
+            run_subprocess(['vstest.console.exe', '--parallel', '--TestAdapterPath:..\\googletestadapter.0.17.1\\build\\_common', '/Logger:trx','/Enablecodecoverage','/Platform:x64',"/Settings:%s" % os.path.join(source_dir, 'cmake\\codeconv.runsettings')] + executables,
+                       cwd=cwd2, dll_path=dll_path)
+        else:
+            run_subprocess([ctest_path, "--build-config", config, "--verbose"],
                        cwd=cwd, dll_path=dll_path)
 
         if enable_python_tests:
@@ -840,7 +851,7 @@ def main():
 
     # setup paths and directories
     cmake_path = resolve_executable_path(args.cmake_path)
-    ctest_path = resolve_executable_path(args.ctest_path)
+    ctest_path = None if args.use_vstest else resolve_executable_path(args.ctest_path)
     build_dir = args.build_dir
     script_dir = os.path.realpath(os.path.dirname(__file__))
     source_dir = os.path.normpath(os.path.join(script_dir, "..", ".."))
@@ -924,8 +935,7 @@ def main():
     if args.test :
         run_onnxruntime_tests(args, source_dir, ctest_path, build_dir, configs,
                               args.enable_pybind and not args.skip_onnx_tests,
-                              args.use_tvm, args.use_tensorrt, args.use_ngraph,
-                              args.use_dnnlibrary)
+                              args.use_tvm, args.use_tensorrt)
         # run the onnx model tests if requested explicitly.
         if args.enable_onnx_tests and not args.skip_onnx_tests:
             # directory from ONNX submodule with ONNX test data

@@ -75,7 +75,6 @@ option(onnxruntime_USE_BRAINSLICE "Build with BrainSlice" OFF)
 option(onnxruntime_USE_TENSORRT "Build with TensorRT support" OFF)
 option(onnxruntime_ENABLE_LTO "Enable link time optimization" OFF)
 option(onnxruntime_CROSS_COMPILING "Cross compiling onnx runtime" OFF)
-option(onnxruntime_BUILD_SERVER "Build ONNX Runtime Server" OFF)
 option(onnxruntime_USE_FULL_PROTOBUF "Use full protobuf" OFF)
 option(onnxruntime_DISABLE_CONTRIB_OPS "Disable contrib ops" OFF)
 option(tensorflow_C_PACKAGE_PATH "Path to tensorflow C package installation dir")
@@ -264,6 +263,8 @@ add_subdirectory(${PROJECT_SOURCE_DIR}/external/nsync EXCLUDE_FROM_ALL)
 # External dependencies
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/external)
 
+#protobuf begin
+
 #Here we support two build mode:
 #1. if ONNX_CUSTOM_PROTOC_EXECUTABLE is set, build Protobuf from source, except protoc.exe. This mode is mainly
 #   for cross-compiling
@@ -280,10 +281,10 @@ set_target_properties(libprotobuf PROPERTIES FOLDER "External/Protobuf")
 set_target_properties(libprotobuf-lite PROPERTIES FOLDER "External/Protobuf")
 if(TARGET libprotoc)
   set_target_properties(libprotoc PROPERTIES FOLDER "External/Protobuf")
-  add_executable(protobuf::protoc ALIAS protoc)
 endif()
 if(TARGET protoc)
   set_target_properties(protoc PROPERTIES FOLDER "External/Protobuf")
+  add_executable(protobuf::protoc ALIAS protoc)
 endif()
 if (onnxruntime_USE_FULL_PROTOBUF)
   add_library(protobuf::libprotobuf ALIAS libprotobuf)
@@ -296,6 +297,8 @@ if(UNIX AND onnxruntime_ENABLE_LTO)
   target_link_options(protoc PRIVATE "-Wl,--no-as-needed")
 endif()
 include(protobuf_function.cmake)
+#protobuf end
+
 
 if (onnxruntime_DISABLE_CONTRIB_OPS)
   add_definitions(-DDISABLE_CONTRIB_OPS)
@@ -316,13 +319,6 @@ endif()
 
 if (onnxruntime_USE_OPENBLAS AND onnxruntime_USE_EIGEN_FOR_BLAS)
   message(FATAL_ERROR "use one of onnxruntime_USE_OPENBLAS, onnxruntime_USE_EIGEN_FOR_BLAS")
-endif()
-
-# if ON put all the unit tests in a single project so that code coverage is more comprehensive.
-# defaulting to that and most likely removing option to have separate unit test projects in the near future.
-set(SingleUnitTestProject ON)
-if (onnxruntime_SPLIT_UNIT_TEST_PROJECTS)
-  set(SingleUnitTestProject OFF)
 endif()
 
 get_filename_component(ONNXRUNTIME_ROOT "${ONNXRUNTIME_ROOT}" ABSOLUTE)
@@ -716,20 +712,22 @@ endif()
 #names in this var must match the directory names under onnxruntime/core/providers
 set(ONNXRUNTIME_PROVIDER_NAMES cpu)
 
-include(onnxruntime_common.cmake)
-include(onnxruntime_graph.cmake)
-include(onnxruntime_framework.cmake)
-include(onnxruntime_util.cmake)
-#The next file will define 'onnxruntime_libs' cmake var
-include(onnxruntime_providers.cmake)
-include(onnxruntime_optimizer.cmake)
-include(onnxruntime_session.cmake)
-include(onnxruntime_mlas.cmake)
+foreach(target_name onnxruntime_common onnxruntime_graph onnxruntime_framework onnxruntime_util onnxruntime_providers onnxruntime_optimizer onnxruntime_session onnxruntime_mlas)
+  include(${target_name}.cmake)
+  if (MSVC)
+    target_compile_options(${target_name} PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:SHELL:--compiler-options /utf-8>" "$<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:/utf-8>")
+  endif()
+endforeach()
+
 
 if(onnxruntime_USE_FEATURIZERS)
   add_definitions(-DML_FEATURIZERS)
   # Fetch and build featurizers
   include(external/featurizers.cmake)
+endif()
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Android")
+  list(APPEND onnxruntime_EXTERNAL_LIBRARIES log)
 endif()
 
 if(WIN32)
@@ -742,18 +740,12 @@ else()
   list(APPEND onnxruntime_EXTERNAL_LIBRARIES ${CMAKE_DL_LIBS} Threads::Threads)
 endif()
 
-if (CMAKE_SYSTEM_NAME STREQUAL "Android")
-  list(APPEND onnxruntime_EXTERNAL_LIBRARIES log)
-endif()
+
 
 #The following files may use the 'onnxruntime_libs' and 'onnxruntime_EXTERNAL_LIBRARIES' vars
 
 if (onnxruntime_BUILD_SHARED_LIB)
   include(onnxruntime.cmake)
-endif()
-
-if (onnxruntime_BUILD_SERVER)
-  include(onnxruntime_server.cmake)
 endif()
 
 if (onnxruntime_BUILD_JAVA)
