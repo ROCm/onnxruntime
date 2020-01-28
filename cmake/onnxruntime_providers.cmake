@@ -453,28 +453,15 @@ if (onnxruntime_USE_DML)
 endif()
 
 if (onnxruntime_USE_MIGRAPHX)
-  add_definitions(-D__HIP_PLATFORM_HCC__)
-  set(CMAKE_MODULE_PATH "/opt/rocm/hip/cmake" ${CMAKE_MODULE_PATH})
-  find_package(HIP)
+  # Add search paths for default rocm installation
+  list(APPEND CMAKE_PREFIX_PATH /opt/rocm/hcc /opt/rocm/hip /opt/rocm)
 
-  set(CMAKE_CXX_STANDARD 14)
+  find_package(hip)
+  find_package(migraphx PATHS ${AMD_MIGRAPHX_HOME})
+
   set(CMAKE_VERBOSE_MAKEFILE on)
 
-  message("ONNX Runtime root: " ${ONNXRUNTIME_ROOT})
-  message("source files: " ${onnxruntime_providers_migraphx_cc_srcs})
-  message("AMD_MIGRAPHX_HOME: " ${AMD_MIGRAPHX_HOME})
-  message("AMD_MIGRAPHX_DEPS: " ${AMD_MIGRAPHX_DEPS})
-  message("ONNX_ML = " ${ONNX_ML})
-
-  include_directories(/opt/rocm/hsa/include)
-  include_directories(/opt/rocm/hip/include)
-  include_directories(/opt/rocm/include)
-  include_directories(${AMD_MIGRAPHX_HOME}/src/api/include)
-
-  link_directories(${AMD_MIGRAPHX_BUILD}/lib
-                   /opt/rocm/lib)
-
-  set(migraphx_libs migraphx_c hip_hcc)
+  set(migraphx_libs migraphx::c hip::host)
 
   file(GLOB_RECURSE onnxruntime_providers_migraphx_cc_srcs CONFIGURE_DEPENDS
     "${ONNXRUNTIME_ROOT}/core/providers/migraphx/*.h"
@@ -482,15 +469,14 @@ if (onnxruntime_USE_MIGRAPHX)
   )
 
   source_group(TREE ${ONNXRUNTIME_ROOT}/core FILES ${onnxruntime_providers_migraphx_cc_srcs})
-  hip_add_library(onnxruntime_providers_migraphx ${onnxruntime_providers_migraphx_cc_srcs})
+  add_library(onnxruntime_providers_migraphx ${onnxruntime_providers_migraphx_cc_srcs})
   target_link_libraries(onnxruntime_providers_migraphx ${migraphx_libs})
-  onnxruntime_add_include_to_target(onnxruntime_providers_migraphx onnxruntime_common onnxruntime_framework onnx)
-  add_dependencies(onnxruntime_providers_migraphx ${onnxruntime_EXTERNAL_DEPENDENCIES})
-  target_include_directories(onnxruntime_providers_migraphx PRIVATE ${ONNXRUNTIME_ROOT})
-  install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/migraphx  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
-  set_target_properties(onnxruntime_providers_migraphx PROPERTIES LINKER_LANGUAGE HIP)
   set_target_properties(onnxruntime_providers_migraphx PROPERTIES FOLDER "ONNXRuntime")
   target_compile_options(onnxruntime_providers_migraphx PRIVATE -Wno-error=sign-compare)
+  target_include_directories(onnxruntime_providers_migraphx PRIVATE ${ONNXRUNTIME_ROOT})
+  onnxruntime_add_include_to_target(onnxruntime_providers_migraphx onnxruntime_common onnxruntime_framework onnx)
+  install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/migraphx  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
+  add_dependencies(onnxruntime_providers_migraphx ${onnxruntime_EXTERNAL_DEPENDENCIES})
 endif()
 
 if (onnxruntime_USE_ACL)

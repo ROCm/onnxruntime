@@ -353,11 +353,6 @@ endfunction()
 
 set(onnxruntime_EXTERNAL_DEPENDENCIES onnx_proto re2)
 
-# MiGraphX
-if (onnxruntime_USE_MIGRAPHX)
-  list(APPEND onnxruntime_EXTERNAL_LIBRARIES migraphx_c)
-endif()
-
 # ACL
 if (onnxruntime_USE_ACL)
   list(APPEND onnxruntime_EXTERNAL_LIBRARIES arm_compute acl arm_compute_graph arm_compute_core)
@@ -685,9 +680,6 @@ if (onnxruntime_USE_MIGRAPHX)
     message(FATAL_ERROR "MIGraphX does not support build in Windows!")
   endif()
   set(AMD_MIGRAPHX_HOME ${onnxruntime_MIGRAPHX_HOME})
-  set(AMD_MIGRAPHX_DEPS ${AMD_MIGRAPHX_HOME}/deps_rocm3.0)
-  set(AMD_MIGRAPHX_BUILD ${AMD_MIGRAPHX_HOME}/build_rocm3.0)
-  include(migraphx)
   add_definitions(-DUSE_MIGRAPHX=1)
 endif()
 
