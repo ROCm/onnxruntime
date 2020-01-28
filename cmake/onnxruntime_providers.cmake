@@ -459,8 +459,6 @@ if (onnxruntime_USE_MIGRAPHX)
   find_package(hip)
   find_package(migraphx PATHS ${AMD_MIGRAPHX_HOME})
 
-  set(CMAKE_VERBOSE_MAKEFILE on)
-
   set(migraphx_libs migraphx::c hip::host)
 
   file(GLOB_RECURSE onnxruntime_providers_migraphx_cc_srcs CONFIGURE_DEPENDS
