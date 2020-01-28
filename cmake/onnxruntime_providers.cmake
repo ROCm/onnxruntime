@@ -461,9 +461,7 @@ if (onnxruntime_USE_MIGRAPHX)
   set(CMAKE_VERBOSE_MAKEFILE on)
 
   message("ONNX Runtime root: " ${ONNXRUNTIME_ROOT})
-  message("source files: " ${onnxruntime_providers_migraphx_cc_srcs})
   message("AMD_MIGRAPHX_HOME: " ${AMD_MIGRAPHX_HOME})
-  message("AMD_MIGRAPHX_DEPS: " ${AMD_MIGRAPHX_DEPS})
   message("ONNX_ML = " ${ONNX_ML})
 
   include_directories(/opt/rocm/hsa/include)
