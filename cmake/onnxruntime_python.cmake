@@ -226,25 +226,6 @@ if (onnxruntime_USE_NGRAPH)
   )
 endif()
 
-if (onnxruntime_USE_MIGRAPHX)
-  message("miopen_folder = " ${miopen_LIBRARIES})
-  message("migraphx_folder = " ${migraphx_LIBRARIES})
-  message("migraphx_libs = " ${MIGRAPHX_SHARED_LIB})
-  add_custom_command(
-    TARGET onnxruntime_pybind11_state POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy
-        ${miopen_LIBRARIES}/${MIOPEN_SHARED_LIB}
-        $<TARGET_FILE_DIR:${test_data_target}>/onnxruntime/capi/
-  )
-
-  add_custom_command(
-    TARGET onnxruntime_pybind11_state POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy
-        ${migraphx_LIBRARIES}/libmigraphx_c.so.1
-        $<TARGET_FILE_DIR:${test_data_target}>/onnxruntime/capi/
-  )
-endif()
-
 if (onnxruntime_USE_OPENVINO)
   add_custom_command(
     TARGET onnxruntime_pybind11_state POST_BUILD
