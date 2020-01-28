@@ -4,8 +4,8 @@
 include (ExternalProject)
 
 if(onnxruntime_USE_MIGRAPHX)
-    set(migraphx_LIBRARIES ${AMD_MIGRAPHX_BUILD}/lib)
+    set(migraphx_LIBRARIES ${onnxruntime_MIGRAPHX_HOME}/lib)
     set(MIGRAPHX_SHARED_LIB libmigraphx_c.so.0)
-    set(miopen_LIBRARIES ${AMD_MIGRAPHX_DEPS}/lib)
+    set(miopen_LIBRARIES ${onnxruntime_MIGRAPHX_HOME}/lib)
     set(MIOPEN_SHARED_LIB libMIOpen.so)
 endif()

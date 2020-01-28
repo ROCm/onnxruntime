@@ -468,6 +468,7 @@ if (onnxruntime_USE_MIGRAPHX)
 
   include_directories(/opt/rocm/hsa/include)
   include_directories(/opt/rocm/hip/include)
+  include_directories(/opt/rocm/include)
   include_directories(${AMD_MIGRAPHX_HOME}/src/api/include)
 
   link_directories(${AMD_MIGRAPHX_BUILD}/lib

@@ -519,14 +519,14 @@ def setup_migraphx_vars(args):
 
     if (args.use_migraphx):
         print("migraphx_home = {}".format(args.migraphx_home))
-        migraphx_home = args.migraphx_home if args.migraphx_home else os.getenv("MIGRAPHX_HOME")
+        migraphx_home = args.migraphx_home or os.getenv("MIGRAPHX_HOME") or '/opt/rocm/'
 
-        migraphx_home_valid = (migraphx_home != None and os.path.exists(migraphx_home))
+        migraphx_home_not_valid = (migraphx_home and not os.path.exists(migraphx_home))
 
-        if (not migraphx_home_valid):
+        if (migraphx_home_not_valid):
             raise BuildError("migraphx_home paths must be specified and valid.",
                              "migraphx_home='{}' valid={}."
-                             .format(migraphx_home, migraphx_home_valid))
+                             .format(migraphx_home, migraphx_home_not_valid))
     return migraphx_home
 
 def setup_dml_build(args, cmake_path, build_dir, configs):
