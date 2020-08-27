@@ -198,47 +198,6 @@ static bool get_migraphx_type(ONNXTensorElementDataType type,
   return true;
 }
 
-// static bool can_eval_shape_general(const Node* node, const InitializedTensorSet& initializers, const logging::Logger& logger)
-// {
-//   if (node == nullptr)
-//   {
-//     return false;
-//   }
-
-//   auto inputs = node->InputDefs();
-//   for (std::size_t i = 0; i < inputs.size(); ++i)
-//   {
-//     // check input is an initialize
-//     auto in = inputs[i];
-//     if (initializers.find(in->Name()) != initializers.end())
-//     {
-//       continue;
-//     }
-
-//     // get the corresponding input node
-//     auto input_node = graph_utils::GetInputNode(*node, i);
-//     // if (input_node == nullptr)
-//     // {
-//     //   continue;
-//     // }
-
-//     // shape node, it is OK
-//     if (input_node != nullptr and input_node->OpType() == "Shape")
-//     {
-//       continue;
-//     }
-
-//     if (can_eval_shape_general(input_node, initializers, logger))
-//     {
-//       continue;
-//     }
-
-//     return false;
-//   }
-
-//   return true;
-// }
-
 // scenario 1: Unsqueeze->Gather->Shape
 static bool can_eval_shape_1(const Node* concat, int index, const InitializedTensorSet& initializers, const logging::Logger& logger)
 {
@@ -999,18 +958,6 @@ MIGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
     return (vec_ops.count(graph_viewer.GetNode(i)->OpType()) > 0);
   })) {
     return result;
-  }
-
-  if (!unsupported_nodes.empty())
-  {
-    std::cout << "=======================================" << std::endl;
-    std::cout << "Unsupported_node_num = " << unsupported_nodes.size() << std::endl;
-    for (auto& idx : unsupported_nodes)
-    {
-      auto&& node = graph_viewer.GetNode(idx);
-      std::cout << "idx = " << idx << ", op_type = " << node->OpType() << std::endl;
-    }
-    std::cout << "=======================================" << std::endl;
   }
 
   // Too many unsupported operators, fallback to run on CPU
