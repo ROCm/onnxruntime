@@ -1079,6 +1079,7 @@ bool get_input_output_names(std::string& onnx_buffer,
 
 Status MIGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>& fused_nodes,
                                           std::vector<NodeComputeInfo>& node_compute_funcs) {
+  std::cout << "Run on MIGraphX EP.............." << std::endl;
   migraphx::onnx_options options;
   bool no_input_shape = false;
   for (const auto& fused_node : fused_nodes) {
