@@ -7,8 +7,8 @@
 
 FROM ubuntu:16.04
 
-ARG ONNXRUNTIME_REPO=https://github.com/Microsoft/onnxruntime
-ARG ONNXRUNTIME_BRANCH=master
+ARG ONNXRUNTIME_REPO=https://github.com/ROCmSoftwarePlatform/onnxruntime
+ARG ONNXRUNTIME_BRANCH=gpt-2-tmp
 ENV DEBIAN_FRONTEND noninteractive
 ENV MIGRAPHX_DISABLE_FAST_GELU=1
 
@@ -31,7 +31,7 @@ RUN pip3 install https://github.com/RadeonOpenCompute/rbuild/archive/master.tar.
 
 # Install MIGraphX from source
 RUN mkdir -p /migraphx
-RUN cd /migraphx && git clone --depth=1 --branch migraphx_for_ort https://github.com/ROCmSoftwarePlatform/AMDMIGraphX src
+RUN cd /migraphx && git clone --depth=1 --branch test_migraphx_for_ort https://github.com/ROCmSoftwarePlatform/AMDMIGraphX src
 RUN cd /migraphx && rbuild package --cxx /opt/rocm/bin/hcc -d /migraphx/deps -B /migraphx/build -S /migraphx/src/ -DPYTHON_EXECUTABLE=/usr/bin/python3
 RUN dpkg -i /migraphx/build/*.deb
 RUN rm -rf /migraphx
