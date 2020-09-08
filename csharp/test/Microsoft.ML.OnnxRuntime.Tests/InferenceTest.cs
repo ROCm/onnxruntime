@@ -84,12 +84,20 @@ namespace Microsoft.ML.OnnxRuntime.Tests
 
                 Assert.Throws<OnnxRuntimeException>(() => { opt.GraphOptimizationLevel = (GraphOptimizationLevel)10; });
 
+                opt.AddSessionConfigEntry("key", "value");
+				
+                var ex = Assert.Throws<OnnxRuntimeException>(() => { opt.AddSessionConfigEntry("", "invalid key"); });
+                Assert.Contains("[ErrorCode:InvalidArgument] Config key is empty", ex.Message);
+
                 opt.AppendExecutionProvider_CPU(1);
 #if USE_DNNL
                 opt.AppendExecutionProvider_Dnnl(0);
 #endif
 #if USE_CUDA
                 opt.AppendExecutionProvider_CUDA(0);
+#endif
+#if USE_DML
+                opt.AppendExecutionProvider_Dml(0);
 #endif
 #if USE_NGRAPH
                 opt.AppendExecutionProvider_NGraph("CPU");  //TODO: this API should be refined
@@ -1829,6 +1837,9 @@ namespace Microsoft.ML.OnnxRuntime.Tests
 #endif
 #if USE_CUDA
             ,"OrtSessionOptionsAppendExecutionProvider_CUDA"
+#endif
+#if USE_DML
+            ,"OrtSessionOptionsAppendExecutionProvider_Dml"
 #endif
 #if USE_NGRAPH
             ,"OrtSessionOptionsAppendExecutionProvider_NGraph"

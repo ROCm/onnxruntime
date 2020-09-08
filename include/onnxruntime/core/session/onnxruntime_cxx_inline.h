@@ -14,7 +14,7 @@ inline void ThrowOnError(const OrtApi& ort, OrtStatus* status) {
     std::string error_message = ort.GetErrorMessage(status);
     OrtErrorCode error_code = ort.GetErrorCode(status);
     ort.ReleaseStatus(status);
-    throw Ort::Exception(std::move(error_message), error_code);
+    ORT_CXX_API_THROW(std::move(error_message), error_code);
   }
 }
 
@@ -288,14 +288,17 @@ inline void IoBinding::ClearBoundOutputs() {
 
 inline Env::Env(OrtLoggingLevel default_warning_level, _In_ const char* logid) {
   ThrowOnError(GetApi().CreateEnv(default_warning_level, logid, &p_));
+  ThrowOnError(GetApi().SetLanguageProjection(p_, OrtLanguageProjection::ORT_PROJECTION_CPLUSPLUS));
 }
 
 inline Env::Env(OrtLoggingLevel default_warning_level, const char* logid, OrtLoggingFunction logging_function, void* logger_param) {
   ThrowOnError(GetApi().CreateEnvWithCustomLogger(logging_function, logger_param, default_warning_level, logid, &p_));
+  ThrowOnError(GetApi().SetLanguageProjection(p_, OrtLanguageProjection::ORT_PROJECTION_CPLUSPLUS));
 }
 
 inline Env::Env(const OrtThreadingOptions* tp_options, OrtLoggingLevel default_warning_level, _In_ const char* logid) {
   ThrowOnError(GetApi().CreateEnvWithGlobalThreadPools(default_warning_level, logid, tp_options, &p_));
+  ThrowOnError(GetApi().SetLanguageProjection(p_, OrtLanguageProjection::ORT_PROJECTION_CPLUSPLUS));
 }
 
 inline Env& Env::EnableTelemetryEvents() {
