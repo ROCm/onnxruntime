@@ -50,7 +50,7 @@ __global__ void softmax_warp_forward(output_t* dst, const input_t* src, int batc
   constexpr int next_power_of_two = 1 << log2_elements;
   constexpr int WARP_SIZE = (next_power_of_two < GPU_WARP_SIZE) ? next_power_of_two : GPU_WARP_SIZE;
   constexpr int WARP_ITERATIONS = next_power_of_two / WARP_SIZE;
-  constexpr int WARP_BATCH = (next_power_of_two <= 128) ? 2 : 1;
+  constexpr int WARP_BATCH = 1;
 
   int first_batch = (blockDim.y * blockIdx.x + threadIdx.y) * WARP_BATCH;
 
@@ -146,7 +146,7 @@ void dispatch_softmax_forward(output_t* dst, const input_t* src, int softmax_ele
     int warp_size = (next_power_of_two < GPU_WARP_SIZE) ? next_power_of_two : GPU_WARP_SIZE;
 
     // This value must match the WARP_BATCH constexpr value computed inside softmax_warp_forward.
-    int batches_per_warp = (next_power_of_two <= 128) ? 2 : 1;
+    int batches_per_warp = 1;
 
     // use 128 threads per block to maximimize gpu utilization
     constexpr int threads_per_block = 128;
