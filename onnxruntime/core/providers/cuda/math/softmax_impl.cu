@@ -115,8 +115,7 @@ __global__ void softmax_warp_forward(output_t* dst, const input_t* src, int batc
 // store result
 #pragma unroll
   for (int i = 0; i < WARP_BATCH; ++i) {
-    if (i >= local_batches)
-      break;
+    if (i < local_batches)
     if (is_log_softmax) sum[i] = max_value[i] + std::log((float)(sum[i]));
 #pragma unroll
     for (int it = 0; it < WARP_ITERATIONS; ++it) {

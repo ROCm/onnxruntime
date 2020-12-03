@@ -103,8 +103,7 @@ __global__ void softmax_warp_backward(output_t* gradInput, const input_t* grad, 
 // store result
 #pragma unroll
   for (int i = 0; i < WARP_BATCH; ++i) {
-    if (i >= local_batches)
-      break;
+    if (i < local_batches)
 #pragma unroll
     for (int it = 0; it < WARP_ITERATIONS; ++it) {
       int element_index = local_idx + it * WARP_SIZE;
