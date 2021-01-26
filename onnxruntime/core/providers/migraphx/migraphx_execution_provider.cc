@@ -751,6 +751,8 @@ static void print_node_info(const Node* node)
 
 void print_graph(const Graph& graph)
 {
+  return;
+  std::cout << "The graph is: ========================" << std::endl;
   GraphViewer graph_viewer(graph);
   const auto& orders = graph_viewer.GetNodesInTopologicalOrder();
   std::cout << "graph_size = " << orders.size() << std::endl;
@@ -777,8 +779,6 @@ GetUnsupportedNodeIndices(const GraphViewer& graph_viewer,
       "Sub", "Sum", "Tan", "Tanh", "Tile", "Transpose", "Unsqueeze", "Where", "Xor"};
   std::vector<NodeIndex> unsupported_nodes_idx;
   for (const auto& node_idx : graph_viewer.GetNodesInTopologicalOrder()) {
-    auto node = graph_viewer.GetNode(node_idx);
-    print_node_info(node);
     if (IsNodeSupported(mgx_supported_ops, graph_viewer, node_idx, logger)) {
       // Collect inputs that are initializers
       graph_viewer.GetNode(node_idx)->ForEachDef([&mgx_required_initializers, &graph_viewer](const onnxruntime::NodeArg& node_arg, bool is_input) {
@@ -960,7 +960,6 @@ MIGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
   model_proto.set_ir_version(ONNX_NAMESPACE::Version::IR_VERSION);
 
   auto status = graph_build.Resolve();
-  std::cout << "The graph is: ========================" << std::endl;
   print_graph(graph_build);
   
   std::string onnx_string_buffer;
@@ -998,17 +997,17 @@ MIGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
     AppendNodesToSubGraph(graph_viewer.GetNodesInTopologicalOrder(), inputs, outputs, result);
 
   } else {  // unsupported_nodes_idx.empty()
-    if (!unsupported_nodes.empty())
-    {
-      std::cout << "=======================================" << std::endl;
-      std::cout << "Unsupported_node_num = " << unsupported_nodes.size() << std::endl;
-      for (auto& idx : unsupported_nodes)
-      {
-        auto&& node = graph_viewer.GetNode(idx);
-        std::cout << "idx = " << idx << ", op_type = " << node->OpType() << std::endl;
-      }
-      std::cout << "=======================================" << std::endl;
-    }
+    // if (!unsupported_nodes.empty())
+    // {
+    //   std::cout << "=======================================" << std::endl;
+    //   std::cout << "Unsupported_node_num = " << unsupported_nodes.size() << std::endl;
+    //   for (auto& idx : unsupported_nodes)
+    //   {
+    //     auto&& node = graph_viewer.GetNode(idx);
+    //     std::cout << "idx = " << idx << ", op_type = " << node->OpType() << std::endl;
+    //   }
+    //   std::cout << "=======================================" << std::endl;
+    // }
 
     auto mgx_clusters = GetPartitionedSubgraphs(graph_viewer.GetNodesInTopologicalOrder(), unsupported_nodes);
 
@@ -1102,9 +1101,9 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
                                           std::vector<NodeComputeInfo>& node_compute_funcs) {
   migraphx::onnx_options options;
   bool no_input_shape = false;
-  std::size_t fused_node_index = 0;
+  // std::size_t fused_node_index = 0;
   for (const auto& fused_node : fused_nodes) {
-    std::cout << "In compile funciton ======================== " << std::endl;
+    // std::cout << "In compile funciton ======================== " << std::endl;
     // map parameter input name to index
     std::unordered_map<std::string, std::size_t> input_name_index;
     const auto& input_defs = fused_node->InputDefs();
@@ -1118,10 +1117,10 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<onnxruntime::Node*>&
     std::string onnx_string_buffer;
     model_proto.SerializeToString(&onnx_string_buffer);
 
-    std::string name = "ort_compile_" + std::to_string(fused_node_index++) + ".onnx";
-    std::ofstream ofs(name, std::ios::binary);
-    ofs.write(onnx_string_buffer.data(), onnx_string_buffer.size());
-    ofs.close();
+    // std::string name = "ort_compile_" + std::to_string(fused_node_index++) + ".onnx";
+    // std::ofstream ofs(name, std::ios::binary);
+    // ofs.write(onnx_string_buffer.data(), onnx_string_buffer.size());
+    // ofs.close();
 
     std::vector<std::string> input_names, output_names;
     no_input_shape = no_input_shape or get_input_output_names(onnx_string_buffer, input_names, output_names);
