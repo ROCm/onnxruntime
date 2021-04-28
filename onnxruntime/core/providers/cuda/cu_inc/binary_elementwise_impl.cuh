@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include "core/providers/cuda/shared_inc/cuda_utils.h"
 #include "core/providers/cuda/cu_inc/common.cuh"
+#include <iostream>
 
 namespace onnxruntime {
 namespace cuda {
@@ -218,6 +219,7 @@ void BinaryElementWiseImpl(
 
   int blocksPerGrid = static_cast<int>(CeilDiv(count, GridDim::maxThreadsPerBlock * GridDim::maxElementsPerThread));
   CUDA_LONG N = static_cast<CUDA_LONG>(count);
+	std::cout << __func__ << ", " << typeid (func).name()<< ", size," << sizeof(T) << ", "<< sizeof(T1) << ", "<< sizeof(T2) << ", broadcast, " << output_rank_or_simple_broadcast << ", maxThread, " << GridDim::maxThreadsPerBlock << ", maxElement, " << GridDim::maxElementsPerThread << ", N, " << N << std::endl;
   if (output_rank_or_simple_broadcast == static_cast<int32_t>(SimpleBroadcast::NoBroadcast)) {
     _BinaryElementWiseSimple<true, true, T, T1, T2, FuncT, GridDim::maxThreadsPerBlock, GridDim::maxElementsPerThread><<<blocksPerGrid, GridDim::maxThreadsPerBlock, 0, stream>>>(
         lhs_data,

@@ -7,6 +7,7 @@
 #include "core/providers/cuda/shared_inc/fast_divmod.h"
 #include "orttraining/training_ops/cpu/activation/gelu_computation_mode.h"
 #include "orttraining/training_ops/cuda/activation/gelu_grad_impl_common.cuh"
+#include <iostream>
 
 namespace onnxruntime {
 namespace cuda {
@@ -70,6 +71,7 @@ void LaunchBiasGeluGradDxKernel(
 
   const dim3 grid_dim{static_cast<uint32_t>(grid_width), static_cast<uint32_t>(grid_height)};
 
+  std::cout<<"BiasGeluGradDxKernel, tpb, "<< num_threads_per_block << ", size, " << sizeof(T) << ", ept, " << num_elements_per_thread << ", grid_width, " << grid_width << ", grid_heigh, " << grid_height << ", bias_size, " << bias_size << ", input_size, " << input_size <<std::endl;
   BiasGeluGradDxKernel<T, GeluComputationMode, num_elements_per_thread>
       <<<grid_dim, num_threads_per_block, 0, stream>>>(bias_size, dY, X, B, dX);
 }
