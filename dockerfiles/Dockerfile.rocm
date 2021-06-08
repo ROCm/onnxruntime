@@ -20,11 +20,15 @@ ENV LANG C.UTF-8
 # Install rocm
 RUN apt-get update && apt-get install -y gnupg2 --no-install-recommends curl && \
   curl -sL http://repo.radeon.com/rocm/apt/debian/rocm.gpg.key | apt-key add - && \
-  sh -c 'echo deb [arch=amd64] http://repo.radeon.com/rocm/apt/4.0/ xenial main > /etc/apt/sources.list.d/rocm.list'
+  sh -c 'echo deb [arch=amd64] http://repo.radeon.com/rocm/apt/4.2/ xenial main > /etc/apt/sources.list.d/rocm.list'
 
 RUN apt-get update &&\
-    apt-get install -y --no-install-recommends sudo git bash build-essential cmake libelf1 rocm-dkms libpython3.6-dev python3-pip miopen-hip rocblas\
+    apt-get install -y --no-install-recommends sudo git bash build-essential libelf1 rocm-dkms libpython3.6-dev python3-pip miopen-hip rocblas\
     libnuma-dev kmod half hipsparse rocfft hipblas
+
+RUN aria2c -q -d /tmp -o cmake-3.20.3-Linux-x86_64.tar.gz \
+https://github.com/Kitware/CMake/releases/download/v3.20.3/cmake-3.20.3-Linux-x86_64.tar.gz &&\
+tar -zxf /tmp/cmake-3.20.3-Linux-x86_64.tar.gz --strip=1 -C /usr
 
 # Install yapf
 RUN pip3 install yapf==0.28.0
