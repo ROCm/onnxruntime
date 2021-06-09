@@ -1105,7 +1105,7 @@ if (onnxruntime_USE_ROCM)
 
   target_link_libraries(onnxruntime_providers_rocm PRIVATE  ${ONNXRUNTIME_ROCM_LIBS})
   set_target_properties(onnxruntime_providers_rocm PROPERTIES FOLDER "ONNXRuntime")
-  target_compile_options(onnxruntime_providers_rocm PRIVATE -Wno-sign-compare -D__HIP_PLATFORM_HCC__=1)
+  target_compile_options(onnxruntime_providers_rocm PRIVATE -Wno-sign-compare -D__HIP_PLATFORM_HCC__=1 -D__HIP_PLATFORM_AMD__=1)
   check_cxx_compiler_flag(-Wno-unused-parameter HAS_NO_UNUSED_PARAMETER)
   if (HAS_NO_UNUSED_PARAMETER)
     target_compile_options(onnxruntime_providers_rocm PRIVATE -Wno-unused-parameter)
