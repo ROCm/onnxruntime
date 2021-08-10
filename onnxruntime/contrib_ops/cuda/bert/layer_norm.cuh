@@ -45,7 +45,7 @@ __device__ inline float Rsqrt(const float& x) {
 
 template <>
 __device__ inline half Rsqrt(const half& x) {
-#if __CUDA_ARCH__ >= 530 || !defined(__CUDA_ARCH__)
+#if (__CUDA_ARCH__ >= 530 || !defined(__CUDA_ARCH__)) || defined(USE_ROCM)
   return hrsqrt(x);
 #else
   return half(rsqrtf(float(x)));
@@ -53,7 +53,7 @@ __device__ inline half Rsqrt(const half& x) {
 }
 
 __device__ inline half2 AddHalf2(const half2 a, const half2 b) {
-#if __CUDA_ARCH__ >= 530 || !defined(__CUDA_ARCH__)
+#if (__CUDA_ARCH__ >= 530 || !defined(__CUDA_ARCH__)) || defined(USE_ROCM)
   return __hadd2(a, b);
 #else
   return __halves2half2(__hadd(a.x, b.x), __hadd(a.y, b.y));
@@ -69,7 +69,12 @@ struct KeyValuePairSum {
     const half2 a2 = __halves2half2(a.key, a.value);
     const half2 b2 = __halves2half2(b.key, b.value);
     const half2 res = AddHalf2(a2, b2);
+#ifdef USE_ROCM
+    // until this is fixed: "error: 'x' is a protected member of '__half2'"
+    return hipcub::KeyValuePair<half, half>(__low2half(res), __high2half(res));
+#else
     return cub::KeyValuePair<half, half>(res.x, res.y);
+#endif
   }
 
   __device__ inline cub::KeyValuePair<half2, half2> operator()(const cub::KeyValuePair<half2, half2>& a, const cub::KeyValuePair<half2, half2>& b) {

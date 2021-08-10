@@ -5,11 +5,16 @@
 
 #include <stdint.h>
 
-#ifdef __NVCC__
+#if defined(__NVCC__)
 #include "core/providers/cuda/cu_inc/common.cuh"
 #define ORT_DEVICE __device__
 #define HelperMin(a, b) _Min(a, b)
 #define HelperMax(a, b) _Max(a, b)
+#elif defined(__HIP_PLATFORM_HCC__)
+#include "core/providers/rocm/cu_inc/common.cuh"
+#define ORT_DEVICE __host__ __device__
+#define HelperMin(a, b) rocm::_Min(a, b)
+#define HelperMax(a, b) rocm::_Max(a, b)
 #else
 #include <algorithm>
 #define ORT_DEVICE

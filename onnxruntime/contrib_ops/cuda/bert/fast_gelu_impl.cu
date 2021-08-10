@@ -54,7 +54,7 @@ __global__ void FastGeluKernel(const T a, const T b, const T c, int input_length
 template <unsigned TPB>
 __global__ void FastGeluKernel2(const half2 a, const half2 b, const half2 c, int input_length, int bias_length, const half2* input, const half2* bias, half2* output) {
 // half2 arithmetic functions requires cuda architecture >= 5.3
-#if __CUDA_ARCH__ >= 530
+#if __CUDA_ARCH__ >= 530 || defined(USE_ROCM)
   const int idx = blockIdx.x * TPB + threadIdx.x;
 
   if (idx < input_length) {
@@ -97,6 +97,7 @@ bool LaunchFastGeluKernel(const cudaDeviceProp& prop, cudaStream_t stream, int i
   return CUDA_CALL(cudaPeekAtLastError());
 }
 
+#ifndef USE_ROCM
 #if CUDA_VERSION >= 11000 && (__CUDA_ARCH__ >= 800 || !defined(__CUDA_ARCH__))
 template <unsigned TPB>
 __global__ void FastGeluKernel2(const nv_bfloat162 a, const nv_bfloat162 b, const nv_bfloat162 c,
@@ -133,6 +134,7 @@ bool LaunchFastGeluKernel(const cudaDeviceProp& prop, cudaStream_t stream, int i
 
   return CUDA_CALL(cudaPeekAtLastError());
 }
+#endif
 #endif
 
 }  // namespace cuda

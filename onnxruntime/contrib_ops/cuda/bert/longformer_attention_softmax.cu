@@ -21,11 +21,16 @@ limitations under the License.
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-#include <math_constants.h>
 #include "core/providers/cuda/cu_inc/common.cuh"
 #include "core/providers/cuda/cuda_common.h"
 #include "longformer_attention_softmax.h"
 #include "attention_impl.h"
+
+#ifdef USE_ROCM
+#define CUDART_INF_F __int_as_float(0x7f800000U)
+#else
+#include <math_constants.h>
+#endif
 
 using namespace onnxruntime::cuda;
 using namespace cub;

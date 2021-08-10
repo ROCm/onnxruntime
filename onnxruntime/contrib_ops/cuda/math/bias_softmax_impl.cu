@@ -21,6 +21,13 @@ namespace onnxruntime {
 namespace contrib {
 namespace cuda {
 
+// TODO Is this still needed for ROCM?
+#ifdef USE_ROCM
+#define EXP expf
+#else
+#define EXP std::exp
+#endif
+
 // Duplicated softmax_impl.cu here
 // So far attempt to use shared kernel with additional template resulted in lost performance
 
@@ -101,7 +108,7 @@ __global__ void BiasSoftmaxWarpForward(
   for (int i = 0; i < WARP_BATCH; ++i) {
 #pragma unroll
     for (int it = 0; it < WARP_ITERATIONS; ++it) {
-      elements[i][it] = std::exp((acc_t)(elements[i][it] - max_value[i]));
+      elements[i][it] = EXP((acc_t)(elements[i][it] - max_value[i]));
       sum[i] += elements[i][it];
     }
   }
