@@ -3,6 +3,7 @@
 
 #pragma once
 #include <stdint.h>
+#include "core/framework/allocator.h"
 #include "core/providers/cuda/shared_inc/cuda_utils.h"
 #include <functional>
 #include "core/providers/cpu/object_detection/non_max_suppression_helper.h"

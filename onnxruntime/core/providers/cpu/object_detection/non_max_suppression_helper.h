@@ -5,9 +5,16 @@
 
 #include <stdint.h>
 
-#ifdef __NVCC__
+#if defined(__NVCC__) || defined(__HIPCC__)
+#if USE_ROCM
+#define GPU_NAMESPACE rocm
+#include "core/providers/rocm/cu_inc/common.cuh"
+#define ORT_DEVICE __host__ __device__
+#else
+#define GPU_NAMESPACE cuda
 #include "core/providers/cuda/cu_inc/common.cuh"
 #define ORT_DEVICE __device__
+#endif
 #define HelperMin(a, b) _Min(a, b)
 #define HelperMax(a, b) _Max(a, b)
 #else
@@ -43,8 +50,8 @@ struct SelectedIndex {
   int64_t box_index_ = 0;
 };
 
-#ifdef __NVCC__
-namespace cuda {
+#ifdef GPU_NAMESPACE
+namespace GPU_NAMESPACE {
 #endif
 namespace nms_helpers {
 
@@ -141,8 +148,8 @@ inline bool SuppressByIOU(const float* boxes_data, int64_t box_index1, int64_t b
 
   return intersection_over_union > iou_threshold;
 }
-#ifdef __NVCC__
-}  // namespace cuda
+#ifdef GPU_NAMESPACE
+}  // namespace cuda or rocm
 #endif
 }  // namespace nms_helpers
 }  // namespace onnxruntime
