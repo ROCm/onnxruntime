@@ -60,8 +60,6 @@ contrib_ops_excluded_files = [
                     'tensor/image_scaler_impl.h',
                     'conv_transpose_with_dynamic_pads.cc',
                     'conv_transpose_with_dynamic_pads.h',
-                    'cuda_contrib_kernels.cc',
-                    'cuda_contrib_kernels.h',
                     'inverse.cc',
                     'fused_conv.cc'
 ]
