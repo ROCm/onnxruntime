@@ -528,6 +528,7 @@ def parse_arguments():
         "--rocm_version", help="The version of ROCM stack to use. ")
     parser.add_argument("--use_rocm", action='store_true', help="Build with ROCm")
     parser.add_argument("--rocm_home", help="Path to ROCm installation dir")
+    parser.add_argument("--skip_hipify", action='store_true', help="Do not hipify cuda sources. Useful during development.")
 
     # Code coverage
     parser.add_argument("--code_coverage", action='store_true',
@@ -1240,8 +1241,9 @@ def setup_rocm_build(args, configs):
                              "rocm_home='{}' valid={}."
                              .format(rocm_home, rocm_home_not_valid))
 
-        for config in configs:
-            amd_hipify(get_config_build_dir(args.build_dir, config))
+        if not args.skip_hipify:
+            for config in configs:
+                amd_hipify(get_config_build_dir(args.build_dir, config))
     return rocm_home or ''
 
 
