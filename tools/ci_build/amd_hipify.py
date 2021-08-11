@@ -112,7 +112,6 @@ provider_excluded_files = [
                 'rnn/rnn_impl.cu',
                 'rnn/rnn_impl.h',
                 'shared_inc/fpgeneric.h',
-                'tensor/gather_nd_impl.cu',
                 'tensor/quantize_linear.cc',
                 'tensor/quantize_linear.cu',
                 'tensor/quantize_linear.cuh',
