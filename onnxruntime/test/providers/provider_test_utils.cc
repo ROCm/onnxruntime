@@ -1085,6 +1085,7 @@ void OpTester::Run(
         bool valid = true;
 
         // set execution provider for all nodes in the graph
+        std::stringstream unsupported_node;
         for (auto& node : graph.Nodes()) {
           if (node.OpType() == kConstant)
             continue;
@@ -1110,13 +1111,16 @@ void OpTester::Run(
             }
 
             if (!valid) {
+              unsupported_node << node.OpType();
               break;
             }
           }
         }
 
-        if (!valid)
+        if (!valid) {
+          LOGS_DEFAULT(WARNING) << execution_provider->Type() << " does not have implementation of " << unsupported_node.str();
           continue;
+        }
 
         for (auto& custom_session_registry : custom_session_registries_)
           ASSERT_PROVIDER_STATUS_OK(session_object.RegisterCustomRegistry(custom_session_registry));
