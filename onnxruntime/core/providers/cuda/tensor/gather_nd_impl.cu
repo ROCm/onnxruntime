@@ -109,12 +109,14 @@ SPECIALIZED_COMPUTE_SLICE_OFFSETS_IMPL(int64_t)
 
 SPECIALIZED_IMPL(float)
 SPECIALIZED_IMPL(int64_t)
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 600
+#if defined(USE_ROCM) || (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 600)
 SPECIALIZED_IMPL(half)
 SPECIALIZED_IMPL(double)
 #endif
+#ifndef USE_ROCM
 #if CUDA_VERSION >= 11000 && (__CUDA_ARCH__ >= 800 || !defined(__CUDA_ARCH__))
 SPECIALIZED_IMPL(nv_bfloat16)
+#endif
 #endif
 
 }  // namespace cuda
