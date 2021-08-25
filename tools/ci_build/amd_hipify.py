@@ -107,8 +107,6 @@ provider_excluded_files = [
                 'rnn/rnn_impl.h',
                 'shared_inc/fpgeneric.h',
                 'cuda_common.cc',  # implements cublas math modes; no support in HIP
-                'cuda_memory_check.cc',
-                'cuda_memory_check.h',
                 'cuda_pch.cc',  # not sure why we skip this one
                 'cuda_pch.h',  # small header, hipify doesn't get it right, easier to do manually
                 'cuda_provider_factory.h',  # rocm file is source-controlled since all other EPs need it to exist at build
