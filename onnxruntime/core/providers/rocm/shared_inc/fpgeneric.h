@@ -16,7 +16,8 @@ inline rocblas_status rocblasGemmHelper(rocblas_handle handle,
                                         const float* A, int lda,
                                         const float* B, int ldb,
                                         const float* beta,
-                                        float* C, int ldc) {
+                                        float* C, int ldc,
+                                        const hipDeviceProp_t& /*prop*/) {
   return rocblas_gemm_ex(handle,
                          transa,
                          transb,
@@ -38,7 +39,8 @@ inline rocblas_status rocblasGemmHelper(rocblas_handle handle,
                                          const double* A, int lda,
                                          const double* B, int ldb,
                                          const double* beta,
-                                         double* C, int ldc) {
+                                         double* C, int ldc,
+                                         const hipDeviceProp_t& /*prop*/) {
   return rocblas_dgemm(handle, transa, transb, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc);
 }
 inline rocblas_status rocblasGemmHelper(rocblas_handle handle,
@@ -49,7 +51,8 @@ inline rocblas_status rocblasGemmHelper(rocblas_handle handle,
                                          const half* A, int lda,
                                          const half* B, int ldb,
                                          const half* beta,
-                                         half* C, int ldc) {
+                                         half* C, int ldc,
+                                         const hipDeviceProp_t& /*prop*/) {
   float h_a = onnxruntime::math::halfToFloat(*reinterpret_cast<const uint16_t*>(alpha));
   float h_b = onnxruntime::math::halfToFloat(*reinterpret_cast<const uint16_t*>(beta));
   return rocblas_gemm_ex(handle,
@@ -76,7 +79,8 @@ inline rocblas_status rocblasGemmBatchedHelper(rocblas_handle handle,
                                                 const float* Barray[], int ldb,
                                                 const float* beta,
                                                 float* Carray[], int ldc,
-                                                int batchCount) {
+                                                int batchCount,
+                                                const hipDeviceProp_t& /*prop*/) {
   return rocblas_gemm_batched_ex(handle,
                                  transa,
                                  transb,
@@ -100,7 +104,8 @@ inline rocblas_status rocblasGemmBatchedHelper(rocblas_handle handle,
                                                 const double* Barray[], int ldb,
                                                 const double* beta,
                                                 double* Carray[], int ldc,
-                                                int batchCount) {
+                                                int batchCount,
+                                                const hipDeviceProp_t& /*prop*/) {
   return rocblas_dgemm_batched(handle, transa, transb, m, n, k, alpha, Aarray, lda, Barray, ldb, beta, Carray, ldc, batchCount);
 }
 inline rocblas_status rocblasGemmBatchedHelper(rocblas_handle handle,
@@ -112,7 +117,8 @@ inline rocblas_status rocblasGemmBatchedHelper(rocblas_handle handle,
                                                 const half* Barray[], int ldb,
                                                 const half* beta,
                                                 half* Carray[], int ldc,
-                                                int batchCount) {
+                                                int batchCount,
+                                                const hipDeviceProp_t& /*prop*/) {
   float h_a = onnxruntime::math::halfToFloat(*reinterpret_cast<const uint16_t*>(alpha));
   float h_b = onnxruntime::math::halfToFloat(*reinterpret_cast<const uint16_t*>(beta));
   return rocblas_gemm_batched_ex(handle,
@@ -143,7 +149,8 @@ inline rocblas_status rocblasGemmStridedBatchedHelper(rocblas_handle handle,
                                                        const float* beta,
                                                        float* C, int ldc,
                                                        long long int strideC,
-                                                       int batchCount) {
+                                                       int batchCount,
+                                                       const hipDeviceProp_t& /*prop*/) {
   return rocblas_gemm_strided_batched_ex(handle,
                                          transa,
                                          transb,
@@ -171,7 +178,8 @@ inline rocblas_status rocblasGemmStridedBatchedHelper(rocblas_handle handle,
                                                        const double* beta,
                                                        double* C, int ldc,
                                                        long long int strideC,
-                                                       int batchCount){
+                                                       int batchCount,
+                                                       const hipDeviceProp_t& /*prop*/){
   return rocblas_dgemm_strided_batched(handle, transa, transb, m, n, k, alpha, A, lda, strideA, B, ldb, strideB, beta, C, ldc, strideC, batchCount);
 }
 
@@ -187,7 +195,8 @@ inline rocblas_status rocblasGemmStridedBatchedHelper(rocblas_handle handle,
                                                        const __half* beta,
                                                        __half* C, int ldc,
                                                        long long int strideC,
-                                                       int batchCount) {
+                                                       int batchCount,
+                                                       const hipDeviceProp_t& /*prop*/) {
   float h_a = onnxruntime::math::halfToFloat(*reinterpret_cast<const uint16_t*>(alpha));
   float h_b = onnxruntime::math::halfToFloat(*reinterpret_cast<const uint16_t*>(beta));
   return rocblas_gemm_strided_batched_ex(handle,

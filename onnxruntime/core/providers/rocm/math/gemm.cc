@@ -75,12 +75,11 @@ Status Gemm<T>::ComputeInternal(OpKernelContext* ctx) const {
 
   HipT one = ToHipType<T>::FromFloat(1.0f);
   HipT zero = ToHipType<T>::FromFloat(0.0f);
-
+  auto& device_prop = GetDeviceProp();
   // broadcast bias if needed and is present
   if (beta_ != 0 && B != nullptr) {
     auto& b_shape = B->Shape();
     const HipT* b_data = reinterpret_cast<const HipT*>(B->template Data<T>());
-
     if (b_shape.Size() == 1) {
       // if B is (), (1,) or (1, 1), broadcast the scalar
       ROCBLAS_RETURN_IF_ERROR(rocblasCopyHelper(
@@ -102,7 +101,7 @@ Status Gemm<T>::ComputeInternal(OpKernelContext* ctx) const {
           b_data, N,
           GetConstOnes<HipT>(M), 1,
           /*beta*/ &zero,
-          out_data, N));
+          out_data, N, device_prop));
     } else if (b_shape.NumDimensions() == 2 && b_shape[1] == 1) {
       // B is (M, 1), broadcast using Y(N,M) = 1 * ones(N,1) x B(1,M) + 0 * Y
       ROCBLAS_RETURN_IF_ERROR(rocblasGemmHelper(
@@ -114,7 +113,7 @@ Status Gemm<T>::ComputeInternal(OpKernelContext* ctx) const {
           GetConstOnes<HipT>(N), N,
           b_data, 1,
           /*beta*/ &zero,
-          out_data, N));
+          out_data, N, device_prop));
     } else {
       // B is (M, N), no broadcast needed.
       HIP_RETURN_IF_ERROR(hipMemcpyAsync(out_data, b_data, M * N * sizeof(T), hipMemcpyDeviceToDevice, Stream()));
@@ -137,7 +136,8 @@ Status Gemm<T>::ComputeInternal(OpKernelContext* ctx) const {
       // ideally we need to set the output buffer contents to 0 if bias is missing,
       // but passing 0 for beta is cheaper and it will ignore any junk in the output buffer
       B != nullptr ? &beta : &zero,
-      out_data, N));
+      out_data, N, device_prop));
+
   return Status::OK();
 }
 

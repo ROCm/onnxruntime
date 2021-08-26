@@ -114,7 +114,7 @@ Status MatMul<T>::ComputeInternal(OpKernelContext* ctx) const {
   const int ldb = transb ? static_cast<int>(helper.K()) : static_cast<int>(helper.N());
   const int ldc = static_cast<int>(helper.N());
   int64_t stride_A, stride_B, stride_C, batch_count;
-
+  auto& device_prop = GetDeviceProp();
   if (helper.OutputOffsets().size() == 1) {
     ROCBLAS_RETURN_IF_ERROR(rocblasGemmHelper(
         Base::RocblasHandle(),
@@ -130,7 +130,8 @@ Status MatMul<T>::ComputeInternal(OpKernelContext* ctx) const {
         lda,
         &zero,
         reinterpret_cast<HipT*>(Y->template MutableData<T>()),
-        ldc));
+        ldc,
+        device_prop));
     return Status::OK();
   } else if (CanUseStridedBatchedGemm(left_X->Shape(), right_X->Shape(),
                                       transa, transb, stride_A, stride_B, stride_C, batch_count)) {
@@ -151,7 +152,9 @@ Status MatMul<T>::ComputeInternal(OpKernelContext* ctx) const {
                                                           reinterpret_cast<HipT*>(Y->template MutableData<T>()),
                                                           ldc,
                                                           stride_C,
-                                                          static_cast<int>(batch_count)));
+                                                          static_cast<int>(batch_count),
+                                                          device_prop));
+
     return Status::OK();
   }
 
@@ -182,7 +185,9 @@ Status MatMul<T>::ComputeInternal(OpKernelContext* ctx) const {
       &zero,
       output_arrays.GpuPtr(),
       ldc,
-      static_cast<int>(helper.OutputOffsets().size())));
+      static_cast<int>(helper.OutputOffsets().size()),
+      device_prop));
+
   return Status::OK();
 }
 
