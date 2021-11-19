@@ -7,6 +7,14 @@
 
 using namespace onnxruntime;
 
+#ifdef ENABLE_TRAINING
+#include "orttraining/core/framework/backward_guard.h"
+#define ORT_ROCBLAS_VERSION_DECIMAL (ROCBLAS_VERSION_MAJOR * 100 + ROCBLAS_VERSION_MINOR)
+#define ORT_USE_GEMM_FLAGS_FP16_ALT_IMPL (ORT_ROCBLAS_VERSION_DECIMAL >= 242)
+#else
+#define ORT_USE_GEMM_FLAGS_FP16_ALT_IMPL 0
+#endif
+
 // Generalize library calls to be use in template functions
 
 // gemm
@@ -54,6 +62,10 @@ inline rocblas_status rocblasGemmHelper(rocblas_handle handle,
                                          half* C, int ldc) {
   float h_a = onnxruntime::math::halfToFloat(*reinterpret_cast<const uint16_t*>(alpha));
   float h_b = onnxruntime::math::halfToFloat(*reinterpret_cast<const uint16_t*>(beta));
+  int flag = 0;
+#if ORT_USE_GEMM_FLAGS_FP16_ALT_IMPL
+  flag = onnxruntime::training::BackwardPassGuard::is_backward_pass() ? rocblas_gemm_flags_fp16_alt_impl : 0;
+#endif
   return rocblas_gemm_ex(handle,
                          transa,
                          transb,
@@ -65,7 +77,7 @@ inline rocblas_status rocblasGemmHelper(rocblas_handle handle,
                          C, rocblas_datatype_f16_r, ldc,
                          C, rocblas_datatype_f16_r, ldc,
                          rocblas_datatype_f32_r,
-                         rocblas_gemm_algo_standard, 0, 0);
+                         rocblas_gemm_algo_standard, 0, flag);
 }
 
 inline rocblas_status rocblasGemmHelper(rocblas_handle handle, 
@@ -144,6 +156,10 @@ inline rocblas_status rocblasGemmBatchedHelper(rocblas_handle handle,
                                                 int batchCount) {
   float h_a = onnxruntime::math::halfToFloat(*reinterpret_cast<const uint16_t*>(alpha));
   float h_b = onnxruntime::math::halfToFloat(*reinterpret_cast<const uint16_t*>(beta));
+  int flag = 0;
+#if ORT_USE_GEMM_FLAGS_FP16_ALT_IMPL
+  flag = onnxruntime::training::BackwardPassGuard::is_backward_pass() ? rocblas_gemm_flags_fp16_alt_impl : 0;
+#endif
   return rocblas_gemm_batched_ex(handle,
                                  transa,
                                  transb,
@@ -156,7 +172,7 @@ inline rocblas_status rocblasGemmBatchedHelper(rocblas_handle handle,
                                  (void**)Carray, rocblas_datatype_f16_r, ldc,
                                  batchCount,
                                  rocblas_datatype_f32_r,
-                                 rocblas_gemm_algo_standard, 0, 0);
+                                 rocblas_gemm_algo_standard, 0, flag);
 }
 
 inline rocblas_status rocblasGemmBatchedHelper(rocblas_handle handle, 
@@ -248,6 +264,10 @@ inline rocblas_status rocblasGemmStridedBatchedHelper(rocblas_handle handle,
                                                        int batchCount) {
   float h_a = onnxruntime::math::halfToFloat(*reinterpret_cast<const uint16_t*>(alpha));
   float h_b = onnxruntime::math::halfToFloat(*reinterpret_cast<const uint16_t*>(beta));
+  int flag = 0;
+#if ORT_USE_GEMM_FLAGS_FP16_ALT_IMPL
+  flag = onnxruntime::training::BackwardPassGuard::is_backward_pass() ? rocblas_gemm_flags_fp16_alt_impl : 0;
+#endif
   return rocblas_gemm_strided_batched_ex(handle,
                                          transa,
                                          transb,
@@ -260,7 +280,7 @@ inline rocblas_status rocblasGemmStridedBatchedHelper(rocblas_handle handle,
                                          C, rocblas_datatype_f16_r, ldc, strideC,
                                          batchCount,
                                          rocblas_datatype_f32_r,
-                                         rocblas_gemm_algo_standard, 0, 0);
+                                         rocblas_gemm_algo_standard, 0, flag);
 }
 
 inline rocblas_status rocblasGemmStridedBatchedHelper(rocblas_handle handle, 
