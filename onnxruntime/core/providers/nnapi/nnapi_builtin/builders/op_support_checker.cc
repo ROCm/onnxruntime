@@ -728,6 +728,8 @@ class ConvOpSupportChecker : public BaseOpSupportChecker {
   }
 
   bool HasSupportedInputsImpl(const NodeUnit& node_unit) const override;
+  bool IsNodeUnitTypeSupported(const NodeUnit& /* node_unit */) const override { return true; }
+  static bool IsQuantizedOp(const NodeUnit& node_unit);
 };
 
 /* static */ void ConvOpSupportChecker::CreateSharedOpSupportChecker(
@@ -740,8 +742,12 @@ class ConvOpSupportChecker : public BaseOpSupportChecker {
       });
 }
 
+/* static */ bool ConvOpSupportChecker::IsQuantizedOp(const NodeUnit& node_unit) {
+  return IsQuantizedConv(GetQuantizedOpType(node_unit));
+}
+
 bool ConvOpSupportChecker::HasSupportedInputsImpl(const NodeUnit& node_unit) const {
-  if (node_unit.OpType() != "QLinearConv")
+  if (!IsQuantizedOp(node_unit))
     return BaseOpSupportChecker::HasSupportedInputsImpl(node_unit);
 
   // QLinearConv only supports input of uint8 for now
@@ -754,10 +760,10 @@ bool ConvOpSupportChecker::HasSupportedInputsImpl(const NodeUnit& node_unit) con
 bool ConvOpSupportChecker::IsOpSupportedImpl(const InitializedTensorSet& initializers, const NodeUnit& node_unit,
                                              const OpSupportCheckParams& params) const {
   const auto& op_type = node_unit.OpType();
-  const bool is_qlinear_conv = (op_type == "QLinearConv");
+  bool is_quant_conv = IsQuantizedOp(node_unit);
 
   // We don't support nhwc com.microsoft.QLinearConv for now
-  if (is_qlinear_conv && node_unit.Domain() == kMSDomain) {
+  if (is_quant_conv && node_unit.Domain() == kMSDomain) {
     LOGS_DEFAULT(VERBOSE) << "com.microsoft.QLinearConv is not supported";
     return false;
   }
@@ -791,7 +797,7 @@ bool ConvOpSupportChecker::IsOpSupportedImpl(const InitializedTensorSet& initial
     return false;
   }
 
-  if (is_qlinear_conv) {
+  if (is_quant_conv) {
     // For QLinearConv, we only support uint8 output now
     int32_t output_type;
     if (!GetType(node_unit.Outputs()[0].node_arg, output_type))
@@ -1192,8 +1198,6 @@ int UnaryOpSupportChecker::GetMinSupportedOpSet(const NodeUnit& node_unit) const
   if (!HasValidQuantizationZeroPoints(initializers, node_unit, {0}, false /* is_input */))
     return false;
 
-  return false;
-
   // NNAPI requires the scale be 1.f/256 and zero point to be 0
   // See https://android.googlesource.com/platform/frameworks/ml/+/refs/heads/android10-c2f2-release/nn/common/operations/Activation.cpp#180
   float output_scale = 0.0f;
@@ -1462,7 +1466,13 @@ class ResizeOpSupportChecker : public BaseOpSupportChecker {
   int GetMinSupportedOpSet(const NodeUnit& /* node_unit */) const override { return 11; }
 
   bool HasSupportedInputsImpl(const NodeUnit& node_unit) const override;
+  bool IsNodeUnitTypeSupported(const NodeUnit& /* node_unit */) const override { return true; }
+  static bool IsQuantizedOp(const NodeUnit& node_unit) ORT_MUST_USE_RESULT;  // TODO, see if we want to move this to BaseOpBuilder
 };
+
+/* static */ bool ResizeOpSupportChecker::IsQuantizedOp(const NodeUnit& node_unit) {
+  return GetQuantizedOpType(node_unit) == QuantizedOpType::QDQResize;
+}
 
 bool ResizeOpSupportChecker::IsOpSupportedImpl(const InitializedTensorSet& initializers, const NodeUnit& node_unit,
                                                const OpSupportCheckParams& params) const {
@@ -1583,6 +1593,34 @@ bool ResizeOpSupportChecker::IsOpSupportedImpl(const InitializedTensorSet& initi
       }
     }
   }
+
+  if (IsQuantizedOp(node_unit)) {
+    // For QDQResize, we only support uint8 output now
+    // TODO, add int8 support to NNAPI, and maybe move all the output type check into a virtual function
+    // similar to HasSupportedInputsImpl
+    int32_t output_type;
+    if (!GetType(node_unit.Outputs()[0].node_arg, output_type))
+      return false;
+
+    if (output_type != ONNX_NAMESPACE::TensorProto_DataType_UINT8) {
+      LOGS_DEFAULT(VERBOSE) << "[Resize] output type: [" << output_type
+                            << "] is not supported for now";
+      return false;
+    }
+
+    // Check input scales and ZPs
+    if (!HasValidQuantizationScales(initializers, node_unit, {0}, params, true /* is_input */))
+      return false;
+    if (!HasValidQuantizationZeroPoints(initializers, node_unit, {0}, true /* is_input */))
+      return false;
+
+    // Check output scale and ZP
+    if (!HasValidQuantizationScales(initializers, node_unit, {0}, params, false /* is_input */))
+      return false;
+    if (!HasValidQuantizationZeroPoints(initializers, node_unit, {0}, false /* is_input */))
+      return false;
+  }
+
   return true;
 }
 

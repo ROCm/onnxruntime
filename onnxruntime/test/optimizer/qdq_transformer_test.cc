@@ -21,6 +21,8 @@
 #include "gtest/gtest.h"
 #include "graph_transform_test_builder.h"
 
+#include "qdq_test_utils.h"
+
 #if defined(_MSC_VER)
 #pragma warning(disable : 4127)
 #endif  // #if defined(_MSC_VER)
@@ -32,76 +34,11 @@
 namespace onnxruntime {
 namespace test {
 
-template <typename T>
-typename std::enable_if<IsTypeQuantLinearCompatible<T>::value, NodeArg*>::type
-AddQDQNodePair(ModelTestBuilder& builder, NodeArg* q_input, float scale, T zp) {
-  auto* q_output = builder.MakeIntermediate();
-  auto* dq_output = builder.MakeIntermediate();
-  builder.AddQuantizeLinearNode<T>(q_input, scale, zp, q_output);
-  builder.AddDequantizeLinearNode<T>(q_output, scale, zp, dq_output);
-  return dq_output;
-}
-
-template <typename T>
-typename std::enable_if<IsTypeQuantLinearCompatible<T>::value, NodeArg*>::type
-AddQDQNodePair(ModelTestBuilder& builder, NodeArg* q_input, float scale) {
-  auto* q_output = builder.MakeIntermediate();
-  auto* dq_output = builder.MakeIntermediate();
-  builder.AddQuantizeLinearNode(q_input, scale, q_output);
-  builder.AddDequantizeLinearNode<T>(q_output, scale, dq_output);
-  return dq_output;
-}
-
 #ifndef DISABLE_CONTRIB_OPS
 
 template <typename InputType, typename WeightType, typename BiasType, typename OutputType>
 void QDQTransformerConvTests() {
   auto test_case = [&](const std::vector<int64_t>& input_shape, const std::vector<int64_t>& weights_shape) {
-    auto build_test_case = [&](ModelTestBuilder& builder) {
-      auto* input_arg = builder.MakeInput<float>(input_shape, -1.f, 1.f);
-      auto* output_arg = builder.MakeOutput();
-
-      typedef std::numeric_limits<InputType> InputLimits;
-      typedef std::numeric_limits<WeightType> WeightLimits;
-      typedef std::numeric_limits<OutputType> OutputLimits;
-
-      InputType input_min_value = InputLimits::min();
-      InputType input_max_value = InputLimits::max();
-
-      WeightType weight_min_value = WeightLimits::min();
-      WeightType weight_max_value = WeightLimits::max();
-      if (std::is_same<WeightType, int8_t>::value) {
-        weight_min_value /= 2;
-        weight_max_value /= 2;
-      }
-
-      auto* dq_w_output = builder.MakeIntermediate();
-      auto* weight = builder.MakeInitializer<WeightType>(weights_shape, weight_min_value, weight_max_value);
-      builder.AddDequantizeLinearNode<WeightType>(weight, .03f,
-                                                  (weight_min_value + weight_max_value) / 2 + 1,
-                                                  dq_w_output);
-
-      auto* dq_bias_output = builder.MakeIntermediate();
-      auto* bias = builder.MakeInitializer<BiasType>({weights_shape[0]}, static_cast<BiasType>(0), static_cast<BiasType>(127));
-      builder.AddDequantizeLinearNode<BiasType>(bias, .0012f,
-                                                0,
-                                                dq_bias_output);
-
-      auto* conv_output = builder.MakeIntermediate();
-      auto* dq_output = AddQDQNodePair<InputType>(builder, input_arg, .04f,
-                                                  (input_min_value + input_max_value) / 2 + 1);
-      builder.AddNode("Conv", {dq_output, dq_w_output, dq_bias_output}, {conv_output});
-
-      auto* q_output = builder.MakeIntermediate();
-      builder.AddQuantizeLinearNode<OutputType>(conv_output, .039f,
-                                                (OutputLimits::min() + OutputLimits::max()) / 2 + 1,
-                                                q_output);
-
-      builder.AddDequantizeLinearNode<OutputType>(q_output, .039f,
-                                                  (OutputLimits::min() + OutputLimits::max()) / 2 + 1,
-                                                  output_arg);
-    };
-
     auto check_conv_graph = [&](InferenceSessionWrapper& session) {
       auto op_to_count = CountOpsInGraph(session.GetGraph());
       if constexpr (std::is_same<InputType, OutputType>::value &&
@@ -119,7 +56,7 @@ void QDQTransformerConvTests() {
       }
     };
 
-    TransformerTester(build_test_case,
+    TransformerTester(BuildQDQConvTestCase<InputType, WeightType, BiasType, OutputType>(input_shape, weights_shape),
                       check_conv_graph,
                       TransformerLevel::Level1,
                       TransformerLevel::Level2,
@@ -696,27 +633,6 @@ TEST(QDQTransformerTests, Transpose_No_Fusion) {
 TEST(QDQTransformerTests, Resize) {
   auto test_case = [&](const std::vector<int64_t>& input1_shape,
                        const std::vector<int64_t>& sizes_shape) {
-    auto build_test_case = [&](ModelTestBuilder& builder) {
-      auto* input1_arg = builder.MakeInput<uint8_t>(input1_shape,
-                                                    std::numeric_limits<uint8_t>::min(),
-                                                    std::numeric_limits<uint8_t>::max());
-      auto* roi = builder.MakeInitializer<float>({0}, {});
-      auto* scales = builder.MakeInitializer<float>({0}, {});
-      auto* sizes = builder.MakeInitializer<int64_t>(sizes_shape, 1, 16);
-      auto* output_arg = builder.MakeOutput();
-
-      // add DQ
-      auto* dq_output = builder.MakeIntermediate();
-      builder.AddDequantizeLinearNode<uint8_t>(input1_arg, .003f, 1, dq_output);
-
-      // add Resize
-      auto* resize_output = builder.MakeIntermediate();
-      builder.AddNode("Resize", {dq_output, roi, scales, sizes}, {resize_output});
-
-      // add Q
-      builder.AddQuantizeLinearNode<uint8_t>(resize_output, .003f, 1, output_arg);
-    };
-
     auto check_matmul_graph = [&](InferenceSessionWrapper& session) {
       auto op_to_count = CountOpsInGraph(session.GetGraph());
       EXPECT_EQ(op_to_count["Resize"], 1);
@@ -724,12 +640,14 @@ TEST(QDQTransformerTests, Resize) {
       EXPECT_EQ(op_to_count["DequantizeLinear"], 0);
     };
 
-    TransformerTester(build_test_case, check_matmul_graph,
+    TransformerTester(BuildQDQResizeTestCase(input1_shape, sizes_shape),
+                      check_matmul_graph,
                       TransformerLevel::Level1,
                       TransformerLevel::Level2);
   };
 
-  test_case({2, 13, 12, 37}, {4});
+  RandomValueGenerator rand_gen{optional<RandomValueGenerator::RandomSeedType>{2345}};
+  test_case({2, 13, 12, 37}, rand_gen.Uniform<int64_t>(std::vector<int64_t>{4}, 1, 16));
 }
 
 TEST(QDQTransformerTests, Resize_No_Fusion) {

@@ -15,7 +15,7 @@ endif()
 
 set(disabled_warnings)
 function(AddTest)
-  cmake_parse_arguments(_UT "DYN" "TARGET" "LIBS;SOURCES;DEPENDS" ${ARGN})
+  cmake_parse_arguments(_UT "DYN" "TARGET" "LIBS;SOURCES;DEPENDS;TEST_ARGS" ${ARGN})
   list(REMOVE_DUPLICATES _UT_SOURCES)
 
   if (${CMAKE_SYSTEM_NAME} STREQUAL "iOS")
@@ -84,6 +84,9 @@ function(AddTest)
       # Raw new and delete. A lot of such things came from googletest.
       target_compile_options(${_UT_TARGET} PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler /wd26409>"
                 "$<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:/wd26409>")
+      # "Global initializer calls a non-constexpr function."
+      target_compile_options(${_UT_TARGET} PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler /wd26426>"
+                "$<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:/wd26426>")
     endif()
     target_compile_options(${_UT_TARGET} PRIVATE ${disabled_warnings})
   else()
@@ -93,7 +96,7 @@ function(AddTest)
     target_compile_options(${_UT_TARGET} PRIVATE "-Wno-error=uninitialized")
   endif()
 
-  set(TEST_ARGS)
+  set(TEST_ARGS ${_UT_TEST_ARGS})
   if (onnxruntime_GENERATE_TEST_REPORTS)
     # generate a report file next to the test program
     if (onnxruntime_BUILD_WEBASSEMBLY)
@@ -233,7 +236,7 @@ else()  # minimal and/or reduced ops build
   endif()
 endif()
 
-if((NOT onnxruntime_MINIMAL_BUILD OR onnxruntime_ENABLE_RUNTIME_OPTIMIZATION_REPLAY_IN_MINIMAL_BUILD)
+if((NOT onnxruntime_MINIMAL_BUILD OR onnxruntime_ENABLE_RUNTIME_OPTIMIZATION_IN_MINIMAL_BUILD)
    AND NOT onnxruntime_REDUCED_OPS_BUILD)
   list(APPEND onnxruntime_test_optimizer_src
        "${TEST_SRC_DIR}/optimizer/runtime_optimization/graph_runtime_optimization_test.cc")
@@ -456,12 +459,12 @@ if(onnxruntime_USE_COREML)
   endif()
 endif()
 
-file(GLOB_RECURSE onnxruntime_test_tvm_src CONFIGURE_DEPENDS
-  "${TEST_SRC_DIR}/tvm/*.h"
-  "${TEST_SRC_DIR}/tvm/*.cc"
-  )
-
 if(onnxruntime_USE_NUPHAR)
+  file(GLOB_RECURSE onnxruntime_test_tvm_src CONFIGURE_DEPENDS
+    "${TEST_SRC_DIR}/tvm/*.h"
+    "${TEST_SRC_DIR}/tvm/*.cc"
+    )
+
   list(APPEND onnxruntime_test_framework_src_patterns  ${TEST_SRC_DIR}/framework/nuphar/*)
   list(APPEND onnxruntime_test_framework_libs onnxruntime_providers_nuphar)
   list(APPEND onnxruntime_test_providers_dependencies onnxruntime_providers_nuphar)
@@ -641,7 +644,7 @@ if (onnxruntime_ENABLE_TRAINING)
   list(APPEND all_tests ${onnxruntime_test_training_src})
 endif()
 
-if (onnxruntime_USE_TVM)
+if (onnxruntime_USE_NUPHAR)
   list(APPEND all_tests ${onnxruntime_test_tvm_src})
 endif()
 
@@ -682,6 +685,17 @@ if (onnxruntime_BUILD_WEBASSEMBLY)
   endif()
 endif()
 
+set(test_all_args)
+if (onnxruntime_USE_TENSORRT)
+    # TRT EP CI takes much longer time when updating to TRT 8.2
+    # So, we only run trt ep and exclude other eps to reduce CI test time.  
+    #
+    # The test names of model tests were using sequential number in the past.
+    # This PR https://github.com/microsoft/onnxruntime/pull/10220 (Please see ExpandModelName function in model_tests.cc for more details) 
+    # made test name contain the "ep" and "model path" information, so we can easily filter the tests using cuda ep or other ep with *cpu__* or *xxx__*.  
+    list(APPEND test_all_args "--gtest_filter=-*cpu__*:*cuda__*" )
+endif ()
+
 AddTest(
   TARGET onnxruntime_test_all
   SOURCES ${all_tests} ${onnxruntime_unittest_main_src}
@@ -689,6 +703,7 @@ AddTest(
     onnx_test_runner_common ${onnxruntime_test_providers_libs} ${onnxruntime_test_common_libs}
     onnx_test_data_proto nlohmann_json::nlohmann_json
   DEPENDS ${all_dependencies}
+  TEST_ARGS ${test_all_args} 
 )
 if (MSVC)
   # The warning means the type of two integral values around a binary operator is narrow than their result.
@@ -877,6 +892,8 @@ if (NOT onnxruntime_ENABLE_TRAINING_TORCH_INTEROP)
                         "$<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:/wd26814>")
       target_compile_options(onnxruntime_benchmark PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler /wd26814>"
                         "$<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:/wd26497>")
+      target_compile_options(onnxruntime_benchmark PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler /wd26426>"
+                        "$<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:/wd26426>")
       target_compile_options(onnxruntime_benchmark PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:SHELL:--compiler-options /utf-8>"
               "$<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:/utf-8>")
     endif()
@@ -893,6 +910,8 @@ if (NOT onnxruntime_ENABLE_TRAINING_TORCH_INTEROP)
       target_link_libraries(onnxruntime_mlas_benchmark PRIVATE debug Dbghelp)
       # Avoid using new and delete. But this is a benchmark program, it's ok if it has a chance to leak.
       target_compile_options(onnxruntime_mlas_benchmark PRIVATE /wd26409)
+      # "Global initializer calls a non-constexpr function." BENCHMARK_CAPTURE macro needs this.
+      target_compile_options(onnxruntime_mlas_benchmark PRIVATE /wd26426)
     else()
       target_link_libraries(onnxruntime_mlas_benchmark PRIVATE nsync_cpp ${CMAKE_DL_LIBS})
     endif()
@@ -1141,6 +1160,8 @@ if (NOT onnxruntime_ENABLE_TRAINING_TORCH_INTEROP)
             "$<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:/utf-8>")
     target_compile_options(onnxruntime_mlas_test PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler /wd6326>"
                 "$<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:/wd6326>")
+    target_compile_options(onnxruntime_mlas_test PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler /wd26426>"
+                "$<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:/wd26426>")
   endif()
   if(${CMAKE_SYSTEM_NAME} STREQUAL "iOS")
     set_target_properties(onnxruntime_mlas_test PROPERTIES
