@@ -9,6 +9,7 @@
 #include "core/common/logging/macros.h"
 
 #include <utility>
+#include <iostream>
 
 namespace onnxruntime {
 namespace test {
@@ -170,6 +171,8 @@ void TestCaseRequestContext::RunSequentially(size_t repeat_count) {
       AccumulateTimeSpec(&test_case_time_, &zero, &result.second);
     }
   }
+
+  std::cout << "Test " << test_case_.GetTestCaseName() << " finished in " << TimeSpecToSeconds(&test_case_time_) << " seconds with " << data_count << " inputs!" << std::endl;
 
   CalculateAndLogStats();
 }
