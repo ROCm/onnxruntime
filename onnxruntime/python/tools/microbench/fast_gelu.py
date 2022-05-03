@@ -28,6 +28,7 @@ class ModelParam:
 class BenchmarkFastGelu(BenchmarkOp):
     def __init__(self, args):
         BenchmarkOp.__init__(self, args)
+        self.args = args
 
     def create_inputs_outputs(cls, op_param):
         np.random.seed(0)
@@ -42,7 +43,11 @@ class BenchmarkFastGelu(BenchmarkOp):
         model = "models/fast_gelu_fp16.onnx" if self.args.precision == "fp16" else "models/fast_gelu_fp32.onnx"
         data_type = np.float16 if self.args.precision == "fp16" else np.float32
         # bert-large
-        model_param = ModelParam(1, 384, 1024 * 4, data_type)
+        model_param = ModelParam(self.args.batch_size, self.args.seq_len, self.args.inter_dim, data_type)
+        #model_param = ModelParam(1, 384, 1024 * 4, data_type)
+        #model_param = ModelParam(32, 384, 1024 * 4, data_type)
+        #model_param = ModelParam(64, 384, 1024 * 4, data_type)
+        #model_param = ModelParam(128, 384, 1024 * 4, data_type)
         op_param = OpParam(model_param.batch_size, model_param.seq_len, model_param.inter_dim, model_param.data_type)
         self.add_case(op_param, model)
 
@@ -53,6 +58,9 @@ class BenchmarkFastGelu(BenchmarkOp):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--batch-size", type=int, required=True, help="Batch size")
+    parser.add_argument("--seq-len", type=int, required=True, help="Sequence length")
+    parser.add_argument("--inter-dim", type=int, required=True, help="Intermediate dimension")
     add_arguments(parser)
     args = parser.parse_args()
     bm = BenchmarkFastGelu(args)
@@ -60,4 +68,11 @@ def main():
 
 
 if __name__ == "__main__":
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--batch-size", type=int, required=True, help="Batch size")
+    parser.add_argument("--seq-len", type=int, required=True, help="Sequence length")
+    parser.add_argument("--inter-dim", type=int, required=True, help="Intermediate dimension")
+    args = parser.parse_args()
+    """
     main()
