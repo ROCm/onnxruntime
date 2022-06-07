@@ -47,19 +47,21 @@ Status GemmInt8(int m, int n, int k,
     HIP_RETURN_IF_ERROR(hipMemcpy2DAsync(b_padded.get(), ldb_aligned, b, ldb, n, k, hipMemcpyDeviceToDevice, stream));
   }
 
-  hipblasHandle_t hipblas = rocm_kernel->RocblasHandle();
-  hipblasSetStream(hipblas, stream);
-  // Or change this to rocblas_gemm_ex ?
-  HIPBLAS_RETURN_IF_ERROR(hipblasGemmEx(
-      hipblas,
-      HIPBLAS_OP_N, HIPBLAS_OP_N,
+  auto handle = rocm_kernel->RocblasHandle();
+  rocblas_set_stream(handle, stream);
+  ROCBLAS_RETURN_IF_ERROR(rocblas_gemm_ex(
+      handle,
+      rocblas_operation_none, rocblas_operation_none,
       n, m, k,
       &alpha,
-      ldb_aligned == ldb ? b : b_padded.get(), HIPBLAS_R_8I, ldb_aligned,
-      lda_aligned == lda ? a : a_padded.get(), HIPBLAS_R_8I, lda_aligned,
+      ldb_aligned == ldb ? b : b_padded.get(), rocblas_datatype_i8_r, ldb_aligned,
+      lda_aligned == lda ? a : a_padded.get(), rocblas_datatype_i8_r, lda_aligned,
       &beta,
-      c, HIPBLAS_R_32I, ldc, HIPBLAS_R_32I,
-      HIPBLAS_GEMM_DEFAULT));
+      c, rocblas_datatype_i32_r, ldc,
+      c, rocblas_datatype_i32_r, ldc, // C == D
+      rocblas_datatype_i32_r,
+      rocblas_gemm_algo_standard,
+      0, 0));
   return Status::OK();
 }
 }  // namespace rocm
