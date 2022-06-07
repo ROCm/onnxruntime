@@ -25,6 +25,11 @@ namespace rocm {
                           ? common::Status::OK() \
                           : ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "ROCBLAS error executing ", #expr))
 
+#define HIPBLAS_RETURN_IF_ERROR(expr)             \
+  ORT_RETURN_IF_ERROR(HIPBLAS_CALL(expr)          \
+                          ? common::Status::OK() \
+                          : ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "HIPBLAS error executing ", #expr))
+
 #define HIPSPARSE_RETURN_IF_ERROR(expr)           \
   ORT_RETURN_IF_ERROR(HIPSPARSE_CALL(expr)        \
                           ? common::Status::OK() \

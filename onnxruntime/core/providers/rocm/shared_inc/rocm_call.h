@@ -15,6 +15,7 @@ bool RocmCall(ERRTYPE retCode, const char* exprString, const char* libName, ERRT
 
 #define HIP_CALL(expr) (RocmCall<hipError_t, false>((expr), #expr, "HIP", hipSuccess))
 #define ROCBLAS_CALL(expr) (RocmCall<rocblas_status, false>((expr), #expr, "ROCBLAS", rocblas_status_success))
+#define HIPBLAS_CALL(expr) (RocmCall<hipblasStatus_t, false>((expr), #expr, "HIPBLAS", HIPBLAS_STATUS_SUCCESS))
 #define HIPSPARSE_CALL(expr) (RocmCall<hipsparseStatus_t, false>((expr), #expr, "HIPSPARSE", HIPSPARSE_STATUS_SUCCESS))
 #define HIPRAND_CALL(expr) (RocmCall<hiprandStatus_t, false>((expr), #expr, "HIPRAND", HIPRAND_STATUS_SUCCESS))
 #define MIOPEN_CALL(expr) (RocmCall<miopenStatus_t, false>((expr), #expr, "MIOPEN", miopenStatusSuccess))

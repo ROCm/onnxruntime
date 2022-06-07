@@ -10,6 +10,7 @@
 
 #include <hip/hip_runtime.h>
 #include <rocblas.h>
+#include <hipblas.h>
 #include <hipsparse.h>
 #include <hiprand/hiprand.h>
 #include <miopen/miopen.h>

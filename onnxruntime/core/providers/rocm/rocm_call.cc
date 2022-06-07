@@ -53,6 +53,29 @@ const char* RocmErrString<rocblas_status>(rocblas_status e) {
 }
 
 template <>
+const char* RocmErrString<hipblasStatus_t>(hipblasStatus_t e) {
+  (void)hipDeviceSynchronize(); // void to silence nodiscard
+
+  switch (e) {
+    CASE_ENUM_TO_STR(HIPBLAS_STATUS_SUCCESS);
+    CASE_ENUM_TO_STR(HIPBLAS_STATUS_NOT_INITIALIZED);
+    CASE_ENUM_TO_STR(HIPBLAS_STATUS_ALLOC_FAILED);
+    CASE_ENUM_TO_STR(HIPBLAS_STATUS_INVALID_VALUE);
+    CASE_ENUM_TO_STR(HIPBLAS_STATUS_MAPPING_ERROR);
+    CASE_ENUM_TO_STR(HIPBLAS_STATUS_EXECUTION_FAILED);
+    CASE_ENUM_TO_STR(HIPBLAS_STATUS_INTERNAL_ERROR);
+    CASE_ENUM_TO_STR(HIPBLAS_STATUS_NOT_SUPPORTED);
+    CASE_ENUM_TO_STR(HIPBLAS_STATUS_ARCH_MISMATCH);
+    CASE_ENUM_TO_STR(HIPBLAS_STATUS_HANDLE_IS_NULLPTR);
+    CASE_ENUM_TO_STR(HIPBLAS_STATUS_INVALID_ENUM);
+    CASE_ENUM_TO_STR(HIPBLAS_STATUS_UNKNOWN);
+    default:
+      return "(look for hiprandStatus_t in hipblas.h)";
+  }
+}
+
+
+template <>
 const char* RocmErrString<hiprandStatus_t>(hiprandStatus_t) {
   (void)hipDeviceSynchronize(); // void to silence nodiscard
   return "(see hiprand.h & look for hiprandStatus_t or HIPRAND_STATUS_xxx)";
@@ -136,6 +159,7 @@ template bool RocmCall<hipError_t, false>(hipError_t retCode, const char* exprSt
 template bool RocmCall<hipError_t, true>(hipError_t retCode, const char* exprString, const char* libName, hipError_t successCode, const char* msg);
 template bool RocmCall<rocblas_status, false>(rocblas_status retCode, const char* exprString, const char* libName, rocblas_status successCode, const char* msg);
 template bool RocmCall<rocblas_status, true>(rocblas_status retCode, const char* exprString, const char* libName, rocblas_status successCode, const char* msg);
+template bool RocmCall<hipblasStatus_t, false>(hipblasStatus_t retCode, const char* exprString, const char* libName, hipblasStatus_t successCode, const char* msg);
 template bool RocmCall<miopenStatus_t, false>(miopenStatus_t retCode, const char* exprString, const char* libName, miopenStatus_t successCode, const char* msg);
 template bool RocmCall<miopenStatus_t, true>(miopenStatus_t retCode, const char* exprString, const char* libName, miopenStatus_t successCode, const char* msg);
 template bool RocmCall<hiprandStatus_t, false>(hiprandStatus_t retCode, const char* exprString, const char* libName, hiprandStatus_t successCode, const char* msg);
