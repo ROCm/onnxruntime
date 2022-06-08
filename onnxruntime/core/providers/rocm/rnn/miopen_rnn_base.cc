@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 #include "core/providers/shared_library/provider_api.h"
-#include "cudnn_rnn_base.h"
+#include "miopen_rnn_base.h"
 #include "rnn_impl.h"
 
 namespace onnxruntime {
