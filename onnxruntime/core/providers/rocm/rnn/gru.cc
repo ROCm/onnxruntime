@@ -4,7 +4,7 @@
 #include "core/providers/shared_library/provider_api.h"
 #include "gru.h"
 #include "rnn_impl.h"
-#include "core/providers/cuda/cudnn_common.h"
+#include "core/providers/rocm/miopen_common.h"
 
 namespace onnxruntime {
 namespace rocm {
@@ -16,7 +16,7 @@ namespace rocm {
       7,                                                                        \
       13,                                                                       \
       T,                                                                        \
-      kCudaExecutionProvider,                                                   \
+      kRocmExecutionProvider,                                                   \
       (*KernelDefBuilder::Create())                                             \
           .TypeConstraint("T", DataTypeImpl::GetTensorType<T>())                \
           .TypeConstraint("T1", DataTypeImpl::GetTensorType<int32_t>())         \
@@ -29,7 +29,7 @@ namespace rocm {
       kOnnxDomain,                                                              \
       14,                                                                       \
       T,                                                                        \
-      kCudaExecutionProvider,                                                   \
+      kRocmExecutionProvider,                                                   \
       (*KernelDefBuilder::Create())                                             \
           .TypeConstraint("T", DataTypeImpl::GetTensorType<T>())                \
           .TypeConstraint("T1", DataTypeImpl::GetTensorType<int32_t>())         \
