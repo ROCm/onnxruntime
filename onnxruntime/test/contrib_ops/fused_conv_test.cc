@@ -49,8 +49,7 @@ static std::unordered_set<std::string> providers_except_cpu_cuda = {
     kDmlExecutionProvider,
     kMIGraphXExecutionProvider,
     kAclExecutionProvider,
-    kArmNNExecutionProvider,
-    kRocmExecutionProvider};
+    kArmNNExecutionProvider};
 
 
 void TestConvOp(const ConvOpAndTestAttributes& attributes,
