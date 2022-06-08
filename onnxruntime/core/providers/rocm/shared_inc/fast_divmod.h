@@ -7,12 +7,12 @@
 
 #include <iostream>
 #include <limits>
-#include <cuda_runtime.h>
+#include <hip/hip_runtime.h>
 #include <cmath>
 #include "core/common/common.h"
 
 namespace onnxruntime {
-namespace cuda {
+namespace rocm {
 
 // The code below is based on section 4 Unsigned division of paper https://gmplib.org/~tege/divcnst-pldi94.pdf
 // In current ORT, fast_divmod is used for calculating the position of a element in tensor,
@@ -58,5 +58,5 @@ struct fast_divmod {
   uint32_t l_;  // l_ = ceil(log2(d_))
 };
 
-}  // namespace cuda
+}  // namespace rocm
 }  // namespace onnxruntime
