@@ -19,13 +19,15 @@ miopenStatus_t _miopenAddTensor(
     const void *A,
     const void *beta,
     const miopenTensorDescriptor_t cDesc,
-    void *C)
+    void *C,
+    const void* zero_scalar)
 {
     const miopenTensorOp_t tensorOp = miopenTensorOpAdd;
-    return miopenOpTensor(handle, tensorOp, alpha,
-                          cDesc, C, alpha,
-                          aDesc, A, beta,
-                          cDesc, C);
+    // opnd2 = Add ( 0.0 * opnd0, alpha * opnd1 ) + alpha * opnd2
+    return miopenOpTensor(handle, tensorOp,
+                          zero_scalar, cDesc, C,
+                          alpha, aDesc, A,
+                          alpha, cDesc, C);
 }
 
 }
@@ -94,12 +96,16 @@ class FusedConv : public onnxruntime::rocm::Conv<T> {
                            workspace.get(),
                            Base::s_.workspace_bytes));
     if (has_b) {
-        MIOPEN_RETURN_IF_ERROR(_miopenAddTensor(Base::MiopenHandle(), &alpha, Base::s_.b_tensor, Base::s_.b_data,
-                                                &alpha, Base::s_.y_tensor, Base::s_.y_data));
+        MIOPEN_RETURN_IF_ERROR(_miopenAddTensor(Base::MiopenHandle(),
+                                                &alpha, Base::s_.b_tensor, Base::s_.b_data,
+                                                &alpha, Base::s_.y_tensor, Base::s_.y_data,
+                                                &beta));
     }
     if (has_z) {
-        MIOPEN_RETURN_IF_ERROR(_miopenAddTensor(Base::MiopenHandle(), &alpha, Base::s_.z_tensor, Base::s_.z_data,
-                                                &alpha, Base::s_.y_tensor, Base::s_.y_data));
+        MIOPEN_RETURN_IF_ERROR(_miopenAddTensor(Base::MiopenHandle(),
+                                                &alpha, Base::s_.z_tensor, Base::s_.z_data,
+                                                &alpha, Base::s_.y_tensor, Base::s_.y_data,
+                                                &beta));
     }
     MIOPEN_RETURN_IF_ERROR(miopenActivationForward(Base::MiopenHandle(), activation_desc_, &alpha, Base::s_.y_tensor,
                                                    Base::s_.y_data, &beta, Base::s_.y_tensor, Base::s_.y_data));
