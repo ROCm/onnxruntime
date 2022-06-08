@@ -11,10 +11,10 @@
 #include <vector>
 #include <gsl/gsl>
 
-#include "core/providers/cuda/shared_inc/fast_divmod.h"
+#include "core/providers/rocm/shared_inc/fast_divmod.h"
 
 namespace onnxruntime {
-namespace cuda {
+namespace rocm {
 
 enum class SimpleBroadcast : int32_t {
   NoBroadcast = (int32_t)-1,
@@ -34,18 +34,18 @@ template <typename T>
 class IConstantBuffer {
  public:
   virtual ~IConstantBuffer(){};
-  virtual const T* GetBuffer(cudaStream_t stream, size_t count) = 0;
+  virtual const T* GetBuffer(hipStream_t stream, size_t count) = 0;
 };
 
 template <typename T>
 std::unique_ptr<IConstantBuffer<T>> CreateConstantOnes();
 
 template <typename T>
-void Fill(cudaStream_t stream, T* output, T value, int64_t count);
+void Fill(hipStream_t stream, T* output, T value, int64_t count);
 
 /*
   This is a utility wrapper for arbitrary type array
-  Commonly used for passing small list of metadata during cuda kernel launch
+  Commonly used for passing small list of metadata during rocm kernel launch
   It's better to pass the array by value than having another cuMemcpy to pass the data to device.
 */
 template <typename T, int32_t capacity = 8>
@@ -103,5 +103,5 @@ struct TArray {
   T data_[capacity];
 };
 
-}  // namespace cuda
+}  // namespace rocm
 }  // namespace onnxruntime
