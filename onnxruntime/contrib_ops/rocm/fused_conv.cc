@@ -11,7 +11,6 @@ namespace rocm {
 namespace {
 
 // Copied from hipDNN/library/src/hcc_detail/hipdnn_miopen.cpp
-// hipdnn is not always available
 miopenStatus_t _miopenAddTensor(
     miopenHandle_t handle,
     const void *alpha,
@@ -42,14 +41,6 @@ class FusedConv : public onnxruntime::rocm::Conv<T> {
         MapMode(activation) == Status::OK() &&
         miopenCreateActivationDescriptor(&activation_desc_) == miopenStatusSuccess) {
 
-#if 0
-      // FIXME: No corresponding cudnnGetActivationDescriptor in miOpen, and
-      // APIs are not even close.
-      status_ = miopenSetActivationDescriptor(activation_desc_,
-                                              activation_mode_,
-                                              miopenNanPropagation_t::MIOPEN_NOT_PROPAGATE_NAN,
-                                              std::numeric_limits<double>::max());
-#endif
       status_ = miopenSetActivationDescriptor(activation_desc_,
                                               activation_mode_,
                                               0.0, 0.0, 0.0);
@@ -80,8 +71,6 @@ class FusedConv : public onnxruntime::rocm::Conv<T> {
     const auto beta = onnxruntime::rocm::Consts<HipT>::Zero;
     IAllocatorUniquePtr<void> workspace = Base::GetWorkSpace();
 
-    // FIXME: There is no corresponding function of
-    // cudnnConvolutionBiasActivationForward in miopen
     MIOPEN_RETURN_IF_ERROR(miopenConvolutionForward(Base::MiopenHandle(),
                            &alpha,
                            Base::s_.x_tensor,
