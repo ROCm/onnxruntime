@@ -6,7 +6,7 @@
 #include "miopen_rnn_base.h"
 
 namespace onnxruntime {
-namespace cuda {
+namespace rocm {
 
 template <typename T>
 class LSTM final : public CudnnRnnBase<T> {
@@ -26,5 +26,5 @@ class LSTM final : public CudnnRnnBase<T> {
   }
 };
 
-}  // namespace cuda
+}  // namespace rocm
 }  // namespace onnxruntime

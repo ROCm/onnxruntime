@@ -2,11 +2,11 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-#include "core/providers/cuda/cu_inc/common.cuh"
+#include "core/providers/rocm/cu_inc/common.cuh"
 #include "rnn_impl.h"
 
 namespace onnxruntime {
-namespace cuda {
+namespace rocm {
 
 template <typename T>
 __global__ void _ReverseBySequenceKernel(const int32_t seq_length,
@@ -34,7 +34,7 @@ void ReverseBySequence(hipStream_t stream,
   int32_t block_size = batch_size * input_or_hidden_size;
   fast_divmod div_batch_block(block_size);
   int blocksPerGrid = (int)(ceil(static_cast<float>(N) / GridDim::maxThreadsPerBlock));
-  hipLaunchKernelGGL(HIP_KERNEL_NAME(_ReverseBySequenceKernel<T>), blocksPerGrid, GridDim::maxThreadsPerBlock, 0, stream, 
+  hipLaunchKernelGGL(HIP_KERNEL_NAME(_ReverseBySequenceKernel<T>), blocksPerGrid, GridDim::maxThreadsPerBlock, 0, stream,
       seq_length, block_size, div_batch_block, data, reversed_data, (CUDA_LONG)N);
 }
 
@@ -70,14 +70,14 @@ void ReorderBidirectionalDataInSequence(hipStream_t stream,
                                         const T* data,
                                         T* reordered_data,
                                         const size_t N) {
-  // The cudnn Y output is organize like [Y1, YB1] [Y2, YB2] ... 
+  // The cudnn Y output is organize like [Y1, YB1] [Y2, YB2] ...
   // need to reorganize it to [Y1, Y2, ...] [YB1, YB2, ...]
   int32_t seq_block_size = 2 * batch_size * hidden_size;
   fast_divmod div_seq_block(seq_block_size);
   fast_divmod div_output_block(hidden_size);
   int blocksPerGrid = (int)(ceil(static_cast<float>(N) / GridDim::maxThreadsPerBlock));
 
-  hipLaunchKernelGGL(HIP_KERNEL_NAME(_BidirectionalDataKernel<T>), blocksPerGrid, GridDim::maxThreadsPerBlock, 0, stream, 
+  hipLaunchKernelGGL(HIP_KERNEL_NAME(_BidirectionalDataKernel<T>), blocksPerGrid, GridDim::maxThreadsPerBlock, 0, stream,
       seq_length, batch_size, hidden_size, seq_block_size,
       div_seq_block, div_output_block,
       data, reordered_data, (CUDA_LONG)N);
@@ -111,7 +111,7 @@ __global__ void _RnnMaskKernel(const int32_t seq_length,
     return;
   }
 
-  if ((y_h_output_data != nullptr) && 
+  if ((y_h_output_data != nullptr) &&
       ((direction_id == 0 && (seq_id + 1) == batch_seq_length) || (direction_id == 1 && seq_id == 0))) {
     int hy_idx = direction_id * batch_size * hidden_size + batch_id * hidden_size + offset;
     y_h_output_data[hy_idx] = y_output_data[id];
@@ -132,7 +132,7 @@ void RnnMaskImpl(hipStream_t stream,
   fast_divmod div_dir_block(batch_size * hidden_size);
   fast_divmod div_batch_block(hidden_size);
   int blocksPerGrid = (int)(ceil(static_cast<float>(N) / GridDim::maxThreadsPerBlock));
-  hipLaunchKernelGGL(HIP_KERNEL_NAME(_RnnMaskKernel<T>), blocksPerGrid, GridDim::maxThreadsPerBlock, 0, stream, 
+  hipLaunchKernelGGL(HIP_KERNEL_NAME(_RnnMaskKernel<T>), blocksPerGrid, GridDim::maxThreadsPerBlock, 0, stream,
       seq_length, batch_size, hidden_size, sequence_lens, div_seq_block,
       div_dir_block, div_batch_block, y_output_data, y_h_output_data, (CUDA_LONG)N);
 }
@@ -167,7 +167,7 @@ __global__ void _MaskZeroSequences(const int32_t hidden_size,
   }
 }
 
-template <typename T> 
+template <typename T>
 void MaskZeroSequences(hipStream_t stream,
                        const int32_t hidden_size,
                        T* y_output_data,
@@ -176,7 +176,7 @@ void MaskZeroSequences(hipStream_t stream,
                        const int32_t* zeor_seq_index_cache,
                        const size_t N) {
   int blocksPerGrid = (int)(ceil(static_cast<float>(N) / GridDim::maxThreadsPerBlock));
-  hipLaunchKernelGGL(HIP_KERNEL_NAME(_MaskZeroSequences<T>), blocksPerGrid, GridDim::maxThreadsPerBlock, 0, stream, 
+  hipLaunchKernelGGL(HIP_KERNEL_NAME(_MaskZeroSequences<T>), blocksPerGrid, GridDim::maxThreadsPerBlock, 0, stream,
       hidden_size, y_output_data, y_h_output_data, y_c_output_data, zeor_seq_index_cache, (CUDA_LONG)N);
 }
 
@@ -216,5 +216,5 @@ SPECIALIZED_RNN_IMPL(half)
 SPECIALIZED_RNN_IMPL(float)
 SPECIALIZED_RNN_IMPL(double)
 
-}  // namespace cuda
+}  // namespace rocm
 }  // namespace onnxruntime

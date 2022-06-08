@@ -9,7 +9,7 @@
 #include <hipDNN.h>
 
 namespace onnxruntime {
-namespace cuda {
+namespace rocm {
 
 template <typename T>
 class GRU final : public CudnnRnnBase<T> {
@@ -28,5 +28,5 @@ class GRU final : public CudnnRnnBase<T> {
   }
 };
 
-}  // namespace cuda
+}  // namespace rocm
 }  // namespace onnxruntime

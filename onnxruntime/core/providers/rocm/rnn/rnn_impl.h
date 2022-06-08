@@ -6,7 +6,7 @@
 #include "core/providers/cuda/shared_inc/cuda_utils.h"
 
 namespace onnxruntime {
-namespace cuda {
+namespace rocm {
 
 template<typename T>
 void ReverseBySequence(hipStream_t stream,
@@ -45,5 +45,5 @@ void MaskZeroSequences(hipStream_t stream,
                        T* y_c_output_data,
                        const int32_t* zeor_seq_index_cache_async_buffer,
                        const size_t N);
-}  // namespace cuda
+}  // namespace rocm
 }  // namespace onnxruntime

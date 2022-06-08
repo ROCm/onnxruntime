@@ -6,7 +6,7 @@
 #include "rnn_impl.h"
 
 namespace onnxruntime {
-namespace cuda {
+namespace rocm {
 
 template <typename T>
 void CudnnRnnBase<T>::SetWeightBias(const hipdnnHandle_t handle,
@@ -409,5 +409,5 @@ template class CudnnRnnBase<float>;
 template class CudnnRnnBase<double>;
 template class CudnnRnnBase<MLFloat16>;
 
-}  // namespace cuda
+}  // namespace rocm
 }  // namespace onnxruntime

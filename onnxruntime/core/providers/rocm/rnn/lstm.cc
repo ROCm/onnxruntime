@@ -5,7 +5,7 @@
 #include "lstm.h"
 
 namespace onnxruntime {
-namespace cuda {
+namespace rocm {
 
 #define REGISTER_KERNEL_VERSIONED_TYPED(T)                                      \
   ONNX_OPERATOR_VERSIONED_TYPED_KERNEL_EX(                                      \
@@ -42,5 +42,5 @@ REGISTER_KERNEL_TYPED(float);
 REGISTER_KERNEL_TYPED(double);
 REGISTER_KERNEL_TYPED(MLFloat16);
 
-}  // namespace cuda
+}  // namespace rocm
 }  // namespace onnxruntime
