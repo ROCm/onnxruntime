@@ -9,7 +9,7 @@ namespace onnxruntime {
 namespace cuda {
 
 template<typename T>
-void ReverseBySequence(cudaStream_t stream,
+void ReverseBySequence(hipStream_t stream,
                        const int32_t seq_length,
                        const int32_t batch_size,
                        const int32_t input_or_hidden_size,
@@ -18,7 +18,7 @@ void ReverseBySequence(cudaStream_t stream,
                        const size_t N);
 
 template <typename T>
-void ReorderBidirectionalDataInSequence(cudaStream_t stream,
+void ReorderBidirectionalDataInSequence(hipStream_t stream,
                                         const int32_t seq_length,
                                         const int32_t batch_size,
                                         const int32_t hidden_size,
@@ -27,7 +27,7 @@ void ReorderBidirectionalDataInSequence(cudaStream_t stream,
                                         const size_t N);
 
 template <typename T>
-void RnnMaskImpl(cudaStream_t stream,
+void RnnMaskImpl(hipStream_t stream,
                  const int32_t num_directions,
                  const int32_t seq_length,
                  const int32_t batch_size,
@@ -38,7 +38,7 @@ void RnnMaskImpl(cudaStream_t stream,
                  const size_t N);
 
 template <typename T>
-void MaskZeroSequences(cudaStream_t stream,
+void MaskZeroSequences(hipStream_t stream,
                        const int32_t hidden_size,
                        T* y_output_data,
                        T* y_h_output_data,

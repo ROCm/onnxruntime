@@ -5,7 +5,7 @@
 
 #include "gsl/gsl"
 
-#include <cudnn.h>
+#include <hipDNN.h>
 
 #include "core/providers/cuda/cuda_kernel.h"
 #include "core/providers/cuda/cudnn_common.h"
@@ -33,41 +33,41 @@ class CudnnRNN {
 
   ~CudnnRNN() {
     if (cudnn_rnn_desc_ != nullptr) {
-      cudnnDestroyRNNDescriptor(cudnn_rnn_desc_);
+      hipdnnDestroyRNNDescriptor(cudnn_rnn_desc_);
       cudnn_rnn_desc_ = nullptr;
     }
   }
 
-  Status Set(const cudnnHandle_t& cudnnHandle, int64_t hidden_size, int num_layers,
-             cudnnDropoutDescriptor_t cudnn_dropout_desc, cudnnDirectionMode_t cudnn_direction_model,
-             cudnnRNNMode_t rnn_mode, cudnnDataType_t dataType, const cudaDeviceProp& prop) {
+  Status Set(const hipdnnHandle_t& cudnnHandle, int64_t hidden_size, int num_layers,
+             hipdnnDropoutDescriptor_t cudnn_dropout_desc, hipdnnDirectionMode_t cudnn_direction_model,
+             hipdnnRNNMode_t rnn_mode, hipdnnDataType_t dataType, const hipDeviceProp_t& prop) {
     if (!cudnn_rnn_desc_)
-      CUDNN_RETURN_IF_ERROR(cudnnCreateRNNDescriptor(&cudnn_rnn_desc_));
+      CUDNN_RETURN_IF_ERROR(hipdnnCreateRNNDescriptor(&cudnn_rnn_desc_));
 
-    CUDNN_RETURN_IF_ERROR(cudnnSetRNNDescriptor_v6(cudnnHandle,
+    CUDNN_RETURN_IF_ERROR(hipdnnSetRNNDescriptor_v6(cudnnHandle,
                                                 cudnn_rnn_desc_,
                                                 gsl::narrow_cast<int>(hidden_size),
                                                 num_layers,
                                                 cudnn_dropout_desc,
-                                                CUDNN_LINEAR_INPUT,  // We can also skip the input matrix transformation
+                                                HIPDNN_LINEAR_INPUT,  // We can also skip the input matrix transformation
                                                 cudnn_direction_model,
                                                 rnn_mode,
-                                                CUDNN_RNN_ALGO_STANDARD,  //CUDNN_RNN_ALGO_PERSIST_STATIC, CUDNN_RNN_ALGO_PERSIST_DYNAMIC
+                                                HIPDNN_RNN_ALGO_STANDARD,  //HIPDNN_RNN_ALGO_PERSIST_STATIC, HIPDNN_RNN_ALGO_PERSIST_DYNAMIC
                                                 dataType));
 
-    if (prop.major >= 7 && dataType == CUDNN_DATA_HALF) {
-      cudnnSetRNNMatrixMathType(cudnn_rnn_desc_, CUDNN_TENSOR_OP_MATH);
+    if (prop.major >= 7 && dataType == HIPDNN_DATA_HALF) {
+      cudnnSetRNNMatrixMathType(cudnn_rnn_desc_, HIPDNN_TENSOR_OP_MATH);
     }
 
     return Status::OK();
   }
 
-  operator cudnnRNNDescriptor_t() const {
+  operator hipdnnRNNDescriptor_t() const {
     return cudnn_rnn_desc_;
   }
 
  private:
-  cudnnRNNDescriptor_t cudnn_rnn_desc_;
+  hipdnnRNNDescriptor_t cudnn_rnn_desc_;
 };
 
 template <typename T>
@@ -79,22 +79,22 @@ class CudnnRnnBase : public CudaKernel {
     reverse_ = false;
     std::string direction = "forward";
     direction = info.GetAttrOrDefault<std::string>("direction", "forward");
-    cudnn_direction_mode_ = CUDNN_UNIDIRECTIONAL;
+    cudnn_direction_mode_ = HIPDNN_UNIDIRECTIONAL;
     if (direction == "bidirectional") {
-      cudnn_direction_mode_ = CUDNN_BIDIRECTIONAL;
+      cudnn_direction_mode_ = HIPDNN_BIDIRECTIONAL;
     } else if (direction == "forward") {
-      cudnn_direction_mode_ = CUDNN_UNIDIRECTIONAL;
+      cudnn_direction_mode_ = HIPDNN_UNIDIRECTIONAL;
     } else if (direction == "reverse") {
-      cudnn_direction_mode_ = CUDNN_UNIDIRECTIONAL;
+      cudnn_direction_mode_ = HIPDNN_UNIDIRECTIONAL;
       // need to reverse data
       reverse_ = true;
     }
 
-    num_directions_ = cudnn_direction_mode_ == CUDNN_BIDIRECTIONAL ? 2 : 1;
+    num_directions_ = cudnn_direction_mode_ == HIPDNN_BIDIRECTIONAL ? 2 : 1;
     ORT_ENFORCE(allowed_directions.find(direction) != allowed_directions.end());
 
     ORT_ENFORCE(info.GetAttr("hidden_size", &hidden_size_).IsOK() && hidden_size_ > 0);
-    rnn_mode_ = CUDNN_LSTM;
+    rnn_mode_ = HIPDNN_LSTM;
     weight_cached_ = false;
     w_data_cache_ = nullptr;
 
@@ -113,13 +113,13 @@ class CudnnRnnBase : public CudaKernel {
 
   Status ComputeInternal(OpKernelContext* ctx) const override;
 
-  void SetRNNMode(cudnnRNNMode_t rnn_mode) { rnn_mode_ = rnn_mode; }
+  void SetRNNMode(hipdnnRNNMode_t rnn_mode) { rnn_mode_ = rnn_mode; }
 
  private:
-  Status SetCudnnRnnWeightBias(const cudnnHandle_t cudnn_handle,
-                               const cudnnRNNDescriptor_t rnn_desc,
-                               const cudnnTensorDescriptor_t x_desc,
-                               const cudnnFilterDescriptor_t w_desc,
+  Status SetCudnnRnnWeightBias(const hipdnnHandle_t cudnn_handle,
+                               const hipdnnRNNDescriptor_t rnn_desc,
+                               const hipdnnTensorDescriptor_t x_desc,
+                               const hipdnnFilterDescriptor_t w_desc,
                                void* w_data,
                                const T* W_data,
                                const T* R_data,
@@ -130,12 +130,12 @@ class CudnnRnnBase : public CudaKernel {
                            CudnnFilterDescriptor& target_w_desc,
                            CudnnRNN& rnn_desc) const;
 
-  void SetWeightBias(const cudnnHandle_t handle,
-                     const cudnnRNNDescriptor_t rnn_desc,
+  void SetWeightBias(const hipdnnHandle_t handle,
+                     const hipdnnRNNDescriptor_t rnn_desc,
                      const int pseudo_layer,
-                     const cudnnTensorDescriptor_t x_desc,
-                     const cudnnFilterDescriptor_t w_desc,
-                     const cudnnFilterDescriptor_t filter_desc,
+                     const hipdnnTensorDescriptor_t x_desc,
+                     const hipdnnFilterDescriptor_t w_desc,
+                     const hipdnnFilterDescriptor_t filter_desc,
                      const void* w_data,
                      const int lin_layer_id,
                      const T* pos,
@@ -154,12 +154,12 @@ class CudnnRnnBase : public CudaKernel {
   std::vector<int> R_lin_layer_id_;
 
  private:
-  cudnnDirectionMode_t cudnn_direction_mode_;
+  hipdnnDirectionMode_t cudnn_direction_mode_;
   bool reverse_;
   int64_t num_directions_;
   // hidden_size_ from attribute
   int64_t hidden_size_;
-  cudnnRNNMode_t rnn_mode_;
+  hipdnnRNNMode_t rnn_mode_;
   // w_desc_cache_ & w_data_cache_ are changed in Constructor if we can get the weights as constant input
   CudnnFilterDescriptor w_desc_cache_;
   IAllocatorUniquePtr<void> w_data_cache_;

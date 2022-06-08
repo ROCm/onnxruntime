@@ -6,7 +6,7 @@
 #include "cudnn_rnn_base.h"
 #include "gsl/gsl"
 #include "core/providers/cuda/cuda_common.h"
-#include <cudnn.h>
+#include <hipDNN.h>
 
 namespace onnxruntime {
 namespace cuda {
@@ -20,9 +20,9 @@ class RNN final : public CudnnRnnBase<T> {
     std::vector<std::string> activations_;
     ORT_ENFORCE(info.GetAttrs("activations", activations_).IsOK());
     if (activations_[0] == "Relu")
-      CudnnRnnBase<T>::SetRNNMode(CUDNN_RNN_RELU);
+      CudnnRnnBase<T>::SetRNNMode(HIPDNN_RNN_RELU);
     else if (activations_[0] == "Tanh")
-      CudnnRnnBase<T>::SetRNNMode(CUDNN_RNN_TANH);
+      CudnnRnnBase<T>::SetRNNMode(HIPDNN_RNN_TANH);
 
     // ONNX W mapping to RNNLinLayerMatrixParams the linLayerID is 0
     CudnnRnnBase<T>::W_lin_layer_id_.assign({0});

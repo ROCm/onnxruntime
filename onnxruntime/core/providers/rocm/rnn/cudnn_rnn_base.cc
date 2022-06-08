@@ -9,12 +9,12 @@ namespace onnxruntime {
 namespace cuda {
 
 template <typename T>
-void CudnnRnnBase<T>::SetWeightBias(const cudnnHandle_t handle,
-                                    const cudnnRNNDescriptor_t rnn_desc,
+void CudnnRnnBase<T>::SetWeightBias(const hipdnnHandle_t handle,
+                                    const hipdnnRNNDescriptor_t rnn_desc,
                                     const int pseudo_layer,
-                                    const cudnnTensorDescriptor_t x_desc,
-                                    const cudnnFilterDescriptor_t w_desc,
-                                    const cudnnFilterDescriptor_t filter_desc,
+                                    const hipdnnTensorDescriptor_t x_desc,
+                                    const hipdnnFilterDescriptor_t w_desc,
+                                    const hipdnnFilterDescriptor_t filter_desc,
                                     const void* reorganized_w_data,
                                     const int lin_layer_id,
                                     const T* pos,
@@ -22,26 +22,26 @@ void CudnnRnnBase<T>::SetWeightBias(const cudnnHandle_t handle,
                                     bool is_matrix) const {
   int numDims;
   std::vector<int> matDims(3);
-  cudnnDataType_t dt;
-  cudnnTensorFormat_t tf;
+  hipdnnDataType_t dt;
+  hipdnnTensorFormat_t tf;
   T* mem_offset;
 
   if (is_matrix) {
-    cudnnGetRNNLinLayerMatrixParams(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
+    hipdnnGetRNNLinLayerMatrixParams(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
   } else {
-    cudnnGetRNNLinLayerBiasParams(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
+    hipdnnGetRNNLinLayerBiasParams(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
   }
 
-  cudnnGetFilterNdDescriptor(filter_desc, 3, &dt, &tf, &numDims, matDims.data());
+  hipdnnGetFilterNdDescriptor(filter_desc, 3, &dt, &tf, &numDims, matDims.data());
   int count = matDims[0] * matDims[1] * matDims[2];
-  CUDA_CALL_THROW(cudaMemcpyAsync(mem_offset, pos + offset, count * sizeof(T), cudaMemcpyDeviceToDevice, Stream()));
+  CUDA_CALL_THROW(hipMemcpyAsync(mem_offset, pos + offset, count * sizeof(T), hipMemcpyDeviceToDevice, Stream()));
   offset += count;
 }
 template <typename T>
-Status CudnnRnnBase<T>::SetCudnnRnnWeightBias(const cudnnHandle_t cudnn_handle,
-                                              const cudnnRNNDescriptor_t rnn_desc,
-                                              const cudnnTensorDescriptor_t x_desc,
-                                              const cudnnFilterDescriptor_t w_desc,
+Status CudnnRnnBase<T>::SetCudnnRnnWeightBias(const hipdnnHandle_t cudnn_handle,
+                                              const hipdnnRNNDescriptor_t rnn_desc,
+                                              const hipdnnTensorDescriptor_t x_desc,
+                                              const hipdnnFilterDescriptor_t w_desc,
                                               void* reorganized_w_data,
                                               const T* W_data,
                                               const T* R_data,
@@ -98,9 +98,9 @@ Status CudnnRnnBase<T>::ReorganizeWeights(const Tensor* W, const Tensor* R, cons
 
   // In many cases, this allocation is bigger than needed, leaving part of
   // the buffer unintialized. non-zero garbage data leads to wrong result
-  // in call to cudnnRNNForwardInference()
+  // in call to hipdnnRNNForwardInference()
   // TODO! refine allocation size for each case.
-  cudaMemset(reorganized_w_data.get(), 0, w_size * sizeof(T));
+  hipMemset(reorganized_w_data.get(), 0, w_size * sizeof(T));
 
   const T* W_data = W->template Data<T>();
   const T* R_data = R->template Data<T>();
@@ -156,7 +156,7 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   const Tensor* sequence_lens = ctx->Input<Tensor>(RNN_Input_Index::sequence_lens);  // [batch_size]
   const Tensor* initial_h = ctx->Input<Tensor>(RNN_Input_Index::initial_h);          // initial hidden. [num_directions_, batch_size, hidden_size_]
   const Tensor* initial_c(nullptr);
-  if (rnn_mode_ == CUDNN_LSTM) {
+  if (rnn_mode_ == HIPDNN_LSTM) {
     initial_c = ctx->Input<Tensor>(RNN_Input_Index::initial_c);  // initial cell. [num_directions_, batch_size, hidden_size_]
   }
 
@@ -179,8 +179,8 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   ORT_RETURN_IF_ERROR(x_desc_temp.Set(dims_x, CudnnTensor::GetDataType<CudaT>()));
   CudnnTensor y_desc_temp;
   ORT_RETURN_IF_ERROR(y_desc_temp.Set(dims_y, CudnnTensor::GetDataType<CudaT>()));
-  std::vector<cudnnTensorDescriptor_t> x_desc(seq_length, x_desc_temp);
-  std::vector<cudnnTensorDescriptor_t> y_desc(seq_length, y_desc_temp);
+  std::vector<hipdnnTensorDescriptor_t> x_desc(seq_length, x_desc_temp);
+  std::vector<hipdnnTensorDescriptor_t> y_desc(seq_length, y_desc_temp);
 
   CudnnTensor hx_desc;
   CudnnTensor cx_desc;
@@ -247,14 +247,14 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   CUDNN_RETURN_IF_ERROR(cudnnSetRNNPaddingMode(rnn_desc, CUDNN_RNN_PADDED_IO_ENABLED));
 
   size_t workspace_bytes;
-  CUDNN_RETURN_IF_ERROR(cudnnGetRNNWorkspaceSize(CudnnHandle(), rnn_desc, gsl::narrow_cast<int>(seq_length), x_desc.data(), &workspace_bytes));
+  CUDNN_RETURN_IF_ERROR(hipdnnGetRNNWorkspaceSize(CudnnHandle(), rnn_desc, gsl::narrow_cast<int>(seq_length), x_desc.data(), &workspace_bytes));
   auto workspace_cuda = GetScratchBuffer<void>(workspace_bytes);
   int32_t zero_seq_count = 0;
   std::vector<int32_t> zero_seq_index_cache(batch_size, 0);
   int64_t zero_seq_index_cache_size = 0;
 
-  if (CUDNN_RNN_RELU == rnn_mode_ || CUDNN_RNN_TANH == rnn_mode_ || nullptr == sequence_lens_data) {
-    CUDNN_RETURN_IF_ERROR(cudnnRNNForwardInference(CudnnHandle(),
+  if (HIPDNN_RNN_RELU == rnn_mode_ || HIPDNN_RNN_TANH == rnn_mode_ || nullptr == sequence_lens_data) {
+    CUDNN_RETURN_IF_ERROR(hipdnnRNNForwardInference(CudnnHandle(),
                                                    rnn_desc,
                                                    gsl::narrow_cast<int>(seq_length),
                                                    x_desc.data(),
@@ -357,7 +357,7 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
 
     if (Y != nullptr) {
       // User specified this optional output, so need to copy the reversed data to orignial place
-      CUDA_RETURN_IF_ERROR(cudaMemcpyAsync(y_data, y_reorganized_data.get(), output_size * sizeof(T), cudaMemcpyDeviceToDevice, Stream()));
+      CUDA_RETURN_IF_ERROR(hipMemcpyAsync(y_data, y_reorganized_data.get(), output_size * sizeof(T), hipMemcpyDeviceToDevice, Stream()));
     } else {
       y_data = y_reorganized_data.get();
     }
@@ -368,7 +368,7 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
     SetZeroSequences(zero_seq_index_cache_size, zero_seq_index_cache, y_data, y_h_data, y_c_data);
   }
 
-  if ((CUDNN_RNN_RELU == rnn_mode_ || CUDNN_RNN_TANH == rnn_mode_) && sequence_lens_data != nullptr && y_h_data != nullptr && y_data != nullptr) {
+  if ((HIPDNN_RNN_RELU == rnn_mode_ || HIPDNN_RNN_TANH == rnn_mode_) && sequence_lens_data != nullptr && y_h_data != nullptr && y_data != nullptr) {
     CudaAsyncBuffer<int32_t> sequence_lens_buffer(this, batch_size);
     memcpy(sequence_lens_buffer.CpuPtr(), sequence_lens_data, batch_size * sizeof(int32_t));
     ORT_RETURN_IF_ERROR(sequence_lens_buffer.CopyToGpu());
