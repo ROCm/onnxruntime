@@ -1,3 +1,4 @@
+#include "hip/hip_runtime.h"
 /*
 Copyright (c) NVIDIA Corporation and Microsoft Corporation
 
@@ -14,31 +15,29 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This is cuda kernels for longformer attention softmax that does not use compact memory.
+// This is rocm kernels for longformer attention softmax that does not use compact memory.
 // It uses two temporary matrix of BxNxSxS, and consumes more memory when sequence length is large.
 // Its logic is simpler with less constraints (like number of global tokens could be larger than attention windows).
 
-#include <cub/cub.cuh>
-#include <cublas_v2.h>
-#include <cuda_fp16.h>
-#include <cuda_runtime.h>
-#include <math_constants.h>
-#include "core/providers/cuda/cu_inc/common.cuh"
-#include "core/providers/cuda/cuda_common.h"
-#include "contrib_ops/cuda/longformer_attention_softmax.h"
-#include "contrib_ops/cuda/attention_impl.h"
+#include <hipcub/hipcub.hpp>
+#include <hip/hip_fp16.h>
+#include <hip/hip_runtime.h>
+#include "core/providers/rocm/cu_inc/common.cuh"
+#include "core/providers/rocm/rocm_common.h"
+#include "contrib_ops/rocm/bert/longformer_attention_softmax.h"
+#include "contrib_ops/rocm/bert/attention_impl.h"
 
-using namespace onnxruntime::cuda;
-using namespace cub;
+using namespace onnxruntime::rocm;
+using namespace hipcub;
 
 #define CHECK(expr)         \
-  if (!CUBLAS_CALL(expr)) { \
+  if (!ROCBLAS_CALL(expr)) { \
     return false;           \
   }
 
 namespace onnxruntime {
 namespace contrib {
-namespace cuda {
+namespace rocm {
 
 template <typename T, int blockSize>
 __launch_bounds__(blockSize)
@@ -52,7 +51,7 @@ __launch_bounds__(blockSize)
                                                   int dim0,
                                                   int sequence_length,
                                                   int attention_window) {
-  typedef cub::BlockReduce<float, blockSize> BlockReduce;
+  typedef hipcub::BlockReduce<float, blockSize> BlockReduce;
   __shared__ typename BlockReduce::TempStorage block_reduce_temp;
   __shared__ float max_shared;
   __shared__ float sum_shared;
@@ -91,7 +90,7 @@ __launch_bounds__(blockSize)
   int tid = threadIdx.x;
 
   // calculate max input
-  float max_input = -CUDART_INF_F;
+  float max_input = -std::numeric_limits<float>::infinity();
   // #pragma unroll 16
   for (int i = tid + col_start; i < col_end; i += blockSize) {
     float x = input_block[i];
@@ -114,7 +113,7 @@ __launch_bounds__(blockSize)
     }
   }
 
-  float max_block = BlockReduce(block_reduce_temp).Reduce(max_input, cub::Max());
+  float max_block = BlockReduce(block_reduce_temp).Reduce(max_input, hipcub::Max());
   if (tid == 0) {
     max_shared = max_block;
   }
@@ -139,7 +138,7 @@ __launch_bounds__(blockSize)
     }
   }
 
-  float sum_block = BlockReduce(block_reduce_temp).Reduce(sum_input, cub::Sum());
+  float sum_block = BlockReduce(block_reduce_temp).Reduce(sum_input, hipcub::Sum());
   if (tid == 0) {
     sum_shared = sum_block;
   }
@@ -192,8 +191,8 @@ __launch_bounds__(blockSize)
 
 // Launch the softmax kernel for non compact memory.
 bool LaunchLongformerSoftmaxSimpleKernel(
-    cudaStream_t stream,
-    cublasHandle_t cublas,
+    hipStream_t stream,
+    rocblas_handle rocblas,
     void* workspace,              // softmax space
     const void* q,                // transposed Q with shape (B, N, S, H)
     const void* k,                // transposed K with shape (B, N, S, H)
@@ -221,11 +220,11 @@ bool LaunchLongformerSoftmaxSimpleKernel(
   void* scratch2 = reinterpret_cast<char*>(scratch1) + scratch1_size;
 
   // setup shared parameters for two strided batched matrix multiplies
-  cudaDataType_t Atype;
-  cudaDataType_t Btype;
-  cudaDataType_t Ctype;
-  cudaDataType_t resultType;
-  cublasGemmAlgo_t algo = CUBLAS_GEMM_DEFAULT;
+  rocblas_datatype Atype;
+  rocblas_datatype Btype;
+  rocblas_datatype Ctype;
+  rocblas_datatype resultType;
+  rocblas_gemm_algo algo = rocblas_gemm_algo_standard;
 
   __half one_fp16, zero_fp16;
   float one_fp32, zero_fp32;
@@ -237,21 +236,20 @@ bool LaunchLongformerSoftmaxSimpleKernel(
     alpha = static_cast<void*>(&one_fp16);
     beta_0 = static_cast<void*>(&zero_fp16);
     beta_1 = static_cast<void*>(&one_fp16);
-    Atype = CUDA_R_16F;
-    Btype = CUDA_R_16F;
-    Ctype = CUDA_R_16F;
-    resultType = CUDA_R_16F;
-    algo = CUBLAS_GEMM_DEFAULT_TENSOR_OP;
+    Atype = rocblas_datatype_f16_r;
+    Btype = rocblas_datatype_f16_r;
+    Ctype = rocblas_datatype_f16_r;
+    resultType = rocblas_datatype_f16_r;
   } else {
     one_fp32 = 1.f;
     zero_fp32 = 0.f;
     alpha = static_cast<void*>(&one_fp32);
     beta_0 = static_cast<void*>(&zero_fp32);
     beta_1 = static_cast<void*>(&one_fp32);
-    Atype = CUDA_R_32F;
-    Btype = CUDA_R_32F;
-    Ctype = CUDA_R_32F;
-    resultType = CUDA_R_32F;
+    Atype = rocblas_datatype_f32_r;
+    Btype = rocblas_datatype_f32_r;
+    Ctype = rocblas_datatype_f32_r;
+    resultType = rocblas_datatype_f32_r;
   }
 
   // Strided batch matrix multiply
@@ -282,9 +280,9 @@ bool LaunchLongformerSoftmaxSimpleKernel(
   //   [W][W]
   // We can use normal matrix multiplication in this case.
   if (sequence_length == 2 * w) {
-    CHECK(cublasGemmStridedBatchedEx(cublas,
-                                     CUBLAS_OP_T,
-                                     CUBLAS_OP_N,
+    CHECK(_simple_rocblas_gemm_strided_batched_ex(rocblas,
+                                     rocblas_operation_transpose,
+                                     rocblas_operation_none,
                                      sequence_length,
                                      sequence_length,
                                      head_size,
@@ -314,9 +312,9 @@ bool LaunchLongformerSoftmaxSimpleKernel(
         void* qk_head = reinterpret_cast<char*>(scratch1) + \
                         (i * y_offset + j * sequence_length * sequence_length + w * sequence_length) * element_size;
         int count = (sequence_length - 2 * w) / w;
-        CHECK(cublasGemmStridedBatchedEx(cublas,
-                                         CUBLAS_OP_T,
-                                         CUBLAS_OP_N,
+        CHECK(_simple_rocblas_gemm_strided_batched_ex(rocblas,
+                                         rocblas_operation_transpose,
+                                         rocblas_operation_none,
                                          3 * w,                    // m
                                          w,                        // n
                                          head_size,                // k
@@ -340,9 +338,9 @@ bool LaunchLongformerSoftmaxSimpleKernel(
       }
     }
 
-    CHECK(cublasGemmStridedBatchedEx(cublas,
-                                     CUBLAS_OP_T,
-                                     CUBLAS_OP_N,
+    CHECK(_simple_rocblas_gemm_strided_batched_ex(rocblas,
+                                     rocblas_operation_transpose,
+                                     rocblas_operation_none,
                                      2 * w,                   // m
                                      w,                       // n
                                      head_size,               // k
@@ -368,9 +366,9 @@ bool LaunchLongformerSoftmaxSimpleKernel(
     const void* k_head = reinterpret_cast<const char*>(k) + ((last_block - 1) * w * head_size) * element_size;
     void* qk_head = reinterpret_cast<char*>(scratch1) + \
                     (last_block * w * sequence_length + (last_block - 1) * w) * element_size;
-    CHECK(cublasGemmStridedBatchedEx(cublas,
-                                     CUBLAS_OP_T,
-                                     CUBLAS_OP_N,
+    CHECK(_simple_rocblas_gemm_strided_batched_ex(rocblas,
+                                     rocblas_operation_transpose,
+                                     rocblas_operation_none,
                                      2 * w,
                                      w,
                                      head_size,
@@ -401,9 +399,9 @@ bool LaunchLongformerSoftmaxSimpleKernel(
       const void* k_batch = reinterpret_cast<const char*>(k) + (i * x_offset) * element_size;
       void* qk_batch = reinterpret_cast<char*>(scratch1) + (i * y_offset) * element_size;
       // Local tokens attending global tokens
-      CHECK(cublasGemmStridedBatchedEx(cublas,
-                                       CUBLAS_OP_T,
-                                       CUBLAS_OP_N,
+      CHECK(_simple_rocblas_gemm_strided_batched_ex(rocblas,
+                                       rocblas_operation_transpose,
+                                       rocblas_operation_none,
                                        batch_global_count[i],
                                        sequence_length,
                                        head_size,
@@ -432,9 +430,9 @@ bool LaunchLongformerSoftmaxSimpleKernel(
 
       // Global tokens attending everything
       // This GEMMs need to be last to make sure all global token entries are re-written.
-      CHECK(cublasGemmStridedBatchedEx(cublas,
-                                       CUBLAS_OP_T,
-                                       CUBLAS_OP_N,
+      CHECK(_simple_rocblas_gemm_strided_batched_ex(rocblas,
+                                       rocblas_operation_transpose,
+                                       rocblas_operation_none,
                                        sequence_length,
                                        batch_global_count[i],
                                        head_size,
@@ -465,7 +463,7 @@ bool LaunchLongformerSoftmaxSimpleKernel(
   const int blockSize = 64;
   const int gridSize = batch_size * num_heads * sequence_length;
   if (is_fp16) {
-    LongformerSoftmaxSimpleKernel<__half, blockSize><<<gridSize, blockSize, 0, stream>>>(
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(LongformerSoftmaxSimpleKernel<__half, blockSize>), gridSize, blockSize, 0, stream, 
         global_attention,
         global_index,
         batch_global_num,
@@ -473,7 +471,7 @@ bool LaunchLongformerSoftmaxSimpleKernel(
         static_cast<const __half*>(attention_mask),
         static_cast<__half*>(softmax_out), scaler, dim0, dim1, attention_window);
   } else {
-    LongformerSoftmaxSimpleKernel<float, blockSize><<<gridSize, blockSize, 0, stream>>>(
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(LongformerSoftmaxSimpleKernel<float, blockSize>), gridSize, blockSize, 0, stream, 
         global_attention,
         global_index,
         batch_global_num,
@@ -490,9 +488,9 @@ bool LaunchLongformerSoftmaxSimpleKernel(
 
   if (sequence_length == 2 * w) {
     // convert col-major to row-major by swapping softmax_out and v
-    CHECK(cublasGemmStridedBatchedEx(cublas,
-                                     CUBLAS_OP_N,
-                                     CUBLAS_OP_N,
+    CHECK(_simple_rocblas_gemm_strided_batched_ex(rocblas,
+                                     rocblas_operation_none,
+                                     rocblas_operation_none,
                                      head_size,
                                      sequence_length,
                                      sequence_length,
@@ -523,9 +521,9 @@ bool LaunchLongformerSoftmaxSimpleKernel(
         void* out_head = reinterpret_cast<char*>(output) + \
                          (i * x_offset + j * head_size * sequence_length + w * head_size) * element_size;
         int count = (sequence_length - 2 * w) / w;
-        CHECK(cublasGemmStridedBatchedEx(cublas,
-                                         CUBLAS_OP_N,
-                                         CUBLAS_OP_N,
+        CHECK(_simple_rocblas_gemm_strided_batched_ex(rocblas,
+                                         rocblas_operation_none,
+                                         rocblas_operation_none,
                                          head_size,
                                          w,
                                          3 * w,
@@ -549,9 +547,9 @@ bool LaunchLongformerSoftmaxSimpleKernel(
       }
     }
 
-    CHECK(cublasGemmStridedBatchedEx(cublas,
-                                     CUBLAS_OP_N,
-                                     CUBLAS_OP_N,
+    CHECK(_simple_rocblas_gemm_strided_batched_ex(rocblas,
+                                     rocblas_operation_none,
+                                     rocblas_operation_none,
                                      head_size,
                                      w,
                                      2 * w,
@@ -578,9 +576,9 @@ bool LaunchLongformerSoftmaxSimpleKernel(
                             (sequence_length * last_block * w + (last_block - 1) * w) * element_size;
     void* out_head = reinterpret_cast<char*>(output) + last_block * w * head_size * element_size;
 
-    CHECK(cublasGemmStridedBatchedEx(cublas,
-                                     CUBLAS_OP_N,
-                                     CUBLAS_OP_N,
+    CHECK(_simple_rocblas_gemm_strided_batched_ex(rocblas,
+                                     rocblas_operation_none,
+                                     rocblas_operation_none,
                                      head_size,
                                      w,
                                      2 * w,
@@ -612,9 +610,9 @@ bool LaunchLongformerSoftmaxSimpleKernel(
                               (i * y_offset + 2 * w * sequence_length) * element_size;
       void* out_head = reinterpret_cast<char*>(output) + (i * x_offset + 2 * w * head_size) * element_size;
 
-      CHECK(cublasGemmStridedBatchedEx(cublas,
-                                       CUBLAS_OP_N,
-                                       CUBLAS_OP_N,
+      CHECK(_simple_rocblas_gemm_strided_batched_ex(rocblas,
+                                       rocblas_operation_none,
+                                       rocblas_operation_none,
                                        head_size,
                                        glob_longdim_mm,
                                        batch_global_count[i],
@@ -641,9 +639,9 @@ bool LaunchLongformerSoftmaxSimpleKernel(
       prob_head = reinterpret_cast<const char*>(softmax_out) + (i * y_offset) * element_size;
       out_head = reinterpret_cast<char*>(output) + (i * x_offset) * element_size;
 
-      CHECK(cublasGemmStridedBatchedEx(cublas,
-                                       CUBLAS_OP_N,
-                                       CUBLAS_OP_N,
+      CHECK(_simple_rocblas_gemm_strided_batched_ex(rocblas,
+                                       rocblas_operation_none,
+                                       rocblas_operation_none,
                                        head_size,
                                        batch_global_count[i],
                                        sequence_length,  // Re-write entries completely
@@ -670,6 +668,6 @@ bool LaunchLongformerSoftmaxSimpleKernel(
   return true;
 }
 
-}  // namespace cuda
+}  // namespace rocm
 }  // namespace contrib
 }  // namespace onnxruntime
