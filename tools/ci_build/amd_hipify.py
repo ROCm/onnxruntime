@@ -26,8 +26,6 @@ contrib_ops_excluded_files = [
     "bert/embed_layer_norm_impl.cu",
     "bert/embed_layer_norm_impl.h",
     "bert/fast_gelu_impl.cu",
-    "bert/longformer_attention.cc",
-    "bert/longformer_attention.h",
     "bert/longformer_attention_softmax.cu",
     "bert/longformer_attention_impl.cu",
     "math/bias_softmax.cc",
@@ -202,7 +200,7 @@ def hipify(src_file_path, dst_file_path):
     if not os.path.exists(dir_name):
         os.makedirs(dir_name, exist_ok=True)
     # Run hipify-perl first, capture output
-    s = subprocess.run([get_hipify_path(), src_file_path], stdout=subprocess.PIPE, universal_newlines=True).stdout
+    s = subprocess.run([get_hipify_path(), "-roc", src_file_path], stdout=subprocess.PIPE, universal_newlines=True).stdout
 
     # Additional exact-match replacements.
     # Order matters for all of the following replacements, reglardless of appearing in logical sections.
