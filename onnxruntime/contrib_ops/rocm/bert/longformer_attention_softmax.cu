@@ -24,8 +24,8 @@ limitations under the License.
 #include <hip/hip_runtime.h>
 #include "core/providers/rocm/cu_inc/common.cuh"
 #include "core/providers/rocm/rocm_common.h"
-#include "longformer_attention_softmax.h"
-#include "attention_impl.h"
+#include "contrib_ops/rocm/bert/longformer_attention_softmax.h"
+#include "contrib_ops/rocm/bert/attention_impl.h"
 
 using namespace onnxruntime::rocm;
 using namespace hipcub;

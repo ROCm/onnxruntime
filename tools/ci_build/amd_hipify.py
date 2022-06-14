@@ -26,16 +26,10 @@ contrib_ops_excluded_files = [
     "bert/embed_layer_norm_impl.cu",
     "bert/embed_layer_norm_impl.h",
     "bert/fast_gelu_impl.cu",
-    # 'bert/layer_norm.cuh',
     "bert/longformer_attention.cc",
     "bert/longformer_attention.h",
     "bert/longformer_attention_softmax.cu",
-    "bert/longformer_attention_softmax.h",
     "bert/longformer_attention_impl.cu",
-    "bert/longformer_attention_impl.h",
-    "bert/longformer_global_impl.cu",
-    "bert/longformer_global_impl.h",
-    "bert/transformer_cuda_common.h",
     "math/bias_softmax.cc",
     "math/bias_softmax.h",
     "math/bias_softmax_impl.cu",
@@ -280,6 +274,7 @@ def hipify(src_file_path, dst_file_path):
     s = s.replace('#include "cub/util_allocator.cuh"', "#include <hipcub/util_allocator.hpp>")
     s = s.replace("#include <cub/util_type.cuh>", "#include <hipcub/backend/rocprim/util_type.hpp>")
     s = s.replace('#include "cub/util_type.cuh"', "#include <hipcub/backend/rocprim/util_type.hpp>")
+    s = s.replace('#include <cub/device/device_partition.cuh>', "#include <hipcub/device/device_partition.hpp>")
     s = s.replace("typedef half MappedType", "typedef __half MappedType")
 
     # CUBLAS -> HIPBLAS
