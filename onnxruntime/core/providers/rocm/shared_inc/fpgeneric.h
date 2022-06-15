@@ -286,6 +286,34 @@ inline rocblas_status rocblasGemmStridedBatchedHelper(rocblas_handle handle,
                                          rocblas_gemm_algo_standard, 0, 0);
 }
 
+inline rocblas_status rocblasGemmStridedBatchedHelper(rocblas_handle handle,
+                                                       rocblas_operation transa,
+                                                       rocblas_operation transb,
+                                                       int m, int n, int k,
+                                                       const float* alpha,
+                                                       const __half* A, int lda,
+                                                       long long int strideA,
+                                                       const __half* B, int ldb,
+                                                       long long int strideB,
+                                                       const float* beta,
+                                                       __half* C, int ldc,
+                                                       long long int strideC,
+                                                       int batchCount) {
+  return rocblas_gemm_strided_batched_ex(handle,
+                                         transa,
+                                         transb,
+                                         m, n, k,
+                                         &alpha,
+                                         A, rocblas_datatype_f16_r, lda, strideA,
+                                         B, rocblas_datatype_f16_r, ldb, strideB,
+                                         &beta,
+                                         C, rocblas_datatype_f16_r, ldc, strideC,
+                                         C, rocblas_datatype_f16_r, ldc, strideC,
+                                         batchCount,
+                                         rocblas_datatype_f32_r,
+                                         rocblas_gemm_algo_standard, 0, 0);
+}
+
 inline rocblas_status rocblasGemmStridedBatchedHelper(rocblas_handle handle, 
                                                       rocblas_operation transa,
                                                       rocblas_operation transb, 
