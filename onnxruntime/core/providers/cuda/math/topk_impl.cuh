@@ -427,12 +427,7 @@ __global__ void FillOutput(const T* input_v, const int64_t* input_i, T* output_v
   output_i[output_offset] = input_i[id];
 }
 
-__global__ void ExcludeOutput(int64_t* output_i, int64_t K, int64_t dimension) {
-  CALCULATE_ELEMENTWISE_INDEX_OR_EXIT(id, dimension);
-  if (id >= K) {
-    output_i[id] = dimension;
-  }
-}
+__global__ void ExcludeOutput(int64_t* output_i, int64_t K, int64_t dimension);
 
 template <typename T>
 Status TopKImpl(const CudaKernel* kernel, cudaStream_t stream, const T* input_x, T* output_v, int64_t* output_i, const TArray<int64_t>& elem_nums, size_t size, int32_t axis, int64_t K, int64_t largest, int64_t sorted, int64_t N, int64_t dimension) {
@@ -500,17 +495,6 @@ Status TopKImpl(const CudaKernel* kernel, cudaStream_t stream, const T* input_x,
                                                  int64_t N,                \
                                                  int64_t dimension)
 
-TOPKIMPLE(uint8_t);
-TOPKIMPLE(uint16_t);
-TOPKIMPLE(uint32_t);
-TOPKIMPLE(uint64_t);
-TOPKIMPLE(int8_t);
-TOPKIMPLE(int16_t);
-TOPKIMPLE(int32_t);
-TOPKIMPLE(int64_t);
-TOPKIMPLE(float);
-TOPKIMPLE(MLFloat16);
-TOPKIMPLE(double);
 
 }  // namespace cuda
 }  // namespace onnxruntime
