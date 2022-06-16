@@ -349,6 +349,8 @@ def list_files(prefix, path):
     curr_path = os.path.join(prefix, path)
     for root, dirs, files in os.walk(curr_path):
         for file in files:
+            if file.startswith('.'):
+                continue
             full_path = os.path.join(root, file)
             all_files.append(os.path.relpath(full_path, curr_path))
     return all_files
