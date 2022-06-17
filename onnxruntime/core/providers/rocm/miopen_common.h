@@ -141,5 +141,42 @@ miCompatBatchNormalizationForwardTraining(miopenHandle_t handle,
                                                    resultSaveInvVariance);
 }
 
+
+template <typename ScalingFactorType>
+miopenStatus_t
+miCompatBatchNormalizationForwardInference(miopenHandle_t handle,
+                                           miopenBatchNormMode_t bn_mode,
+                                           const ScalingFactorType* alpha,
+                                           const ScalingFactorType* beta,
+                                           const miopenTensorDescriptor_t xDesc,
+                                           const void* x,
+                                           const miopenTensorDescriptor_t yDesc,
+                                           void* y,
+                                           const miopenTensorDescriptor_t bnScaleBiasMeanVarDesc,
+                                           const void* bnScale,
+                                           const void* bnBias,
+                                           const void* estimatedMean,
+                                           const void* estimatedVariance,
+                                           double epsilon)
+{
+    float compat_alpha = *alpha;
+    float compat_beta = *beta;
+    // Current MIOpen assumes alpha and beta are fp32
+    return miopenBatchNormalizationForwardInference(handle,
+                                                    bn_mode,
+                                                    (void*)&compat_alpha,
+                                                    (void*)&compat_beta,
+                                                    xDesc,
+                                                    (void*)x,
+                                                    yDesc,
+                                                    y,
+                                                    bnScaleBiasMeanVarDesc,
+                                                    (void*)bnScale,
+                                                    (void*)bnBias,
+                                                    (void*)estimatedMean,
+                                                    (void*)estimatedVariance,
+                                                    epsilon);
+}
+
 }  // namespace rocm
 }  // namespace onnxruntime
