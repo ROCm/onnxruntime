@@ -256,6 +256,205 @@ __device__ inline void SoftmaxWithRawMaskSmall(const int all_sequence_length,
   }
 }
 
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+template <typename T, unsigned TPB, int ILP>
+__device__ inline void SoftmaxWithRawMaskSmallVec(const int all_sequence_length,
+                                                  const int sequence_length,
+                                                  const int* attention_mask,  // 2D, 3D or 4D attention mask
+                                                  const bool* key_padding_mask,
+                                                  const T* add_before_softmax,
+                                                  const T* input,
+                                                  T* output,
+                                                  const bool is_unidirectional,
+                                                  const float rsqrt_head_size,
+                                                  const int mask_dimension,
+                                                  const int max_sequence_length,
+                                                  const bool skip_softmax) {
+  using BlockReduce = hipcub::BlockReduce<float, TPB>;
+  __shared__ typename BlockReduce::TempStorage tmp_storage;
+
+  __shared__ float sum_reverse_block;
+  __shared__ float max_block;
+  
+  // grid(sequence_length * num_heads, batch_size, 1);
+  // all_sequence_length = past_sequence_length + sequence_length;
+
+  // Input dimension is BxNxSxS*; blockIdx.y is batch index b; gridDim.x=N*S;  blockIdx.x is index within N*S;
+  // int index = (blockIdx.y * gridDim.x + blockIdx.x) * all_sequence_length + threadIdx.x;
+  // int index = (blockIdx.y * gridDim.x + blockIdx.x) * TPB + threadIdx.x;  // TPB = all_sequence_length
+  int index = ((blockIdx.y * gridDim.x + blockIdx.x) * TPB + threadIdx.x) * ILP;  // TPB = all_sequence_length
+  /////////////////////////////////////////////////////////
+  /////////////////////////////////////////////////////////
+  using VecT = aligned_vector<T, ILP>;
+  using VecInt = aligned_vector<int, ILP>; // for attention_mask
+  using VecBool = aligned_vector<bool, ILP>; // for key_padding_mask
+  // input[index], add_before_softmax[index], attention_mask[mask_offset], output[index]
+  half input_v[ILP], abs_v[ILP], output_v[ILP];
+  int am_v[ILP];
+  bool kpm_v[ILP];
+
+  // float thread_data = -ROCMRT_INF_F;
+  float thread_data[ILP];
+  #pragma unroll
+  for (int i = 0; i < ILP; i++) {
+    thread_data[i] = -ROCMRT_INF_F;
+  }
+  // if (threadIdx.x < all_sequence_length) {
+  if (threadIdx.x * ILP < all_sequence_length) {
+    
+    VecT* input_val = reinterpret_cast<VecT*>(&input_v);
+    *input_val = *reinterpret_cast<const VecT*>(&input[index]);
+
+    if (add_before_softmax == nullptr) {
+      // thread_data = float(input[index]) * rsqrt_head_size;
+      #pragma unroll
+      for (int i = 0; i < ILP; i++) {
+        thread_data[i] = float(input_v[i]) * rsqrt_head_size;
+      }
+    } else {
+      // thread_data = float(input[index] + add_before_softmax[index]) * rsqrt_head_size;
+      VecT* abs_val = reinterpret_cast<VecT*>(&abs_v); // abs: add_before_softmax
+      *abs_val = *reinterpret_cast<const VecT*>(&add_before_softmax[index]);
+      #pragma unroll
+      for (int i = 0; i < ILP; i++) {
+        thread_data[i] = float(input_v[i] + abs_v[i]) * rsqrt_head_size;
+      }
+    }
+
+    const int sequence_index = blockIdx.x % sequence_length; // sequence_length * "num_heads" % sequence_length --> head_index
+    if (is_unidirectional) {
+      int from_index = all_sequence_length - sequence_length + sequence_index;  // offset of from token in all sequence length.
+      //               (past_sequence_length + sequence_length) - sequence_length + head_index
+      //              = past_sequence_length + head_index
+      if (threadIdx.x * ILP > from_index) {
+        // thread_data = -10000.0f;
+        #pragma unroll
+        for (int i = 0; i < ILP; i++) {
+          thread_data[i] = -10000.0f;
+        }
+      }
+    }
+
+    int mask_offset = 0;
+    const int batch_index = blockIdx.y;
+    if (mask_dimension == 2) {
+      // mask_offset = batch_index * all_sequence_length + threadIdx.x;
+      mask_offset = batch_index * all_sequence_length + threadIdx.x * ILP;
+    } else if (mask_dimension == 3) {
+      // mask_offset = (batch_index * sequence_length + sequence_index) * all_sequence_length + threadIdx.x;
+      mask_offset = (batch_index * sequence_length + sequence_index) * all_sequence_length + threadIdx.x * ILP;
+    } else if (mask_dimension == 4) {
+      // mask_offset = (batch_index * max_sequence_length + all_sequence_length - sequence_length + sequence_index) * max_sequence_length + threadIdx.x;
+      mask_offset = (batch_index * max_sequence_length + all_sequence_length - sequence_length + sequence_index)
+                    * max_sequence_length + threadIdx.x * ILP;
+      //            (batch_index * max_sequence_length + (past_sequence_length + sequence_length) - sequence_length + head_index) ...
+      //            (batch_index * max_sequence_length + past_sequence_length + head_index) * max_sequence_length + threadIdx.x
+      //            (batch_index * max_sequence_length + from_index) * max_sequence_length + threadIdx.x
+      //            TODO: check if max_sequence_length % ILP == 0 ???? 
+    }
+
+    if (nullptr == key_padding_mask) {
+      // const int& mask = attention_mask[mask_offset];
+      // if (mask == 0)
+      //   thread_data += -10000.0f;
+      
+      VecInt* am_val = reinterpret_cast<VecInt*>(&am_v); // am: attention_mask
+      *am_val = *reinterpret_cast<const VecInt*>(&attention_mask[mask_offset]);
+      #pragma unroll
+      for (int i = 0; i < ILP; i++) {
+        if (am_v[i] == 0) {
+          thread_data[i] += -10000.0f;
+        }
+      }
+    } else {
+      // const bool mask = key_padding_mask[mask_offset];
+      // if (mask) {
+      //   thread_data = -ROCMRT_INF_F;
+      // }
+      VecBool* kpm_val = reinterpret_cast<VecBool*>(&kpm_v); // am: attention_mask
+      *kpm_val = *reinterpret_cast<const VecBool*>(&key_padding_mask[mask_offset]);
+      #pragma unroll
+      for (int i = 0; i < ILP; i++) {
+        if (kpm_v[i]) {
+          thread_data[i] = -ROCMRT_INF_F;
+        }
+      }
+    }
+  }
+
+  // if (skip_softmax) {
+  //   if (threadIdx.x < all_sequence_length) {
+  //     output[index] = T(thread_data);  ///////////////////// (all_sequence_length % ILP == 0), TPB = all_sequence_length
+  //   }
+  //   return;
+  // }
+  if (skip_softmax) {
+    if (threadIdx.x * ILP < all_sequence_length) {
+      #pragma unroll
+      for (int i = 0; i < ILP; i++) {
+        output_v[i] = T(thread_data[i]);
+      }
+    }
+    *(reinterpret_cast<VecT*>(&output[index])) = *reinterpret_cast<VecT*>(&output_v[0]);
+    return;
+  }
+
+  // TODO: we are doing BlockReduce for ILP different values now!
+  // TODO: we are doing BlockReduce for ILP different values now!
+  // TODO: we are doing BlockReduce for ILP different values now!
+  // const float max = BlockReduce(tmp_storage).Reduce(thread_data, hipcub::Max(), all_sequence_length); // TODO:Max
+
+  float thread_max = thread_data[0];
+  #pragma unroll
+  for (int i = 1; i < ILP; i++) {
+    if (thread_data[i] > thread_max)
+      thread_max = thread_data[i];
+  }
+  const float max = BlockReduce(tmp_storage).Reduce(thread_max, hipcub::Max(), all_sequence_length / ILP);
+
+  // Store max value
+  if (threadIdx.x == 0) {
+    max_block = max;
+  }
+  __syncthreads();
+
+  // an approximation to ex in float
+  // float thread_data_exp = threadIdx.x < all_sequence_length ? expf(thread_data - max_block) : 0.0f;
+  // const auto sum = BlockReduce(tmp_storage).Reduce(thread_data_exp, hipcub::Sum(), all_sequence_length); // TODO: Sum
+
+  float thread_data_exp = 0.0f;
+  if (threadIdx.x * ILP < all_sequence_length) {
+    #pragma unroll
+    for (int i = 0; i < ILP; i++) {
+      thread_data_exp += expf(thread_data[i] - max_block);
+    }
+  }
+  const float sum = BlockReduce(tmp_storage).Reduce(thread_data_exp, hipcub::Sum(), all_sequence_length / ILP);
+
+  // Store value of 1.0/sum
+  if (threadIdx.x == 0) {
+    sum_reverse_block = (1.f) / sum;
+  }
+  __syncthreads();
+
+  // if (threadIdx.x < all_sequence_length) {
+  //   output[index] = T(thread_data_exp * sum_reverse_block); /////////////////////
+  // }
+
+  if (threadIdx.x * ILP < all_sequence_length) {
+    #pragma unroll
+    for (int i = 0; i < ILP; i++) {
+      output_v[i] = T(thread_data[i] * sum_reverse_block);
+    }
+  }
+  *(reinterpret_cast<VecT*>(&output[index])) = *reinterpret_cast<VecT*>(&output_v[0]);
+
+}
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
 template <typename T, unsigned TPB>
 __global__ void SoftmaxKernelSmall(const int all_sequence_length, const int sequence_length, const T* add_before_softmax, const T* input, T* output, bool is_unidirectional) {
   SoftmaxSmall<T, TPB>(all_sequence_length, sequence_length, all_sequence_length, 0, add_before_softmax, input, output, is_unidirectional);
@@ -348,6 +547,13 @@ __global__ void SoftmaxWithRawMaskSmallKernel(const int all_sequence_length, con
   SoftmaxWithRawMaskSmall<T, TPB>(all_sequence_length, sequence_length, attention_mask, key_padding_mask, add_before_softmax, input, output, is_unidirectional, rsqrt_head_size, mask_dimension, max_sequence_length, skip_softmax);
 }
 
+template <typename T, unsigned TPB, int ILP>
+__global__ void SoftmaxWithRawMaskSmallVecKernel(const int all_sequence_length, const int sequence_length, const int* attention_mask, const bool* key_padding_mask, const T* add_before_softmax, const T* input,
+                                                T* output, const bool is_unidirectional, const float rsqrt_head_size, const int mask_dimension, const int max_sequence_length,
+                                                const bool skip_softmax) {
+  SoftmaxWithRawMaskSmallVec<T, TPB, ILP>(all_sequence_length, sequence_length, attention_mask, key_padding_mask, add_before_softmax, input, output, is_unidirectional, rsqrt_head_size, mask_dimension, max_sequence_length, skip_softmax);
+}
+
 template <typename T>
 bool ComputeSoftmaxWithMask1D(hipStream_t stream, const int all_sequence_length, const int sequence_length, const int batch_size, const int num_heads,
                               const int* mask_index, const int* mask_start, const T* add_before_softmax, const T* input, T* output, const bool is_unidirectional) {
@@ -389,8 +595,10 @@ bool ComputeSoftmaxWithRawMask(hipStream_t stream, const int all_sequence_length
 
   T* out = use_persistent_softmax ? persistent_softmax_workspace : output;
   if (all_sequence_length <= 32) {
-    const int blockSize = 32;
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(SoftmaxWithRawMaskSmallKernel<T, blockSize>), grid, blockSize, 0, stream, all_sequence_length, sequence_length, attention_mask, key_padding_mask, add_before_softmax, input, out, is_unidirectional, rsqrt_head_size, mask_dimension, max_sequence_length, use_persistent_softmax);
+    // const int blockSize = 32;
+    // hipLaunchKernelGGL(HIP_KERNEL_NAME(SoftmaxWithRawMaskSmallKernel<T, blockSize>), grid, blockSize, 0, stream, all_sequence_length, sequence_length, attention_mask, key_padding_mask, add_before_softmax, input, out, is_unidirectional, rsqrt_head_size, mask_dimension, max_sequence_length, use_persistent_softmax);
+    const int blockSize = 32 / 2;
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(SoftmaxWithRawMaskSmallVecKernel<T, blockSize, 2>), grid, blockSize, 0, stream, all_sequence_length, sequence_length, attention_mask, key_padding_mask, add_before_softmax, input, out, is_unidirectional, rsqrt_head_size, mask_dimension, max_sequence_length, use_persistent_softmax);
   } else if (all_sequence_length <= 64) {
     const int blockSize = 64;
     hipLaunchKernelGGL(HIP_KERNEL_NAME(SoftmaxWithRawMaskSmallKernel<T, blockSize>), grid, blockSize, 0, stream, all_sequence_length, sequence_length, attention_mask, key_padding_mask, add_before_softmax, input, out, is_unidirectional, rsqrt_head_size, mask_dimension, max_sequence_length, use_persistent_softmax);
@@ -421,3 +629,53 @@ bool ComputeSoftmaxWithRawMask(hipStream_t stream, const int all_sequence_length
 }  // namespace rocm
 }  // namespace contrib
 }  // namespace onnxruntime
+
+/*
+static void RunAttentionTest(
+    const std::vector<float>& input_data,         // input:      [batch_size, sequence_length, hidden_size]
+    const std::vector<float>& weights_data,       // weights:    [hidden_size, 3 * hidden_size]
+    const std::vector<float>& bias_data,          // bias:       [3 * hidden_size]
+    const std::vector<int32_t>& mask_index_data,  // mask_index: [batch_size] or [batch_size, past_sequence_length + sequence_length] or empty
+    const std::vector<float>& output_data,        // output:     [batch_size, sequence_length, hidden_size]
+    int batch_size,
+    int sequence_length,
+    int hidden_size,
+    int number_of_heads,
+    bool use_float16 = false,
+    bool is_unidirectional = false,
+    bool use_past_state = false,
+    int past_sequence_length = 0,
+    const std::vector<float>* past_data = nullptr,
+    const std::vector<float>* present_data = nullptr,
+    MaskIndexType mask_index_type = kMaskIndexEnd,
+    int input_hidden_size = 0,
+    int max_sequence_length = 0,
+    bool only_enable_cuda = false,
+    bool only_enable_cpu = false,
+    const std::vector<int32_t> qkv_sizes = {},
+    const std::vector<float>& extra_add_data = {}) {
+RunAttentionTest(input_data, weight_data, bias_data, mask_index_data, output_data,
+                   batch_size, sequence_length, hidden_size, number_of_heads, false, is_unidirectional,
+                   use_past_state, past_sequence_length, &past_data, &present_data);
+
+
+
+"AttentionPastStateBatch2"
+    sequence_length = 1
+    past_sequence_length = 3
+    max_sequence_length = 0
+
+"Attention4DMask"
+    batch_size = 1;
+    sequence_length = 2;
+    hidden_size = 4;
+    number_of_heads = 2;
+    
+    // Test 4D mask Bx1xmax_Sxmax_S
+    //      Megatron GPT2 mask with shape [batch_size, 1, max_sequence_length, max_sequence_length]
+    
+    past_sequence_length = 0;
+    max_sequence_length = 4;
+
+
+*/
