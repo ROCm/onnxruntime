@@ -9,12 +9,12 @@ namespace onnxruntime {
 namespace rocm {
 
 template <typename T>
-void CudnnRnnBase<T>::SetWeightBias(const hipdnnHandle_t handle,
-                                    const hipdnnRNNDescriptor_t rnn_desc,
+void CudnnRnnBase<T>::SetWeightBias(const miopenHandle_t handle,
+                                    const miopenRNNDescriptor_t rnn_desc,
                                     const int pseudo_layer,
-                                    const hipdnnTensorDescriptor_t x_desc,
-                                    const hipdnnFilterDescriptor_t w_desc,
-                                    const hipdnnFilterDescriptor_t filter_desc,
+                                    const miopenTensorDescriptor_t x_desc,
+                                    const miopenOperatorDescriptor_t w_desc,
+                                    const miopenOperatorDescriptor_t filter_desc,
                                     const void* reorganized_w_data,
                                     const int lin_layer_id,
                                     const T* pos,
@@ -22,7 +22,7 @@ void CudnnRnnBase<T>::SetWeightBias(const hipdnnHandle_t handle,
                                     bool is_matrix) const {
   int numDims;
   std::vector<int> matDims(3);
-  hipdnnDataType_t dt;
+  miopenDataType_t dt;
   hipdnnTensorFormat_t tf;
   T* mem_offset;
 
@@ -34,14 +34,14 @@ void CudnnRnnBase<T>::SetWeightBias(const hipdnnHandle_t handle,
 
   hipdnnGetFilterNdDescriptor(filter_desc, 3, &dt, &tf, &numDims, matDims.data());
   int count = matDims[0] * matDims[1] * matDims[2];
-  CUDA_CALL_THROW(hipMemcpyAsync(mem_offset, pos + offset, count * sizeof(T), hipMemcpyDeviceToDevice, Stream()));
+  NCCL_CALL_THROW(hipMemcpyAsync(mem_offset, pos + offset, count * sizeof(T), hipMemcpyDeviceToDevice, Stream()));
   offset += count;
 }
 template <typename T>
-Status CudnnRnnBase<T>::SetCudnnRnnWeightBias(const hipdnnHandle_t cudnn_handle,
-                                              const hipdnnRNNDescriptor_t rnn_desc,
-                                              const hipdnnTensorDescriptor_t x_desc,
-                                              const hipdnnFilterDescriptor_t w_desc,
+Status CudnnRnnBase<T>::SetCudnnRnnWeightBias(const miopenHandle_t cudnn_handle,
+                                              const miopenRNNDescriptor_t rnn_desc,
+                                              const miopenTensorDescriptor_t x_desc,
+                                              const miopenOperatorDescriptor_t w_desc,
                                               void* reorganized_w_data,
                                               const T* W_data,
                                               const T* R_data,
@@ -98,7 +98,7 @@ Status CudnnRnnBase<T>::ReorganizeWeights(const Tensor* W, const Tensor* R, cons
 
   // In many cases, this allocation is bigger than needed, leaving part of
   // the buffer unintialized. non-zero garbage data leads to wrong result
-  // in call to hipdnnRNNForwardInference()
+  // in call to miopenRNNForwardInference()
   // TODO! refine allocation size for each case.
   hipMemset(reorganized_w_data.get(), 0, w_size * sizeof(T));
 
@@ -106,7 +106,7 @@ Status CudnnRnnBase<T>::ReorganizeWeights(const Tensor* W, const Tensor* R, cons
   const T* R_data = R->template Data<T>();
   const T* B_data = B == nullptr ? nullptr : B->template Data<T>();
 
-  ORT_RETURN_IF_ERROR(SetCudnnRnnWeightBias(CudnnHandle(), rnn_desc, fake_x_desc, target_w_desc,
+  ORT_RETURN_IF_ERROR(SetCudnnRnnWeightBias(MiopenHandle(), rnn_desc, fake_x_desc, target_w_desc,
                                             reorganized_w_data.get(), W_data, R_data, B_data));
 
   return Status::OK();
@@ -125,14 +125,14 @@ Status CudnnRnnBase<T>::CacheCudnnRnnWeights(const OpKernelInfo& info) {
 
   if (get_W && get_R) {
     CudnnRNN tmp_rnn_desc;
-    ORT_RETURN_IF_ERROR(tmp_rnn_desc.Set(CudnnHandle(),
+    ORT_RETURN_IF_ERROR(tmp_rnn_desc.Set(MiopenHandle(),
                                          hidden_size_,
                                          RNN_NUM_LAYERS,
                                          cudnn_dropout_desc_,
                                          cudnn_direction_mode_,
                                          rnn_mode_,
                                          MiopenTensor::GetDataType<HipT>(),
-                                         GetDeviceProp()));
+                                         hipDeviceProp_t()));
     if (get_B) {
       ORT_RETURN_IF_ERROR(ReorganizeWeights(W, R, B, w_data_cache_, w_desc_cache_, tmp_rnn_desc));
     } else {
@@ -179,8 +179,8 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   ORT_RETURN_IF_ERROR(x_desc_temp.Set(dims_x, MiopenTensor::GetDataType<HipT>()));
   MiopenTensor y_desc_temp;
   ORT_RETURN_IF_ERROR(y_desc_temp.Set(dims_y, MiopenTensor::GetDataType<HipT>()));
-  std::vector<hipdnnTensorDescriptor_t> x_desc(seq_length, x_desc_temp);
-  std::vector<hipdnnTensorDescriptor_t> y_desc(seq_length, y_desc_temp);
+  std::vector<miopenTensorDescriptor_t> x_desc(seq_length, x_desc_temp);
+  std::vector<miopenTensorDescriptor_t> y_desc(seq_length, y_desc_temp);
 
   MiopenTensor hx_desc;
   MiopenTensor cx_desc;
@@ -224,14 +224,14 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   const int32_t* sequence_lens_data = (sequence_lens == nullptr) ? nullptr : sequence_lens->template Data<int32_t>();
 
   CudnnRNN rnn_desc;
-  ORT_RETURN_IF_ERROR(rnn_desc.Set(CudnnHandle(),
+  ORT_RETURN_IF_ERROR(rnn_desc.Set(MiopenHandle(),
                                    hidden_size_,
                                    RNN_NUM_LAYERS,
                                    cudnn_dropout_desc_,
                                    cudnn_direction_mode_,
                                    rnn_mode_,
                                    MiopenTensor::GetDataType<HipT>(),
-                                   GetDeviceProp()));
+                                   hipDeviceProp_t()));
 
   // Prepare the weight data
   IAllocatorUniquePtr<void> w_data;
@@ -244,17 +244,17 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   }
 
   // CUDNN_RNN_DATA_LAYOUT_SEQ_MAJOR_UNPACKED works with CUDNN_RNN_PADDED_IO_ENABLED, so that it will auto fill 0 for the shorter sequences
-  CUDNN_RETURN_IF_ERROR(cudnnSetRNNPaddingMode(rnn_desc, CUDNN_RNN_PADDED_IO_ENABLED));
+  MIOPEN_RETURN_IF_ERROR(cudnnSetRNNPaddingMode(rnn_desc, CUDNN_RNN_PADDED_IO_ENABLED)); //Not supported on ROCm
 
   size_t workspace_bytes;
-  CUDNN_RETURN_IF_ERROR(hipdnnGetRNNWorkspaceSize(CudnnHandle(), rnn_desc, gsl::narrow_cast<int>(seq_length), x_desc.data(), &workspace_bytes));
+  MIOPEN_RETURN_IF_ERROR(miopenGetRNNWorkspaceSize(MiopenHandle(), rnn_desc, gsl::narrow_cast<int>(seq_length), x_desc.data(), &workspace_bytes));
   auto workspace_cuda = GetScratchBuffer<void>(workspace_bytes);
   int32_t zero_seq_count = 0;
   std::vector<int32_t> zero_seq_index_cache(batch_size, 0);
   int64_t zero_seq_index_cache_size = 0;
 
   if (HIPDNN_RNN_RELU == rnn_mode_ || HIPDNN_RNN_TANH == rnn_mode_ || nullptr == sequence_lens_data) {
-    CUDNN_RETURN_IF_ERROR(hipdnnRNNForwardInference(CudnnHandle(),
+    MIOPEN_RETURN_IF_ERROR(miopenRNNForwardInference(MiopenHandle(),
                                                    rnn_desc,
                                                    gsl::narrow_cast<int>(seq_length),
                                                    x_desc.data(),
@@ -301,7 +301,7 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
     CudnnDataTensor y_desc1;
     ORT_RETURN_IF_ERROR(y_desc1.Set(MiopenTensor::GetDataType<HipT>(), seq_length, batch_size, hidden_size_ * num_directions_, seq_len_array.data()));
 
-    CUDNN_RETURN_IF_ERROR(cudnnRNNForwardInferenceEx(CudnnHandle(),
+    MIOPEN_RETURN_IF_ERROR(miopenRNNForwardInference(MiopenHandle(),
                                                      rnn_desc,
                                                      x_desc1,
                                                      x_data_input,
@@ -357,7 +357,7 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
 
     if (Y != nullptr) {
       // User specified this optional output, so need to copy the reversed data to orignial place
-      CUDA_RETURN_IF_ERROR(hipMemcpyAsync(y_data, y_reorganized_data.get(), output_size * sizeof(T), hipMemcpyDeviceToDevice, Stream()));
+      HIP_RETURN_IF_ERROR(hipMemcpyAsync(y_data, y_reorganized_data.get(), output_size * sizeof(T), hipMemcpyDeviceToDevice, Stream()));
     } else {
       y_data = y_reorganized_data.get();
     }

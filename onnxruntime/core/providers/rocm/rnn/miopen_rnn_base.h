@@ -54,11 +54,6 @@ class CudnnRNN {
                                                 rnn_mode,
                                                 HIPDNN_RNN_ALGO_STANDARD,  //HIPDNN_RNN_ALGO_PERSIST_STATIC, HIPDNN_RNN_ALGO_PERSIST_DYNAMIC
                                                 dataType));
-
-    if (prop.major >= 7 && dataType == HIPDNN_DATA_HALF) {
-      cudnnSetRNNMatrixMathType(cudnn_rnn_desc_, HIPDNN_TENSOR_OP_MATH);
-    }
-
     return Status::OK();
   }
 
