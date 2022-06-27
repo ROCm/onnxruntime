@@ -6,7 +6,7 @@
 #include "miopen_rnn_base.h"
 #include "gsl/gsl"
 #include "core/providers/cuda/cuda_common.h"
-#include <hipDNN.h>
+#include <miopen/miopen.h>
 
 namespace onnxruntime {
 namespace rocm {

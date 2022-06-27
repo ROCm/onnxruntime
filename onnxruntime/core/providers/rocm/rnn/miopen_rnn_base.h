@@ -5,7 +5,7 @@
 
 #include "gsl/gsl"
 
-#include <hipDNN.h>
+#include <miopen/miopen.h>
 
 #include "core/providers/cuda/cuda_kernel.h"
 #include "core/providers/rocm/miopen_common.h"
