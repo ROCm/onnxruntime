@@ -33,18 +33,18 @@ class CudnnRNN {
 
   ~CudnnRNN() {
     if (cudnn_rnn_desc_ != nullptr) {
-      hipdnnDestroyRNNDescriptor(cudnn_rnn_desc_);
+      miopenDestroyRNNDescriptor(cudnn_rnn_desc_);
       cudnn_rnn_desc_ = nullptr;
     }
   }
 
-  Status Set(const hipdnnHandle_t& cudnnHandle, int64_t hidden_size, int num_layers,
-             hipdnnDropoutDescriptor_t cudnn_dropout_desc, hipdnnDirectionMode_t cudnn_direction_model,
-             hipdnnRNNMode_t rnn_mode, hipdnnDataType_t dataType, const hipDeviceProp_t& prop) {
+  Status Set(const miopenHandle_t& cudnnHandle, int64_t hidden_size, int num_layers,
+             hipdnnDropoutDescriptor_t cudnn_dropout_desc, miopenRNNDirectionMode_t cudnn_direction_model,
+             miopenRNNMode_t rnn_mode, miopenDataType_t dataType, const hipDeviceProp_t& prop) {
     if (!cudnn_rnn_desc_)
-      CUDNN_RETURN_IF_ERROR(hipdnnCreateRNNDescriptor(&cudnn_rnn_desc_));
+      MIOPEN_RETURN_IF_ERROR(miopenCreateRNNDescriptor(&cudnn_rnn_desc_));
 
-    CUDNN_RETURN_IF_ERROR(hipdnnSetRNNDescriptor_v6(cudnnHandle,
+    MIOPEN_RETURN_IF_ERROR(miopenSetRNNDescriptor_V2(cudnnHandle,
                                                 cudnn_rnn_desc_,
                                                 gsl::narrow_cast<int>(hidden_size),
                                                 num_layers,
@@ -57,12 +57,12 @@ class CudnnRNN {
     return Status::OK();
   }
 
-  operator hipdnnRNNDescriptor_t() const {
+  operator miopenOperatorDescriptor_t() const {
     return cudnn_rnn_desc_;
   }
 
  private:
-  hipdnnRNNDescriptor_t cudnn_rnn_desc_;
+  miopenOperatorDescriptor_t cudnn_rnn_desc_;
 };
 
 template <typename T>
@@ -89,7 +89,7 @@ class CudnnRnnBase : public CudaKernel {
     ORT_ENFORCE(allowed_directions.find(direction) != allowed_directions.end());
 
     ORT_ENFORCE(info.GetAttr("hidden_size", &hidden_size_).IsOK() && hidden_size_ > 0);
-    rnn_mode_ = HIPDNN_LSTM;
+    rnn_mode_ = miopenLSTM;
     weight_cached_ = false;
     w_data_cache_ = nullptr;
 
@@ -108,12 +108,12 @@ class CudnnRnnBase : public CudaKernel {
 
   Status ComputeInternal(OpKernelContext* ctx) const override;
 
-  void SetRNNMode(hipdnnRNNMode_t rnn_mode) { rnn_mode_ = rnn_mode; }
+  void SetRNNMode(miopenRNNMode_t rnn_mode) { rnn_mode_ = rnn_mode; }
 
  private:
-  Status SetCudnnRnnWeightBias(const hipdnnHandle_t cudnn_handle,
-                               const hipdnnRNNDescriptor_t rnn_desc,
-                               const hipdnnTensorDescriptor_t x_desc,
+  Status SetCudnnRnnWeightBias(const miopenHandle_t cudnn_handle,
+                               const miopenOperatorDescriptor_t rnn_desc,
+                               const miopenTensorDescriptor_t x_desc,
                                const hipdnnFilterDescriptor_t w_desc,
                                void* w_data,
                                const T* W_data,
@@ -125,10 +125,10 @@ class CudnnRnnBase : public CudaKernel {
                            CudnnFilterDescriptor& target_w_desc,
                            CudnnRNN& rnn_desc) const;
 
-  void SetWeightBias(const hipdnnHandle_t handle,
-                     const hipdnnRNNDescriptor_t rnn_desc,
+  void SetWeightBias(const miopenHandle_t handle,
+                     const miopenOperatorDescriptor_t rnn_desc,
                      const int pseudo_layer,
-                     const hipdnnTensorDescriptor_t x_desc,
+                     const miopenTensorDescriptor_t x_desc,
                      const hipdnnFilterDescriptor_t w_desc,
                      const hipdnnFilterDescriptor_t filter_desc,
                      const void* w_data,
@@ -149,12 +149,12 @@ class CudnnRnnBase : public CudaKernel {
   std::vector<int> R_lin_layer_id_;
 
  private:
-  hipdnnDirectionMode_t cudnn_direction_mode_;
+  miopenRNNDirectionMode_t cudnn_direction_mode_;
   bool reverse_;
   int64_t num_directions_;
   // hidden_size_ from attribute
   int64_t hidden_size_;
-  hipdnnRNNMode_t rnn_mode_;
+  miopenRNNMode_t rnn_mode_;
   // w_desc_cache_ & w_data_cache_ are changed in Constructor if we can get the weights as constant input
   CudnnFilterDescriptor w_desc_cache_;
   IAllocatorUniquePtr<void> w_data_cache_;

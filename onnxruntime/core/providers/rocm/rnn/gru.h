@@ -15,7 +15,7 @@ template <typename T>
 class GRU final : public CudnnRnnBase<T> {
  public:
   GRU(const OpKernelInfo& info) : CudnnRnnBase<T>(info) {
-    CudnnRnnBase<T>::SetRNNMode(HIPDNN_GRU);
+    CudnnRnnBase<T>::SetRNNMode(miopenGRU);
 
     // ONNX W layout is Wzrh, WBzrh, mapping to RNNLinLayerMatrixParams the linLayerID is 1, 0, 2
     CudnnRnnBase<T>::W_lin_layer_id_.assign({1, 0, 2});
