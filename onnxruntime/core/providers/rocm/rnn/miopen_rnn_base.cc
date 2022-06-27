@@ -27,9 +27,9 @@ void CudnnRnnBase<T>::SetWeightBias(const miopenHandle_t handle,
   T* mem_offset;
 
   if (is_matrix) {
-    hipdnnGetRNNLinLayerMatrixParams(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
+    miopenGetRNNLayerParam(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
   } else {
-    hipdnnGetRNNLinLayerBiasParams(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
+    miopenGetRNNLayerBias(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
   }
 
   hipdnnGetFilterNdDescriptor(filter_desc, 3, &dt, &tf, &numDims, matDims.data());
@@ -100,7 +100,7 @@ Status CudnnRnnBase<T>::ReorganizeWeights(const Tensor* W, const Tensor* R, cons
   // the buffer unintialized. non-zero garbage data leads to wrong result
   // in call to miopenRNNForwardInference()
   // TODO! refine allocation size for each case.
-  hipMemset(reorganized_w_data.get(), 0, w_size * sizeof(T));
+  HIP_RETURN_IF_ERROR(hipMemset(reorganized_w_data.get(), 0, w_size * sizeof(T)));
 
   const T* W_data = W->template Data<T>();
   const T* R_data = R->template Data<T>();
@@ -156,7 +156,7 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   const Tensor* sequence_lens = ctx->Input<Tensor>(RNN_Input_Index::sequence_lens);  // [batch_size]
   const Tensor* initial_h = ctx->Input<Tensor>(RNN_Input_Index::initial_h);          // initial hidden. [num_directions_, batch_size, hidden_size_]
   const Tensor* initial_c(nullptr);
-  if (rnn_mode_ == HIPDNN_LSTM) {
+  if (rnn_mode_ == miopenLSTM) {
     initial_c = ctx->Input<Tensor>(RNN_Input_Index::initial_c);  // initial cell. [num_directions_, batch_size, hidden_size_]
   }
 

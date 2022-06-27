@@ -39,7 +39,7 @@ class CudnnRNN {
   }
 
   Status Set(const miopenHandle_t& cudnnHandle, int64_t hidden_size, int num_layers,
-             hipdnnDropoutDescriptor_t cudnn_dropout_desc, miopenRNNDirectionMode_t cudnn_direction_model,
+             miopenDropoutDescriptor_t cudnn_dropout_desc, miopenRNNDirectionMode_t cudnn_direction_model,
              miopenRNNMode_t rnn_mode, miopenDataType_t dataType, const hipDeviceProp_t& prop) {
     if (!cudnn_rnn_desc_)
       MIOPEN_RETURN_IF_ERROR(miopenCreateRNNDescriptor(&cudnn_rnn_desc_));
@@ -49,7 +49,7 @@ class CudnnRNN {
                                                 gsl::narrow_cast<int>(hidden_size),
                                                 num_layers,
                                                 cudnn_dropout_desc,
-                                                HIPDNN_LINEAR_INPUT,  // We can also skip the input matrix transformation
+                                                miopenRNNlinear,  // We can also skip the input matrix transformation
                                                 cudnn_direction_model,
                                                 rnn_mode,
                                                 miopenRNNdefault,  //HIPDNN_RNN_ALGO_PERSIST_STATIC, HIPDNN_RNN_ALGO_PERSIST_DYNAMIC
@@ -114,7 +114,7 @@ class CudnnRnnBase : public CudaKernel {
   Status SetCudnnRnnWeightBias(const miopenHandle_t cudnn_handle,
                                const miopenOperatorDescriptor_t rnn_desc,
                                const miopenTensorDescriptor_t x_desc,
-                               const hipdnnFilterDescriptor_t w_desc,
+                               const miopenTensorDescriptor_t w_desc,
                                void* w_data,
                                const T* W_data,
                                const T* R_data,
@@ -129,8 +129,8 @@ class CudnnRnnBase : public CudaKernel {
                      const miopenOperatorDescriptor_t rnn_desc,
                      const int pseudo_layer,
                      const miopenTensorDescriptor_t x_desc,
-                     const hipdnnFilterDescriptor_t w_desc,
-                     const hipdnnFilterDescriptor_t filter_desc,
+                     const miopenTensorDescriptor_t w_desc,
+                     const miopenTensorDescriptor_t filter_desc,
                      const void* w_data,
                      const int lin_layer_id,
                      const T* pos,
