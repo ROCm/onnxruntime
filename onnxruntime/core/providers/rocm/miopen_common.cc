@@ -76,6 +76,49 @@ Status MiopenTensorDescriptor::Set(gsl::span<const int64_t> filter_dims, miopenD
   return Status::OK();
 }
 
+MiopenDropout::MiopenDropout() : dropout_desc_(nullptr) {}
+
+Status MiopenDropout::GetMiopenDropoutStatesSize(const miopenTensorDescriptor_t& miopenhandle, size_t& stateSize) {
+  MIOPEN_RETURN_IF_ERROR(miopenDropoutGetReserveSpaceSize(miopenhandle, &stateSize));
+
+  return Status::OK();
+}
+
+Status MiopenDropout::Set(const miopenTensorDescriptor_t& miopenhandle,
+             void* states,
+             size_t stateSize,
+             float dropout = 0.0f,
+             unsigned long long seed = 1) {
+  ORT_RETURN_IF_ERROR(CreateDescriptorIfNeeded());
+  MIOPEN_RETURN_IF_ERROR(miopenSetDropoutDescriptor(dropout_desc_,
+						    miopenhandle,
+						    dropout,
+						    states,
+						    stateSize,
+						    seed,
+						    false,//use mask?
+						    false,
+						    MIOPEN_RNG_PSEUDO_XORWOW));
+
+  return Status::OK();
+}
+
+MiopenDropout::~MiopenDropout() {
+  if (dropout_desc_ != nullptr) {
+    miopenDestroyDropoutDescriptor(dropout_desc_);
+  }
+}
+
+operator MiopenDropout::miopenDropoutDescriptor_t() const {
+  return dropout_desc_;
+}
+
+Status MiopenDropout::CreateDescriptorIfNeeded() {
+  if (!dropout_desc_)
+    MIOPEN_RETURN_IF_ERROR(miopenCreateDropoutDescriptor(&dropout_desc_));
+  return Status::OK();
+}
+
 template <typename ElemType>
 miopenDataType_t MiopenTensor::GetDataType() {
   ORT_THROW("miopen engine currently supports only single/half/int32/int8 precision data types.");

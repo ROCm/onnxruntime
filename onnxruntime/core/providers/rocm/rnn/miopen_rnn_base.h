@@ -95,7 +95,7 @@ class CudnnRnnBase : public CudaKernel {
 
     size_t state_size;
     ORT_THROW_IF_ERROR(cudnn_dropout_desc_.CreateDescriptorIfNeeded());
-    ORT_THROW_IF_ERROR(cudnn_dropout_desc_.GetCudnnDropoutStatesSize(CudnnHandle(), state_size));
+    ORT_THROW_IF_ERROR(cudnn_dropout_desc_.GetMiopenDropoutStatesSize(CudnnHandle(), state_size));
     state_buffer_ = GetScratchBuffer<void>(state_size);
     ORT_THROW_IF_ERROR(cudnn_dropout_desc_.Set(CudnnHandle(), state_buffer_.get(), state_size));
 
@@ -163,7 +163,7 @@ class CudnnRnnBase : public CudaKernel {
 
   // cudnn_dropout_desc_ is a cache, never to be changed
   IAllocatorUniquePtr<void> state_buffer_;
-  CudnnDropout cudnn_dropout_desc_;
+  MiopenDropout cudnn_dropout_desc_;
 
   enum Output_Index {
     Y = 0,
