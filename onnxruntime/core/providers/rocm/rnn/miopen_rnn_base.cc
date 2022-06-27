@@ -253,7 +253,7 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   std::vector<int32_t> zero_seq_index_cache(batch_size, 0);
   int64_t zero_seq_index_cache_size = 0;
 
-  if (HIPDNN_RNN_RELU == rnn_mode_ || HIPDNN_RNN_TANH == rnn_mode_ || nullptr == sequence_lens_data) {
+  if (miopenRNNRELU == rnn_mode_ || miopenRNNTANH == rnn_mode_ || nullptr == sequence_lens_data) {
     MIOPEN_RETURN_IF_ERROR(miopenRNNForwardInference(MiopenHandle(),
                                                    rnn_desc,
                                                    gsl::narrow_cast<int>(seq_length),
@@ -368,8 +368,8 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
     SetZeroSequences(zero_seq_index_cache_size, zero_seq_index_cache, y_data, y_h_data, y_c_data);
   }
 
-  if ((HIPDNN_RNN_RELU == rnn_mode_ || HIPDNN_RNN_TANH == rnn_mode_) && sequence_lens_data != nullptr && y_h_data != nullptr && y_data != nullptr) {
-    CudaAsyncBuffer<int32_t> sequence_lens_buffer(this, batch_size);
+  if ((miopenRNNRELU == rnn_mode_ || miopenRNNTANH == rnn_mode_) && sequence_lens_data != nullptr && y_h_data != nullptr && y_data != nullptr) {
+    RocmAsyncBuffer<int32_t> sequence_lens_buffer(this, batch_size);
     memcpy(sequence_lens_buffer.CpuPtr(), sequence_lens_data, batch_size * sizeof(int32_t));
     ORT_RETURN_IF_ERROR(sequence_lens_buffer.CopyToGpu());
     RnnMaskImpl(Stream(),
@@ -393,7 +393,7 @@ void CudnnRnnBase<T>::SetZeroSequences(const int64_t zero_seq_index_cache_size,
                                        T* y_h_data,
                                        T* y_c_data) const {
   typedef typename ToHipType<T>::MappedType HipT;
-  CudaAsyncBuffer<int32_t> zero_seq_index_cache_async_buffer(this, zero_seq_index_cache_size);
+  RocmAsyncBuffer<int32_t> zero_seq_index_cache_async_buffer(this, zero_seq_index_cache_size);
   memcpy(zero_seq_index_cache_async_buffer.CpuPtr(), zero_seq_index_cache.data(), zero_seq_index_cache_size * sizeof(int32_t));
   ORT_THROW_IF_ERROR(zero_seq_index_cache_async_buffer.CopyToGpu());
   MaskZeroSequences(Stream(),

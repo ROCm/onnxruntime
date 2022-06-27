@@ -52,7 +52,7 @@ class CudnnRNN {
                                                 HIPDNN_LINEAR_INPUT,  // We can also skip the input matrix transformation
                                                 cudnn_direction_model,
                                                 rnn_mode,
-                                                HIPDNN_RNN_ALGO_STANDARD,  //HIPDNN_RNN_ALGO_PERSIST_STATIC, HIPDNN_RNN_ALGO_PERSIST_DYNAMIC
+                                                miopenRNNdefault,  //HIPDNN_RNN_ALGO_PERSIST_STATIC, HIPDNN_RNN_ALGO_PERSIST_DYNAMIC
                                                 dataType));
     return Status::OK();
   }
@@ -74,18 +74,18 @@ class CudnnRnnBase : public CudaKernel {
     reverse_ = false;
     std::string direction = "forward";
     direction = info.GetAttrOrDefault<std::string>("direction", "forward");
-    cudnn_direction_mode_ = HIPDNN_UNIDIRECTIONAL;
+    cudnn_direction_mode_ = miopenRNNunidirection;
     if (direction == "bidirectional") {
-      cudnn_direction_mode_ = HIPDNN_BIDIRECTIONAL;
+      cudnn_direction_mode_ = miopenRNNbidirection;
     } else if (direction == "forward") {
-      cudnn_direction_mode_ = HIPDNN_UNIDIRECTIONAL;
+      cudnn_direction_mode_ = miopenRNNunidirection;
     } else if (direction == "reverse") {
-      cudnn_direction_mode_ = HIPDNN_UNIDIRECTIONAL;
+      cudnn_direction_mode_ = miopenRNNunidirection;
       // need to reverse data
       reverse_ = true;
     }
 
-    num_directions_ = cudnn_direction_mode_ == HIPDNN_BIDIRECTIONAL ? 2 : 1;
+    num_directions_ = cudnn_direction_mode_ == miopenRNNbidirection ? 2 : 1;
     ORT_ENFORCE(allowed_directions.find(direction) != allowed_directions.end());
 
     ORT_ENFORCE(info.GetAttr("hidden_size", &hidden_size_).IsOK() && hidden_size_ > 0);
