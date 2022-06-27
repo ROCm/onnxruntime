@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 #include "core/providers/shared_library/provider_api.h"
-#include <miopen_rnn_base.h>
+#include "miopen_rnn_base.h"
 #include "rnn_impl.h"
 
 namespace onnxruntime {
@@ -73,7 +73,7 @@ Status CudnnRnnBase<T>::ReorganizeWeights(const Tensor* W, const Tensor* R, cons
                                           IAllocatorUniquePtr<void>& reorganized_w_data,
                                           CudnnFilterDescriptor& target_w_desc,
                                           CudnnRNN& rnn_desc) const {
-  typedef typename ToCudaType<T>::MappedType CudaT;
+  typedef typename ToHipType<T>::MappedType HipT;
   int64_t input_size = W->Shape()[2];
   // RNN W[num_directions_, hidden_size_, input_size]
   // RNN R[num_directions_, hidden_size_, hidden_size_]
@@ -87,11 +87,11 @@ Status CudnnRnnBase<T>::ReorganizeWeights(const Tensor* W, const Tensor* R, cons
   size_t number = W_lin_layer_id_.size();
   int64_t w_size = num_directions_ * (number * hidden_size_ * (input_size + hidden_size_ + 2));
   TensorShapeVector dims_w({w_size, 1, 1});
-  ORT_RETURN_IF_ERROR(target_w_desc.Set(dims_w, MiopenTensor::GetDataType<CudaT>()));
+  ORT_RETURN_IF_ERROR(target_w_desc.Set(dims_w, MiopenTensor::GetDataType<HipT>()));
 
   TensorShapeVector fake_dims_x({1, input_size, 1});
   MiopenTensor fake_x_desc;
-  ORT_RETURN_IF_ERROR(fake_x_desc.Set(fake_dims_x, MiopenTensor::GetDataType<CudaT>()));
+  ORT_RETURN_IF_ERROR(fake_x_desc.Set(fake_dims_x, MiopenTensor::GetDataType<HipT>()));
 
   // Prepare the weight data
   reorganized_w_data = GetScratchBuffer<void>(w_size * sizeof(T));
@@ -114,7 +114,7 @@ Status CudnnRnnBase<T>::ReorganizeWeights(const Tensor* W, const Tensor* R, cons
 
 template <typename T>
 Status CudnnRnnBase<T>::CacheCudnnRnnWeights(const OpKernelInfo& info) {
-  typedef typename ToCudaType<T>::MappedType CudaT;
+  typedef typename ToHipType<T>::MappedType HipT;
   // Cache the weight
   const Tensor* W;
   const Tensor* R;
@@ -131,7 +131,7 @@ Status CudnnRnnBase<T>::CacheCudnnRnnWeights(const OpKernelInfo& info) {
                                          cudnn_dropout_desc_,
                                          cudnn_direction_mode_,
                                          rnn_mode_,
-                                         MiopenTensor::GetDataType<CudaT>(),
+                                         MiopenTensor::GetDataType<HipT>(),
                                          GetDeviceProp()));
     if (get_B) {
       ORT_RETURN_IF_ERROR(ReorganizeWeights(W, R, B, w_data_cache_, w_desc_cache_, tmp_rnn_desc));
@@ -146,7 +146,7 @@ Status CudnnRnnBase<T>::CacheCudnnRnnWeights(const OpKernelInfo& info) {
 
 template <typename T>
 Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
-  typedef typename ToCudaType<T>::MappedType CudaT;
+  typedef typename ToHipType<T>::MappedType HipT;
 
   // inputs
   const Tensor* X = ctx->Input<Tensor>(RNN_Input_Index::X);  // inputs. [seq_length, batch_size, input_size]
@@ -176,9 +176,9 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   std::vector<int64_t> dims_y({batch_size, hidden_size_ * num_directions_, 1});
 
   MiopenTensor x_desc_temp;
-  ORT_RETURN_IF_ERROR(x_desc_temp.Set(dims_x, MiopenTensor::GetDataType<CudaT>()));
+  ORT_RETURN_IF_ERROR(x_desc_temp.Set(dims_x, MiopenTensor::GetDataType<HipT>()));
   MiopenTensor y_desc_temp;
-  ORT_RETURN_IF_ERROR(y_desc_temp.Set(dims_y, MiopenTensor::GetDataType<CudaT>()));
+  ORT_RETURN_IF_ERROR(y_desc_temp.Set(dims_y, MiopenTensor::GetDataType<HipT>()));
   std::vector<hipdnnTensorDescriptor_t> x_desc(seq_length, x_desc_temp);
   std::vector<hipdnnTensorDescriptor_t> y_desc(seq_length, y_desc_temp);
 
@@ -186,10 +186,10 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   MiopenTensor cx_desc;
   MiopenTensor y_h_desc;
   MiopenTensor y_c_desc;
-  ORT_RETURN_IF_ERROR(hx_desc.Set(dims_hxy, MiopenTensor::GetDataType<CudaT>()));
-  ORT_RETURN_IF_ERROR(cx_desc.Set(dims_hxy, MiopenTensor::GetDataType<CudaT>()));
-  ORT_RETURN_IF_ERROR(y_h_desc.Set(dims_hxy, MiopenTensor::GetDataType<CudaT>()));
-  ORT_RETURN_IF_ERROR(y_c_desc.Set(dims_hxy, MiopenTensor::GetDataType<CudaT>()));
+  ORT_RETURN_IF_ERROR(hx_desc.Set(dims_hxy, MiopenTensor::GetDataType<HipT>()));
+  ORT_RETURN_IF_ERROR(cx_desc.Set(dims_hxy, MiopenTensor::GetDataType<HipT>()));
+  ORT_RETURN_IF_ERROR(y_h_desc.Set(dims_hxy, MiopenTensor::GetDataType<HipT>()));
+  ORT_RETURN_IF_ERROR(y_c_desc.Set(dims_hxy, MiopenTensor::GetDataType<HipT>()));
 
   IAllocatorUniquePtr<T> x_reversed_data;
   const T* x_data = X->template Data<T>();
@@ -200,8 +200,8 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
                       gsl::narrow_cast<int32_t>(seq_length),
                       gsl::narrow_cast<int32_t>(batch_size),
                       gsl::narrow_cast<int32_t>(input_size),
-                      reinterpret_cast<const CudaT*>(x_data),
-                      reinterpret_cast<CudaT*>(x_reversed_data.get()),
+                      reinterpret_cast<const HipT*>(x_data),
+                      reinterpret_cast<HipT*>(x_reversed_data.get()),
                       seq_length * batch_size * input_size);
   }
 
@@ -230,7 +230,7 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
                                    cudnn_dropout_desc_,
                                    cudnn_direction_mode_,
                                    rnn_mode_,
-                                   MiopenTensor::GetDataType<CudaT>(),
+                                   MiopenTensor::GetDataType<HipT>(),
                                    GetDeviceProp()));
 
   // Prepare the weight data
@@ -297,9 +297,9 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
     }
 
     CudnnDataTensor x_desc1;
-    ORT_RETURN_IF_ERROR(x_desc1.Set(MiopenTensor::GetDataType<CudaT>(), seq_length, batch_size, input_size, seq_len_array.data()));
+    ORT_RETURN_IF_ERROR(x_desc1.Set(MiopenTensor::GetDataType<HipT>(), seq_length, batch_size, input_size, seq_len_array.data()));
     CudnnDataTensor y_desc1;
-    ORT_RETURN_IF_ERROR(y_desc1.Set(MiopenTensor::GetDataType<CudaT>(), seq_length, batch_size, hidden_size_ * num_directions_, seq_len_array.data()));
+    ORT_RETURN_IF_ERROR(y_desc1.Set(MiopenTensor::GetDataType<HipT>(), seq_length, batch_size, hidden_size_ * num_directions_, seq_len_array.data()));
 
     CUDNN_RETURN_IF_ERROR(cudnnRNNForwardInferenceEx(CudnnHandle(),
                                                      rnn_desc,
@@ -342,16 +342,16 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
                         gsl::narrow_cast<int32_t>(seq_length),
                         gsl::narrow_cast<int32_t>(batch_size),
                         gsl::narrow_cast<int32_t>(hidden_size_),
-                        reinterpret_cast<CudaT*>(y_data),
-                        reinterpret_cast<CudaT*>(y_reorganized_data.get()),
+                        reinterpret_cast<HipT*>(y_data),
+                        reinterpret_cast<HipT*>(y_reorganized_data.get()),
                         output_size);
     } else {
       ReorderBidirectionalDataInSequence(Stream(),
                                          gsl::narrow_cast<int32_t>(seq_length),
                                          gsl::narrow_cast<int32_t>(batch_size),
                                          gsl::narrow_cast<int32_t>(hidden_size_),
-                                         reinterpret_cast<CudaT*>(y_data),
-                                         reinterpret_cast<CudaT*>(y_reorganized_data.get()),
+                                         reinterpret_cast<HipT*>(y_data),
+                                         reinterpret_cast<HipT*>(y_reorganized_data.get()),
                                          output_size);
     }
 
@@ -378,8 +378,8 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
                 gsl::narrow_cast<int32_t>(batch_size),
                 gsl::narrow_cast<int32_t>(hidden_size_),
                 sequence_lens_buffer.GpuPtr(),
-                reinterpret_cast<CudaT*>(y_data),
-                reinterpret_cast<CudaT*>(y_h_data),
+                reinterpret_cast<HipT*>(y_data),
+                reinterpret_cast<HipT*>(y_h_data),
                 output_size);
   }
 
@@ -392,15 +392,15 @@ void CudnnRnnBase<T>::SetZeroSequences(const int64_t zero_seq_index_cache_size,
                                        T* y_data,
                                        T* y_h_data,
                                        T* y_c_data) const {
-  typedef typename ToCudaType<T>::MappedType CudaT;
+  typedef typename ToHipType<T>::MappedType HipT;
   CudaAsyncBuffer<int32_t> zero_seq_index_cache_async_buffer(this, zero_seq_index_cache_size);
   memcpy(zero_seq_index_cache_async_buffer.CpuPtr(), zero_seq_index_cache.data(), zero_seq_index_cache_size * sizeof(int32_t));
   ORT_THROW_IF_ERROR(zero_seq_index_cache_async_buffer.CopyToGpu());
   MaskZeroSequences(Stream(),
                     gsl::narrow_cast<int32_t>(hidden_size_),
-                    reinterpret_cast<CudaT*>(y_data),
-                    reinterpret_cast<CudaT*>(y_h_data),
-                    reinterpret_cast<CudaT*>(y_c_data),
+                    reinterpret_cast<HipT*>(y_data),
+                    reinterpret_cast<HipT*>(y_h_data),
+                    reinterpret_cast<HipT*>(y_c_data),
                     zero_seq_index_cache_async_buffer.GpuPtr(),
                     static_cast<int64_t>(zero_seq_index_cache_size));
 }

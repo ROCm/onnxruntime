@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include <miopen_rnn_base.h>
+#include "miopen_rnn_base.h"
 
 namespace onnxruntime {
 namespace rocm {

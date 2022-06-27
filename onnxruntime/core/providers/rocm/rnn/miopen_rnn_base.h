@@ -7,7 +7,7 @@
 
 #include <miopen/miopen.h>
 
-#include "core/providers/cuda/cuda_kernel.h"
+#include "core/providers/rocm/rocm_kernel.h"
 #include "core/providers/rocm/miopen_common.h"
 
 namespace onnxruntime {
