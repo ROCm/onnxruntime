@@ -58,9 +58,9 @@ class MiopenDropout final {
   ORT_DISALLOW_COPY_ASSIGNMENT_AND_MOVE(MiopenDropout);
   ~MiopenDropout();
 
-  Status GetMiopenDropoutStatesSize(const miopenTensorDescriptor_t& miopenhandle, size_t& stateSize);
+  Status GetMiopenDropoutStatesSize(const miopenHandle_t& miopenhandle, size_t& stateSize);
 
-  Status Set(const miopenTensorDescriptor_t& miopenhandle,
+  Status Set(const miopenHandle_t& miopenhandle,
              void* states,
              size_t stateSize,
              float dropout,

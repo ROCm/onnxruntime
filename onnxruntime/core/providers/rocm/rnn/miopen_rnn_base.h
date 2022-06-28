@@ -57,12 +57,12 @@ class CudnnRNN {
     return Status::OK();
   }
 
-  operator miopenOperatorDescriptor_t() const {
+  operator miopenRNNDescriptor_t() const {
     return cudnn_rnn_desc_;
   }
 
  private:
-  miopenOperatorDescriptor_t cudnn_rnn_desc_;
+  miopenRNNDescriptor_t cudnn_rnn_desc_;
 };
 
 template <typename T>
@@ -95,9 +95,9 @@ class CudnnRnnBase : public CudaKernel {
 
     size_t state_size;
     ORT_THROW_IF_ERROR(cudnn_dropout_desc_.CreateDescriptorIfNeeded());
-    ORT_THROW_IF_ERROR(cudnn_dropout_desc_.GetMiopenDropoutStatesSize(CudnnHandle(), state_size));
+    ORT_THROW_IF_ERROR(cudnn_dropout_desc_.GetMiopenDropoutStatesSize(MiopenHandle(), state_size));
     state_buffer_ = GetScratchBuffer<void>(state_size);
-    ORT_THROW_IF_ERROR(cudnn_dropout_desc_.Set(CudnnHandle(), state_buffer_.get(), state_size));
+    ORT_THROW_IF_ERROR(cudnn_dropout_desc_.Set(MiopenHandle(), state_buffer_.get(), state_size));
 
     layout_ = info.GetAttrOrDefault("layout", static_cast<int64_t>(0));
     ORT_ENFORCE(layout_ == 0,
