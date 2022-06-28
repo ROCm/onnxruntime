@@ -109,13 +109,52 @@ MiopenDropout::~MiopenDropout() {
   }
 }
 
-MiopenDropout::operator miopenDropoutDescriptor_t() const {
-  return dropout_desc_;
-}
-
 Status MiopenDropout::CreateDescriptorIfNeeded() {
   if (!dropout_desc_)
     MIOPEN_RETURN_IF_ERROR(miopenCreateDropoutDescriptor(&dropout_desc_));
+  return Status::OK();
+}
+
+MiopenConvolutionDescriptor::MiopenConvolutionDescriptor() : desc_(nullptr) {
+}
+
+MiopenConvolutionDescriptor::~MiopenConvolutionDescriptor() {
+  if (desc_ != nullptr) {
+    miopenDestroyConvolutionDescriptor(desc_);
+    desc_ = nullptr;
+  }
+}
+
+Status MiopenConvolutionDescriptor::Set(
+    size_t rank,
+    gsl::span<const int64_t> pads,
+    gsl::span<const int64_t> strides,
+    gsl::span<const int64_t> dilations,
+    int groups,
+    miopenConvolutionMode_t mode,
+    miopenDataType_t data_type) {
+  if (!desc_)
+    MIOPEN_RETURN_IF_ERROR(miopenCreateConvolutionDescriptor(&desc_));
+
+  InlinedVector<int> pad_dims(rank);
+  InlinedVector<int> stride_dims(rank);
+  InlinedVector<int> dilation_dims(rank);
+  for (size_t i = 0; i < rank; i++) {
+    pad_dims[i] = gsl::narrow_cast<int>(pads[i]);
+    stride_dims[i] = gsl::narrow_cast<int>(strides[i]);
+    dilation_dims[i] = gsl::narrow_cast<int>(dilations[i]);
+  }
+
+ MIOPEN_RETURN_IF_ERROR(miopenInitConvolutionNdDescriptor(
+      desc_,
+      gsl::narrow_cast<int>(rank),
+      pad_dims.data(),
+      stride_dims.data(),
+      dilation_dims.data(),
+      mode));
+
+  MIOPEN_RETURN_IF_ERROR(miopenSetConvolutionGroupCount(desc_, groups));
+
   return Status::OK();
 }
 

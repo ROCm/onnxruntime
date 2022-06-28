@@ -112,7 +112,7 @@ class CudnnRnnBase : public RocmKernel {
 
  private:
   Status SetCudnnRnnWeightBias(const miopenHandle_t cudnn_handle,
-                               const miopenOperatorDescriptor_t rnn_desc,
+                               const miopenRNNDescriptor_t rnn_desc,
                                const miopenTensorDescriptor_t x_desc,
                                const miopenTensorDescriptor_t w_desc,
                                void* w_data,
@@ -126,11 +126,11 @@ class CudnnRnnBase : public RocmKernel {
                            CudnnRNN& rnn_desc) const;
 
   void SetWeightBias(const miopenHandle_t handle,
-                     const miopenOperatorDescriptor_t rnn_desc,
+                     const miopenRNNDescriptor_t rnn_desc,
                      const int pseudo_layer,
                      const miopenTensorDescriptor_t x_desc,
                      const miopenTensorDescriptor_t w_desc,
-                     const miopenTensorDescriptor_t filter_desc,
+                     const miopenConvolutionDescriptor_t  filter_desc,
                      const void* w_data,
                      const int lin_layer_id,
                      const T* pos,

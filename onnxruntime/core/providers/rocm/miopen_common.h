@@ -75,6 +75,25 @@ class MiopenDropout final {
   miopenDropoutDescriptor_t dropout_desc_;
 };
 
+class MiopenConvolutionDescriptor final {
+ public:
+  MiopenConvolutionDescriptor();
+  ~MiopenConvolutionDescriptor();
+
+  Status Set(size_t rank,
+             gsl::span<const int64_t> pads,
+             gsl::span<const int64_t> strides,
+             gsl::span<const int64_t> dilations,
+             int groups,
+             miopenConvolutionMode_t mode,
+             miopenDataType_t data_type);
+
+  operator miopenConvolutionDescriptor_t() const { return desc_; }
+
+ private:
+  miopenConvolutionDescriptor_t desc_;
+};
+
 template <typename ElemType>
 struct Consts {
   static const ElemType Zero;

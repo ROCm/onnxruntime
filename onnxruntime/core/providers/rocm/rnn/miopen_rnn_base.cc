@@ -13,8 +13,8 @@ void CudnnRnnBase<T>::SetWeightBias(const miopenHandle_t handle,
                                     const miopenRNNDescriptor_t rnn_desc,
                                     const int pseudo_layer,
                                     const miopenTensorDescriptor_t x_desc,
-                                    const miopenOperatorDescriptor_t w_desc,
-                                    const miopenOperatorDescriptor_t filter_desc,
+                                    const miopenTensorDescriptor_t w_desc,
+                                    const miopenConvolutionDescriptor_t filter_desc,
                                     const void* reorganized_w_data,
                                     const int lin_layer_id,
                                     const T* pos,
@@ -23,7 +23,7 @@ void CudnnRnnBase<T>::SetWeightBias(const miopenHandle_t handle,
   int numDims;
   std::vector<int> matDims(3);
   miopenDataType_t dt;
-  hipdnnTensorFormat_t tf;
+  hipdnnTensorFormat_t tf;// only support NCHW
   T* mem_offset;
 
   if (is_matrix) {
@@ -41,7 +41,7 @@ template <typename T>
 Status CudnnRnnBase<T>::SetCudnnRnnWeightBias(const miopenHandle_t cudnn_handle,
                                               const miopenRNNDescriptor_t rnn_desc,
                                               const miopenTensorDescriptor_t x_desc,
-                                              const miopenOperatorDescriptor_t w_desc,
+                                              const miopenTensorDescriptor_t w_desc,
                                               void* reorganized_w_data,
                                               const T* W_data,
                                               const T* R_data,
@@ -49,7 +49,7 @@ Status CudnnRnnBase<T>::SetCudnnRnnWeightBias(const miopenHandle_t cudnn_handle,
   int w_offset = 0;
   int r_offset = 0;
   int bias_offset = 0;
-  MiopenTensorDescriptor filter_desc;
+  MiopenConvolutionDescriptor filter_desc;
   for (int layer = 0; layer < RNN_NUM_LAYERS * num_directions_; ++layer) {
     for (size_t idx = 0; idx < W_lin_layer_id_.size(); ++idx) {
       SetWeightBias(cudnn_handle, rnn_desc, layer, x_desc, w_desc, filter_desc, reorganized_w_data, W_lin_layer_id_[idx], W_data, w_offset, true);
