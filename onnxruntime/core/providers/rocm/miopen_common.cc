@@ -78,8 +78,8 @@ Status MiopenTensorDescriptor::Set(gsl::span<const int64_t> filter_dims, miopenD
 
 MiopenDropout::MiopenDropout() : dropout_desc_(nullptr) {}
 
-Status MiopenDropout::GetMiopenDropoutStatesSize(const miopenHandle_t& miopenhandle, size_t& stateSize) {
-  MIOPEN_RETURN_IF_ERROR(miopenDropoutGetReserveSpaceSize(miopenhandle, &stateSize));
+Status MiopenDropout::GetMiopenDropoutStatesSize(const miopenTensorDescriptor_t& miopenhandle, size_t& stateSize) {
+  MIOPEN_RETURN_IF_ERROR(miopenDropoutGetStatesSize(miopenhandle, &stateSize));
 
   return Status::OK();
 }

@@ -38,22 +38,21 @@ class CudnnRNN {
     }
   }
 
-  Status Set(const miopenHandle_t& cudnnHandle, int64_t hidden_size, int num_layers,
+  Status Set(int64_t hidden_size, int num_layers,
              miopenDropoutDescriptor_t cudnn_dropout_desc, miopenRNNDirectionMode_t cudnn_direction_model,
              miopenRNNMode_t rnn_mode, miopenDataType_t dataType, const hipDeviceProp_t& prop) {
     if (!cudnn_rnn_desc_)
       MIOPEN_RETURN_IF_ERROR(miopenCreateRNNDescriptor(&cudnn_rnn_desc_));
 
-    MIOPEN_RETURN_IF_ERROR(miopenSetRNNDescriptor_V2(cudnnHandle,
-                                                cudnn_rnn_desc_,
-                                                gsl::narrow_cast<int>(hidden_size),
-                                                num_layers,
-                                                cudnn_dropout_desc,
-                                                miopenRNNlinear,  // We can also skip the input matrix transformation
-                                                cudnn_direction_model,
-                                                rnn_mode,
-                                                miopenRNNdefault,  //HIPDNN_RNN_ALGO_PERSIST_STATIC, HIPDNN_RNN_ALGO_PERSIST_DYNAMIC
-                                                dataType));
+    MIOPEN_RETURN_IF_ERROR(miopenSetRNNDescriptor_V2( cudnn_rnn_desc_,
+						      gsl::narrow_cast<int>(hidden_size),
+						      num_layers,
+						      cudnn_dropout_desc,
+						      miopenRNNlinear,  // We can also skip the input matrix transformation
+						      cudnn_direction_model,
+						      rnn_mode,
+						      miopenRNNdefault,
+						      dataType));
     return Status::OK();
   }
 

@@ -125,8 +125,7 @@ Status CudnnRnnBase<T>::CacheCudnnRnnWeights(const OpKernelInfo& info) {
 
   if (get_W && get_R) {
     CudnnRNN tmp_rnn_desc;
-    ORT_RETURN_IF_ERROR(tmp_rnn_desc.Set(MiopenHandle(),
-                                         hidden_size_,
+    ORT_RETURN_IF_ERROR(tmp_rnn_desc.Set(hidden_size_,
                                          RNN_NUM_LAYERS,
                                          cudnn_dropout_desc_,
                                          cudnn_direction_mode_,
@@ -224,8 +223,7 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   const int32_t* sequence_lens_data = (sequence_lens == nullptr) ? nullptr : sequence_lens->template Data<int32_t>();
 
   CudnnRNN rnn_desc;
-  ORT_RETURN_IF_ERROR(rnn_desc.Set(MiopenHandle(),
-                                   hidden_size_,
+  ORT_RETURN_IF_ERROR(rnn_desc.Set(hidden_size_,
                                    RNN_NUM_LAYERS,
                                    cudnn_dropout_desc_,
                                    cudnn_direction_mode_,
