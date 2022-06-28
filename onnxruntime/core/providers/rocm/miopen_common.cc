@@ -109,7 +109,7 @@ MiopenDropout::~MiopenDropout() {
   }
 }
 
-operator MiopenDropout::miopenDropoutDescriptor_t() const {
+MiopenDropout::operator miopenDropoutDescriptor_t() const {
   return dropout_desc_;
 }
 
