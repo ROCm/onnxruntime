@@ -63,8 +63,8 @@ class MiopenDropout final {
   Status Set(const miopenHandle_t& miopenhandle,
              void* states,
              size_t stateSize,
-             float dropout,
-             unsigned long long seed);
+             float dropout = 0.0f,
+             unsigned long long seed = 1);
 
 
   operator miopenDropoutDescriptor_t() const { return dropout_desc_; }

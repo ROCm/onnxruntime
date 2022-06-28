@@ -49,7 +49,7 @@ Status CudnnRnnBase<T>::SetCudnnRnnWeightBias(const miopenHandle_t cudnn_handle,
   int w_offset = 0;
   int r_offset = 0;
   int bias_offset = 0;
-  CudnnFilterDescriptor filter_desc;
+  MiopenTensorDescriptor filter_desc;
   for (int layer = 0; layer < RNN_NUM_LAYERS * num_directions_; ++layer) {
     for (size_t idx = 0; idx < W_lin_layer_id_.size(); ++idx) {
       SetWeightBias(cudnn_handle, rnn_desc, layer, x_desc, w_desc, filter_desc, reorganized_w_data, W_lin_layer_id_[idx], W_data, w_offset, true);
@@ -71,7 +71,7 @@ Status CudnnRnnBase<T>::SetCudnnRnnWeightBias(const miopenHandle_t cudnn_handle,
 template <typename T>
 Status CudnnRnnBase<T>::ReorganizeWeights(const Tensor* W, const Tensor* R, const Tensor* B,
                                           IAllocatorUniquePtr<void>& reorganized_w_data,
-                                          CudnnFilterDescriptor& target_w_desc,
+                                          MiopenTensorDescriptor& target_w_desc,
                                           CudnnRNN& rnn_desc) const {
   typedef typename ToHipType<T>::MappedType HipT;
   int64_t input_size = W->Shape()[2];
@@ -233,7 +233,7 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
 
   // Prepare the weight data
   IAllocatorUniquePtr<void> w_data;
-  CudnnFilterDescriptor w_desc;
+  MiopenTensorDescriptor w_desc;
   if (!weight_cached_) {
     const Tensor& W = *ctx->Input<Tensor>(RNN_Input_Index::W);
     const Tensor& R = *ctx->Input<Tensor>(RNN_Input_Index::R);

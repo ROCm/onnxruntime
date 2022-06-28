@@ -44,15 +44,16 @@ class CudnnRNN {
     if (!cudnn_rnn_desc_)
       MIOPEN_RETURN_IF_ERROR(miopenCreateRNNDescriptor(&cudnn_rnn_desc_));
 
-    MIOPEN_RETURN_IF_ERROR(miopenSetRNNDescriptor_V2( cudnn_rnn_desc_,
-						      gsl::narrow_cast<int>(hidden_size),
-						      num_layers,
-						      cudnn_dropout_desc,
-						      miopenRNNlinear,  // We can also skip the input matrix transformation
-						      cudnn_direction_model,
-						      rnn_mode,
-						      miopenRNNdefault,
-						      dataType));
+    MIOPEN_RETURN_IF_ERROR(miopenSetRNNDescriptor_V2(cudnn_rnn_desc_,
+						     gsl::narrow_cast<int>(hidden_size),
+						     num_layers,
+						     cudnn_dropout_desc,
+						     miopenRNNlinear,  // We can also skip the input matrix transformation
+						     cudnn_direction_model,
+						     rnn_mode,
+						     miopenRNNNoBias, //default no bias reference v6 and v8 to get the ROCm v2
+						     miopenRNNdefault,
+						     dataType));
     return Status::OK();
   }
 
@@ -65,11 +66,11 @@ class CudnnRNN {
 };
 
 template <typename T>
-class CudnnRnnBase : public CudaKernel {
+class CudnnRnnBase : public RocmKernel {
   const std::set<std::string> allowed_directions{"forward", "reverse", "bidirectional"};
 
  public:
-  CudnnRnnBase(const OpKernelInfo& info) : CudaKernel{info} {
+  CudnnRnnBase(const OpKernelInfo& info) : RocmKernel{info} {
     reverse_ = false;
     std::string direction = "forward";
     direction = info.GetAttrOrDefault<std::string>("direction", "forward");
@@ -121,7 +122,7 @@ class CudnnRnnBase : public CudaKernel {
 
   Status ReorganizeWeights(const Tensor* W, const Tensor* R, const Tensor* B,
                            IAllocatorUniquePtr<void>& target_w_data,
-                           CudnnFilterDescriptor& target_w_desc,
+                           MiopenTensorDescriptor& target_w_desc,
                            CudnnRNN& rnn_desc) const;
 
   void SetWeightBias(const miopenHandle_t handle,
@@ -155,7 +156,7 @@ class CudnnRnnBase : public CudaKernel {
   int64_t hidden_size_;
   miopenRNNMode_t rnn_mode_;
   // w_desc_cache_ & w_data_cache_ are changed in Constructor if we can get the weights as constant input
-  CudnnFilterDescriptor w_desc_cache_;
+  MiopenTensorDescriptor w_desc_cache_;
   IAllocatorUniquePtr<void> w_data_cache_;
   bool weight_cached_;
   int64_t layout_;
