@@ -3,6 +3,7 @@
 
 #pragma once
 #include <stdint.h>
+#include "hip/hip_runtime.h"
 #include "core/providers/rocm/shared_inc/rocm_utils.h"
 
 namespace onnxruntime {
