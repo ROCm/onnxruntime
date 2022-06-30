@@ -14,7 +14,7 @@ void CudnnRnnBase<T>::SetWeightBias(const miopenHandle_t handle,
                                     const int pseudo_layer,
                                     const miopenTensorDescriptor_t x_desc,
                                     const miopenTensorDescriptor_t w_desc,
-                                    const miopenConvolutionDescriptor_t filter_desc,
+                                    const miopenTensorDescriptor_t filter_desc,
                                     const void* reorganized_w_data,
                                     const int lin_layer_id,
                                     const T* pos,
@@ -23,8 +23,7 @@ void CudnnRnnBase<T>::SetWeightBias(const miopenHandle_t handle,
   int numDims;
   std::vector<int> matDims(3);
   miopenDataType_t dt;
-  hipdnnTensorFormat_t tf;// only support NCHW
-  T* mem_offset;
+  T* mem_offset; // jcg check this function if trouble with memory
 
   if (is_matrix) {
     miopenGetRNNLayerParam(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
@@ -32,9 +31,9 @@ void CudnnRnnBase<T>::SetWeightBias(const miopenHandle_t handle,
     miopenGetRNNLayerBias(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
   }
 
-  hipdnnGetFilterNdDescriptor(filter_desc, 3, &dt, &tf, &numDims, matDims.data());
+  miopenGetTensorDescriptor(filter_desc, &dt, &numDims, matDims.data());
   int count = matDims[0] * matDims[1] * matDims[2];
-  NCCL_CALL_THROW(hipMemcpyAsync(mem_offset, pos + offset, count * sizeof(T), hipMemcpyDeviceToDevice, Stream()));
+  HIP_CALL_THROW(hipMemcpyAsync(mem_offset, pos + offset, count * sizeof(T), hipMemcpyDeviceToDevice, Stream()));
   offset += count;
 }
 template <typename T>
@@ -49,7 +48,7 @@ Status CudnnRnnBase<T>::SetCudnnRnnWeightBias(const miopenHandle_t cudnn_handle,
   int w_offset = 0;
   int r_offset = 0;
   int bias_offset = 0;
-  MiopenConvolutionDescriptor filter_desc;
+  MiopenTensorDescriptor filter_desc;
   for (int layer = 0; layer < RNN_NUM_LAYERS * num_directions_; ++layer) {
     for (size_t idx = 0; idx < W_lin_layer_id_.size(); ++idx) {
       SetWeightBias(cudnn_handle, rnn_desc, layer, x_desc, w_desc, filter_desc, reorganized_w_data, W_lin_layer_id_[idx], W_data, w_offset, true);
@@ -251,7 +250,7 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   std::vector<int32_t> zero_seq_index_cache(batch_size, 0);
   int64_t zero_seq_index_cache_size = 0;
 
-  if (miopenRNNRELU == rnn_mode_ || miopenRNNTANH == rnn_mode_ || nullptr == sequence_lens_data) {
+  //  if (miopenRNNRELU == rnn_mode_ || miopenRNNTANH == rnn_mode_ || nullptr == sequence_lens_data) {
     MIOPEN_RETURN_IF_ERROR(miopenRNNForwardInference(MiopenHandle(),
                                                    rnn_desc,
                                                    gsl::narrow_cast<int>(seq_length),
@@ -271,64 +270,63 @@ Status CudnnRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
                                                    y_c_data,
                                                    workspace_cuda.get(),
                                                    workspace_bytes));
-  } else {
-    // cudnn doesn't support 0 sequence inside the batch, find the 0 sequence and set it to 1
-    // there's a ZeroMask kernel to reset the result to 0 for the 0 sequence
-    std::vector<int32_t> seq_len_array(sequence_lens_data, sequence_lens_data + batch_size);
-    for (int i = 0; i < batch_size; ++i) {
-      if (0 == seq_len_array[i]) {
-        seq_len_array[i] = 1;
-        zero_seq_index_cache[zero_seq_count] = i;
-        ++zero_seq_count;
-      }
-    }
+  // } else {
+  //   // cudnn doesn't support 0 sequence inside the batch, find the 0 sequence and set it to 1
+  //   // there's a ZeroMask kernel to reset the result to 0 for the 0 sequence
+  //   std::vector<int32_t> seq_len_array(sequence_lens_data, sequence_lens_data + batch_size);
+  //   for (int i = 0; i < batch_size; ++i) {
+  //     if (0 == seq_len_array[i]) {
+  //       seq_len_array[i] = 1;
+  //       zero_seq_index_cache[zero_seq_count] = i;
+  //       ++zero_seq_count;
+  //     }
+  //   }
 
-    // Calculate the zero position cache for reverse direction if it's bidirectional
-    // The cache is for Y_h or Y_c, and the 1st sequence for Y, no need to do it for other sequence in Y since
-    // we hacked the 0 sequence to 1
-    if (zero_seq_count && num_directions_ > 1) {
-      zero_seq_index_cache_size = zero_seq_count * num_directions_;
-      zero_seq_index_cache.resize(zero_seq_index_cache_size);
-      for (int i = 0; i < zero_seq_count; ++i) {
-        zero_seq_index_cache[zero_seq_count + i] = static_cast<int32_t>(batch_size + zero_seq_index_cache[i]);
-      }
-    }
+  //   // Calculate the zero position cache for reverse direction if it's bidirectional
+  //   // The cache is for Y_h or Y_c, and the 1st sequence for Y, no need to do it for other sequence in Y since
+  //   // we hacked the 0 sequence to 1
+  //   if (zero_seq_count && num_directions_ > 1) {
+  //     zero_seq_index_cache_size = zero_seq_count * num_directions_;
+  //     zero_seq_index_cache.resize(zero_seq_index_cache_size);
+  //     for (int i = 0; i < zero_seq_count; ++i) {
+  //       zero_seq_index_cache[zero_seq_count + i] = static_cast<int32_t>(batch_size + zero_seq_index_cache[i]);
+  //     }
+  //   }
 
-    CudnnDataTensor x_desc1;
-    ORT_RETURN_IF_ERROR(x_desc1.Set(MiopenTensor::GetDataType<HipT>(), seq_length, batch_size, input_size, seq_len_array.data()));
-    CudnnDataTensor y_desc1;
-    ORT_RETURN_IF_ERROR(y_desc1.Set(MiopenTensor::GetDataType<HipT>(), seq_length, batch_size, hidden_size_ * num_directions_, seq_len_array.data()));
+  //   CudnnDataTensor x_desc1;
+  //   ORT_RETURN_IF_ERROR(x_desc1.Set(MiopenTensor::GetDataType<HipT>(), seq_length, batch_size, input_size, seq_len_array.data()));
+  //   CudnnDataTensor y_desc1;
+  //   ORT_RETURN_IF_ERROR(y_desc1.Set(MiopenTensor::GetDataType<HipT>(), seq_length, batch_size, hidden_size_ * num_directions_, seq_len_array.data()));
 
-    MIOPEN_RETURN_IF_ERROR(miopenRNNForwardInference(MiopenHandle(),
-                                                     rnn_desc,
-                                                     x_desc1,
-                                                     x_data_input,
-                                                     hx_desc,
-                                                     hx_data,
-                                                     cx_desc,
-                                                     cx_data,
-                                                     weight_cached_ ? w_desc_cache_ : w_desc,
-                                                     weight_cached_ ? w_data_cache_.get() : w_data.get(),
-                                                     y_desc1,
-                                                     y_data,
-                                                     y_h_desc,
-                                                     y_h_data,
-                                                     y_c_desc,
-                                                     y_c_data,
-                                                     nullptr, nullptr, nullptr, nullptr,
-                                                     nullptr, nullptr, nullptr, nullptr,
-                                                     workspace_cuda.get(),
-                                                     workspace_bytes));
+  //   MIOPEN_RETURN_IF_ERROR(miopenRNNForwardInference(MiopenHandle(),
+  //                                                    rnn_desc,
+  // 						     seq_length,//added jcg
+  //                                                    x_desc1,
+  //                                                    x_data_input,
+  //                                                    hx_desc,
+  //                                                    hx_data,
+  //                                                    cx_desc,
+  //                                                    cx_data,
+  //                                                    weight_cached_ ? w_desc_cache_ : w_desc,
+  //                                                    weight_cached_ ? w_data_cache_.get() : w_data.get(),
+  //                                                    y_desc1,
+  //                                                    y_data,
+  //                                                    y_h_desc,
+  //                                                    y_h_data,
+  //                                                    y_c_desc,
+  //                                                    y_c_data,
+  //                                                    workspace_cuda.get(),
+  //                                                    workspace_bytes));
 
-    // Early terminate for this case since Y data is not required, and Y_h is obtained correctly, no need the following code to retrive Y_h from Y data.
-    if (nullptr == Y) {
-      // Mask on output for 0 sequence batches
-      if (zero_seq_count > 0) {
-        SetZeroSequences(zero_seq_index_cache_size, zero_seq_index_cache, y_data, y_h_data, y_c_data);
-      }
-      return Status::OK();
-    }
-  }
+  //   // Early terminate for this case since Y data is not required, and Y_h is obtained correctly, no need the following code to retrive Y_h from Y data.
+  //   if (nullptr == Y) {
+  //     // Mask on output for 0 sequence batches
+  //     if (zero_seq_count > 0) {
+  //       SetZeroSequences(zero_seq_index_cache_size, zero_seq_index_cache, y_data, y_h_data, y_c_data);
+  //     }
+  //     return Status::OK();
+  //   }
+  // } //jcg fix for lstm it seems
 
   IAllocatorUniquePtr<T> y_reorganized_data;
   if (reverse_ || num_directions_ == 2) {
@@ -404,7 +402,7 @@ void CudnnRnnBase<T>::SetZeroSequences(const int64_t zero_seq_index_cache_size,
 }
 
 template class CudnnRnnBase<float>;
-template class CudnnRnnBase<double>;
+//template class CudnnRnnBase<double>;
 template class CudnnRnnBase<MLFloat16>;
 
 }  // namespace rocm

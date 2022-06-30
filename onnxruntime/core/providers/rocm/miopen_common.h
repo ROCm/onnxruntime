@@ -94,6 +94,26 @@ class MiopenConvolutionDescriptor final {
   miopenConvolutionDescriptor_t desc_;
 };
 
+/* class MiopenDataTensor final { */
+/*  public: */
+/*   CudnnDataTensor(); */
+/*   ~CudnnDataTensor(); */
+/*   ORT_DISALLOW_COPY_ASSIGNMENT_AND_MOVE(CudnnDataTensor); */
+
+/*   Status Set(miopenDataType_t dataType, */
+/*              int64_t max_seq_length, */
+/*              int64_t batch_size, */
+/*              int64_t data_size, */
+/*              const int32_t* seq_lengths); */
+
+/*   operator cudnnRNNDataDescriptor_t() const { return tensor_; } */
+
+/*  private: */
+/*   Status CreateTensorIfNeeded(); */
+
+/*   cudnnRNNDataDescriptor_t tensor_; */
+/* }; *///jcg fixme
+
 template <typename ElemType>
 struct Consts {
   static const ElemType Zero;

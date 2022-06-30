@@ -130,7 +130,7 @@ class CudnnRnnBase : public RocmKernel {
                      const int pseudo_layer,
                      const miopenTensorDescriptor_t x_desc,
                      const miopenTensorDescriptor_t w_desc,
-                     const miopenConvolutionDescriptor_t  filter_desc,
+                     const miopenTensorDescriptor_t filter_desc,
                      const void* w_data,
                      const int lin_layer_id,
                      const T* pos,

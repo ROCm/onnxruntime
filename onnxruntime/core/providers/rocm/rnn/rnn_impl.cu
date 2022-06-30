@@ -213,7 +213,7 @@ template void MaskZeroSequences<T>(hipStream_t stream,                   \
 
 SPECIALIZED_RNN_IMPL(half)
 SPECIALIZED_RNN_IMPL(float)
-SPECIALIZED_RNN_IMPL(double)
+//SPECIALIZED_RNN_IMPL(double)
 
 }  // namespace rocm
 }  // namespace onnxruntime
