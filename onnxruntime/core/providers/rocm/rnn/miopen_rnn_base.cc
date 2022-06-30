@@ -23,15 +23,16 @@ void CudnnRnnBase<T>::SetWeightBias(const miopenHandle_t handle,
   int numDims;
   std::vector<int> matDims(3);
   miopenDataType_t dt;
-  T* mem_offset; // jcg check this function if trouble with memory
+  T* mem_offset;
 
   if (is_matrix) {
-    miopenGetRNNLayerParam(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
+    miopenGetRNNLayerParam(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset); //JCG ONE OF THESE
   } else {
-    miopenGetRNNLayerBias(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
+    miopenGetRNNLayerBias(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset); //JCG ONE OF THESE
   }
 
   miopenGetTensorDescriptor(filter_desc, &dt, &numDims, matDims.data());
+
   int count = matDims[0] * matDims[1] * matDims[2];
   HIP_CALL_THROW(hipMemcpyAsync(mem_offset, pos + offset, count * sizeof(T), hipMemcpyDeviceToDevice, Stream()));
   offset += count;
@@ -52,7 +53,7 @@ Status CudnnRnnBase<T>::SetCudnnRnnWeightBias(const miopenHandle_t cudnn_handle,
   for (int layer = 0; layer < RNN_NUM_LAYERS * num_directions_; ++layer) {
     for (size_t idx = 0; idx < W_lin_layer_id_.size(); ++idx) {
       SetWeightBias(cudnn_handle, rnn_desc, layer, x_desc, w_desc, filter_desc, reorganized_w_data, W_lin_layer_id_[idx], W_data, w_offset, true);
-      if (B_data != nullptr) {
+      if (B_data != nullptr) {//This segfaults jcg
         SetWeightBias(cudnn_handle, rnn_desc, layer, x_desc, w_desc, filter_desc, reorganized_w_data, W_lin_layer_id_[idx], B_data, bias_offset, false);
       }
     }
