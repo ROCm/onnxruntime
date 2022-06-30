@@ -25,6 +25,7 @@ class BenchmarkAttention(BenchmarkOp):
 
     def create_inputs_outputs(cls, op_param):
         np.random.seed(0)
+
         input_data = np.random.rand(op_param.batch_size, op_param.seq_len, op_param.hidden_size).astype(
             op_param.data_type
         )
@@ -47,7 +48,8 @@ class BenchmarkAttention(BenchmarkOp):
         model = "models/attention_fp16.onnx" if self.args.precision == "fp16" else "models/attention_fp32.onnx"
         data_type = np.float16 if self.args.precision == "fp16" else np.float32
         # bert-base
-        op_param = OpParam(1, 384, 768, 768 * 3, data_type)
+        #op_param = OpParam(1, 384, 768, 768 * 3, data_type)
+        op_param = OpParam(self.args.batch_size, 384, 768, 768 * 3, data_type)
         self.add_case(op_param, model)
 
     def case_profile(cls, op_param, time):
@@ -57,6 +59,7 @@ class BenchmarkAttention(BenchmarkOp):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--batch-size", type=int, required=True, help="Batch size")
     add_arguments(parser)
     args = parser.parse_args()
     bm = BenchmarkAttention(args)
