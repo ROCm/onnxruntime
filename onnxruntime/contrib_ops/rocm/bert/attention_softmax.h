@@ -328,12 +328,20 @@ __device__ inline void SoftmaxWithRawMaskSmallVec(const int all_sequence_length,
       int from_index = all_sequence_length - sequence_length + sequence_index;  // offset of from token in all sequence length.
       //               (past_sequence_length + sequence_length) - sequence_length + head_index
       //              = past_sequence_length + head_index
+      /*
       if (threadIdx.x * ILP > from_index) {
         // thread_data = -10000.0f;
         #pragma unroll
         for (int i = 0; i < ILP; i++) {
           thread_data[i] = -10000.0f;
         }
+      }
+      */
+      #pragma unroll
+      for (int i = 0; i < ILP; i++) {
+        if (threadIdx.x * ILP + i > from_index) {
+          thread_data[i] = -10000.0f;
+	}
       }
     }
 
@@ -609,8 +617,10 @@ bool ComputeSoftmaxWithRawMask(hipStream_t stream, const int all_sequence_length
     const int blockSize = 256;
     hipLaunchKernelGGL(HIP_KERNEL_NAME(SoftmaxWithRawMaskSmallKernel<T, blockSize>), grid, blockSize, 0, stream, all_sequence_length, sequence_length, attention_mask, key_padding_mask, add_before_softmax, input, out, is_unidirectional, rsqrt_head_size, mask_dimension, max_sequence_length, use_persistent_softmax);
   } else if (all_sequence_length <= 512) {
-    const int blockSize = 512;
-    hipLaunchKernelGGL(HIP_KERNEL_NAME(SoftmaxWithRawMaskSmallKernel<T, blockSize>), grid, blockSize, 0, stream, all_sequence_length, sequence_length, attention_mask, key_padding_mask, add_before_softmax, input, out, is_unidirectional, rsqrt_head_size, mask_dimension, max_sequence_length, use_persistent_softmax);
+    const int blockSize = 512 / 2;
+    hipLaunchKernelGGL(HIP_KERNEL_NAME(SoftmaxWithRawMaskSmallVecKernel<T, blockSize, 2>), grid, blockSize, 0, stream, all_sequence_length, sequence_length, attention_mask, key_padding_mask, add_before_softmax, input, out, is_unidirectional, rsqrt_head_size, mask_dimension, max_sequence_length, use_persistent_softmax);
+    //const int blockSize = 512;
+    //hipLaunchKernelGGL(HIP_KERNEL_NAME(SoftmaxWithRawMaskSmallKernel<T, blockSize>), grid, blockSize, 0, stream, all_sequence_length, sequence_length, attention_mask, key_padding_mask, add_before_softmax, input, out, is_unidirectional, rsqrt_head_size, mask_dimension, max_sequence_length, use_persistent_softmax);
   } else if (all_sequence_length <= 1024) {
     const int blockSize = 1024;
     hipLaunchKernelGGL(HIP_KERNEL_NAME(SoftmaxWithRawMaskSmallKernel<T, blockSize>), grid, blockSize, 0, stream, all_sequence_length, sequence_length, attention_mask, key_padding_mask, add_before_softmax, input, out, is_unidirectional, rsqrt_head_size, mask_dimension, max_sequence_length, use_persistent_softmax);
