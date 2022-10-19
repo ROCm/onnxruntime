@@ -9,14 +9,14 @@
 #endif
 
 #include <hip/hip_runtime.h>
-#include <rocblas.h>
-#include <hipsparse.h>
+#include <rocblas/rocblas.h>
+#include <hipsparse/hipsparse.h>
 #include <hiprand/hiprand.h>
 #include <miopen/miopen.h>
-#include <hipfft.h>
+#include <hipfft/hipfft.h>
 
 #ifdef ORT_USE_NCCL
-#include <rccl.h>
+#include <rccl/rccl.h>
 #endif
 
 #if defined(_MSC_VER)
