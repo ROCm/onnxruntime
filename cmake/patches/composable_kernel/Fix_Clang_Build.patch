@@ -70,6 +70,37 @@ index f861e302..f0b6bcea 100644
 -    LDCONFIG
 -    HEADER_ONLY
 -)
+diff --git a/include/ck/ck.hpp b/include/ck/ck.hpp
+index 4be2e85d5..3a23f5e38 100644
+--- a/include/ck/ck.hpp
++++ b/include/ck/ck.hpp
+@@ -25,7 +25,7 @@
+ // check GPU target
+ #ifdef __HIP_DEVICE_COMPILE__
+ #if !(defined(__gfx803__) || defined(__gfx900__) || defined(__gfx906__) || defined(__gfx908__) || \
+-      defined(__gfx90a__) || defined(__gfx1030__) || defined(__gfx1100__))
++      defined(__gfx90a__) || defined(__gfx1030__) || defined(__gfx1100__) || defined(__gfx1101__))
+ #error Not supported target
+ #endif
+ #endif
+@@ -38,7 +38,7 @@
+ #define CK_BUFFER_RESOURCE_3RD_DWORD 0x00020000
+ #elif defined(__gfx1030__) // for GPU code
+ #define CK_BUFFER_RESOURCE_3RD_DWORD 0x31014000
+-#elif defined(__gfx1100__) // for GPU code
++#elif defined(__gfx1100__) || defined(__gfx1101__) // for GPU code
+ #define CK_BUFFER_RESOURCE_3RD_DWORD 0x10020000
+ #endif
+
+@@ -67,7 +67,7 @@
+ // WMMA instruction
+ #ifndef __HIP_DEVICE_COMPILE__ // for host code
+ #define CK_USE_AMD_WMMA
+-#elif defined(__gfx1100__) // for GPU code
++#elif defined(__gfx1100__) || defined(__gfx1101__) // for GPU code
+ #define CK_USE_AMD_WMMA
+ #endif
+
 diff --git a/library/src/tensor_operation_instance/gpu/CMakeLists.txt b/library/src/tensor_operation_instance/gpu/CMakeLists.txt
 index c206c4dc..e45fac9d 100644
 --- a/library/src/tensor_operation_instance/gpu/CMakeLists.txt
