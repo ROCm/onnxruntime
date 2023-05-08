@@ -1531,6 +1531,8 @@ if (onnxruntime_USE_ROCM)
   if(NOT MSVC)
     target_compile_options(onnxruntime_providers_rocm PRIVATE -Wno-sign-compare)
     target_compile_options(onnxruntime_providers_rocm PRIVATE -Wno-unused-parameter)
+    # causes error: removing heterogeneous debug metadata while compiling above -O0 [-Werror,-Wbackend-plugin]
+    target_compile_options(onnxruntime_providers_rocm PRIVATE -Wno-backend-plugin)
     # causes cc1plus: error: unrecognized command line option ‘-Wno-undefined-var-template’ [-Werror]
     #target_compile_options(onnxruntime_providers_rocm PRIVATE -Wno-undefined-var-template)
   endif()
