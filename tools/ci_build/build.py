@@ -184,7 +184,7 @@ def parse_arguments():
         "--enable_training_torch_interop", action="store_true", help="Enable training kernels interop with torch."
     )
     parser.add_argument("--enable_training_on_device", action="store_true", help="Enable on device training in ORT.")
-    parser.add_argument("--disable_nccl", action="store_true", help="Disable Nccl.")
+    parser.add_argument("--enable_nccl", action="store_true", help="Enable Nccl.")
     parser.add_argument("--mpi_home", help="Path to MPI installation dir")
     parser.add_argument("--nccl_home", help="Path to NCCL installation dir")
     parser.add_argument("--use_mpi", nargs="?", default=True, const=True, type=_str_to_bool)
@@ -922,7 +922,7 @@ def generate_build_tree(
         "-Donnxruntime_ENABLE_TRAINING_ON_DEVICE=" + ("ON" if args.enable_training_on_device else "OFF"),
         # Enable advanced computations such as AVX for some traininig related ops.
         "-Donnxruntime_ENABLE_CPU_FP16_OPS=" + ("ON" if args.enable_training else "OFF"),
-        "-Donnxruntime_USE_NCCL=" + ("ON" if args.enable_training and not args.disable_nccl else "OFF"),
+        "-Donnxruntime_USE_NCCL=" + ("ON" if args.enable_nccl else "OFF"),
         "-Donnxruntime_BUILD_BENCHMARKS=" + ("ON" if args.build_micro_benchmarks else "OFF"),
         "-Donnxruntime_USE_ROCM=" + ("ON" if args.use_rocm else "OFF"),
         "-DOnnxruntime_GCOV_COVERAGE=" + ("ON" if args.code_coverage else "OFF"),
