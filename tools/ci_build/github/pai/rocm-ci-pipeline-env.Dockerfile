@@ -55,7 +55,4 @@ RUN pip install \
 RUN pip install torch-ort --no-dependencies
 ENV ORTMODULE_ONNX_OPSET_VERSION=15
 
-ARG BUILD_UID=1001
-ARG BUILD_USER=onnxruntimedev
-RUN adduser --uid $BUILD_UID $BUILD_USER
-WORKDIR /home/$BUILD_USER
+WORKDIR /stage
