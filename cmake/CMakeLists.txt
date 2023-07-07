@@ -269,7 +269,7 @@ if (onnxruntime_USE_ROCM)
   endif()
 
   if (NOT CMAKE_HIP_ARCHITECTURES)
-    set(CMAKE_HIP_ARCHITECTURES "gfx906;gfx908;gfx90a;gfx1030;gfx940")
+    set(CMAKE_HIP_ARCHITECTURES "gfx906;gfx908;gfx90a;gfx1030;gfx940;gfx941")
   endif()
 
   file(GLOB rocm_cmake_components ${onnxruntime_ROCM_HOME}/lib/cmake/*)
@@ -842,7 +842,7 @@ function(onnxruntime_set_compile_flags target_name)
         target_compile_options(${target_name} PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:SHELL:--compiler-options /analyze:external->" "$<$<COMPILE_LANGUAGE:CXX,C>:/analyze:external->")
         target_compile_options(${target_name} PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:SHELL:--compiler-options /wd6385>" )
         # There are many such warnings from STL:
-        # include\list(148): warning C6011: Dereferencing NULL pointer '_Mycont'. : Lines: 146, 147, 148 
+        # include\list(148): warning C6011: Dereferencing NULL pointer '_Mycont'. : Lines: 146, 147, 148
         target_compile_options(${target_name} PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:SHELL:--compiler-options /wd6011>" )
       endif()
     else()
@@ -910,7 +910,7 @@ endfunction()
 function(onnxruntime_configure_target target_name)
   target_link_directories(${target_name} PRIVATE ${onnxruntime_LINK_DIRS})
   onnxruntime_set_compile_flags(${target_name})
-  onnxruntime_set_source_file_properties(${target_name})  
+  onnxruntime_set_source_file_properties(${target_name})
   if(WIN32 AND onnxruntime_ENABLE_STATIC_ANALYSIS AND onnxruntime_USE_CUSTOM_STATIC_ANALYSIS_RULES)
     set_target_properties(${target_name} PROPERTIES VS_USER_PROPS ${PROJECT_SOURCE_DIR}/EnableVisualStudioCodeAnalysis.props)
   endif()
