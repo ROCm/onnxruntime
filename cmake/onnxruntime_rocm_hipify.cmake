@@ -114,10 +114,6 @@ endif()
 
 set(provider_excluded_files
   "atomic/common.cuh"
-  "controlflow/loop.cc"
-  "controlflow/loop.h"
-  "controlflow/scan.cc"
-  "controlflow/scan.h"
   "cu_inc/common.cuh"
   "math/einsum_utils/einsum_auxiliary_ops.cc"
   "math/einsum_utils/einsum_auxiliary_ops.h"
@@ -165,7 +161,6 @@ set(provider_excluded_files
   "cuda_memory_check.h"
   "cuda_fence.cc"
   "cuda_fence.h"
-  "cuda_fwd.h"
   "cuda_kernel.h"
   "cuda_pch.cc"
   "cuda_pch.h"
