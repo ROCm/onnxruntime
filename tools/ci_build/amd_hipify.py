@@ -170,6 +170,10 @@ def hipify(hipify_perl_path, src_file_path, dst_file_path):
     s = s.replace("#include <rocblas.h>", "#include <rocblas/rocblas.h>")
     s = s.replace("#include <hipblas.h>", "#include <hipblas/hipblas.h>")
 
+    # Fix onnxruntime/contrib_ops/rocm/transformers. They include cpu headers which use "cuda" in their names.
+    s = s.replace("rocm_device_prop_", "cuda_device_prop_")
+    s = s.replace("rocm_device_arch_", "cuda_device_arch_")
+
     with open(dst_file_path, "w") as f:
         f.write(s)
 
