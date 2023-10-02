@@ -77,8 +77,6 @@ set(contrib_ops_excluded_files
   "quantization/qordered_ops/qordered_unary_ops.cc"
   "quantization/qordered_ops/qordered_unary_ops_impl.h"
   "quantization/qordered_ops/qordered_unary_ops_impl.cu"
-  "conv_transpose_with_dynamic_pads.cc"
-  "conv_transpose_with_dynamic_pads.h"
   "cuda_contrib_kernels.cc"
   "cuda_contrib_kernels.h"
   "inverse.cc"
