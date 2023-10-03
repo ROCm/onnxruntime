@@ -172,8 +172,8 @@ def hipify(hipify_perl_path, src_file_path, dst_file_path):
     s = s.replace("#include <rocblas.h>", "#include <rocblas/rocblas.h>")
     s = s.replace("#include <hipblas.h>", "#include <hipblas/hipblas.h>")
     s = s.replace("#include <hipfft.h>", "#include <hipfft/hipfft.h>")
-    s = s.replace('#include "hipfft.h"', '#include <hipfft/hipfft.h>')
-    s = s.replace('#include "hipfftXt.h"', '#include <hipfft/hipfftXt.h>')
+    s = s.replace('#include "hipfft.h"', "#include <hipfft/hipfft.h>")
+    s = s.replace('#include "hipfftXt.h"', "#include <hipfft/hipfftXt.h>")
 
     # Fix onnxruntime/contrib_ops/rocm/transformers. They include cpu headers which use "cuda" in their names.
     s = s.replace("rocm_device_prop_", "cuda_device_prop_")
