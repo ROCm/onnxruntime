@@ -12,10 +12,10 @@ MPI="mpirun --allow-run-as-root
 MPI+=" -x TRANSFORMERS_CACHE=/hf_cache"
 MPI+=" -x NCCL_DEBUG=VERSION"
 
-MODEL_NAME=${LLAMA2_MODEL_NAME:-"Llama-2-70b-hf"}
-OUTPUT=$MODEL_NAME
+MODEL_NAME=${LLAMA2_MODEL_NAME:-"llama-2-7b-chat-hf"}
+OUTPUT=/data/onnx/$MODEL_NAME
 
-CMD="$MPI python llama-v2.py --model=meta-llama/$MODEL_NAME --output-name=$OUTPUT ${@:2}"
+CMD="$MPI python llama-v2.py --model=/data/$MODEL_NAME --output-name=$OUTPUT ${@:2}"
 
 set -x
 $CMD

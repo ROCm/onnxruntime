@@ -290,7 +290,7 @@ def run_generate(args, local_rank):
         _run_gen(args, torch_model, tokenizer, input_ids, attention_mask, "Torch")
 
 
-def func_benchmark(fn, warm=5, steps=10):
+def func_benchmark(fn, warm=1, steps=1):
     for _ in range(warm):
         torch.cuda.nvtx.range_push("gen warmup")
         fn()
@@ -322,9 +322,9 @@ def _run_bmk(args, model, name):
     # print(tokenizer.pad_token_id, tokenizer.eos_token_id)
 
     batch = 1
-    prompt_lens = [32, 64, 128, 256, 512, 1024, 2048]
+    prompt_lens = [32, 64, 128, 256, 512, 1024, 2048, 3072, 4096]
     # prompt_lens = [32]
-    generate_lens = [1, 33]
+    generate_lens = [1, 2]
 
     if args.custom_gen:
         print_out("[benchmark] Using custom_generate")
