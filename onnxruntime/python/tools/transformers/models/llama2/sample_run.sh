@@ -5,7 +5,7 @@ NUM_GPUS=${1:-16}
 
 MPI="mpirun --allow-run-as-root
     -mca btl_openib_warn_no_device_params_found 0 -mca pml ob1 -mca btl ^openib -mca btl_tcp_if_include eth0
-    --tag-output --npernode $NUM_GPUS --bind-to numa
+    --tag-output --npernode $NUM_GPUS --bind-to numa --output-filename outputs
     -x MIOPEN_FIND_MODE=1"
 
 # MPI+=" -x TRANSFORMERS_OFFLINE=1"
