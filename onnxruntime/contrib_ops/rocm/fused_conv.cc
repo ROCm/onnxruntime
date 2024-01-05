@@ -322,6 +322,9 @@ class FusedConv : public onnxruntime::rocm::Conv<T, false> {
       } else {
         return ret;
       }
+      else {
+        return ret;
+      }
       return miopenStatusSuccess;
     }
 
