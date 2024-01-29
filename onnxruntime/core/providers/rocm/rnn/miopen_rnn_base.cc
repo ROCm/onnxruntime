@@ -5,6 +5,8 @@
 #include "miopen_rnn_base.h"
 #include "rnn_impl.h"
 
+#include <iostream>
+
 namespace onnxruntime {
 namespace rocm {
 
@@ -24,16 +26,16 @@ void MiopenRnnBase<T>::SetWeightBias(const miopenHandle_t handle,
   int numDims;
   std::vector<int> matDims(3);
   miopenDataType_t dt;
-  miopenTensorFormat_t tf;
+  //miopenTensorLayout_t tf;
   T* mem_offset;
 
   if (is_matrix) {
-    miopenGetRNNLinLayerMatrixParams(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
+    miopenGetRNNLayerParam(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
   } else {
-    miopenGetRNNLinLayerBiasParams(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
+    miopenGetRNNLayerBias(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
   }
+  miopenGetTensorDescriptor(filter_desc, &dt, &numDims, matDims.data());//  JCG checkme THIS  IS THE ISSUE //buffer init
 
-  miopenGetFilterNdDescriptor(filter_desc, 3, &dt, &tf, &numDims, matDims.data());
   int count = matDims[0] * matDims[1] * matDims[2];
   HIP_CALL_THROW(hipMemcpyAsync(mem_offset, pos + offset, count * sizeof(T), hipMemcpyDeviceToDevice, hip_stream));
   offset += count;
@@ -48,10 +50,11 @@ Status MiopenRnnBase<T>::SetMiopenRnnWeightBias(const miopenHandle_t miopen_hand
                                               const T* R_data,
                                               const T* B_data,
                                               hipStream_t hip_stream) const {
+  std::cout << "SetMiopenRnnWeightBias" << std::endl;
   int w_offset = 0;
   int r_offset = 0;
   int bias_offset = 0;
-  MiopenFilterDescriptor filter_desc;
+  MiopenTensorDescriptor filter_desc;
   for (int layer = 0; layer < RNN_NUM_LAYERS * num_directions_; ++layer) {
     for (size_t idx = 0; idx < W_lin_layer_id_.size(); ++idx) {
       SetWeightBias(miopen_handle, rnn_desc, layer, x_desc, w_desc, filter_desc, reorganized_w_data, W_lin_layer_id_[idx], W_data, w_offset, true, hip_stream);
@@ -73,8 +76,9 @@ Status MiopenRnnBase<T>::SetMiopenRnnWeightBias(const miopenHandle_t miopen_hand
 template <typename T>
 Status MiopenRnnBase<T>::ReorganizeWeights(const Tensor* W, const Tensor* R, const Tensor* B,
                                           IAllocatorUniquePtr<void>& reorganized_w_data,
-                                          MiopenFilterDescriptor& target_w_desc,
+                                          MiopenTensorDescriptor& target_w_desc,
                                           MiopenRNN& rnn_desc, onnxruntime::Stream* ort_stream) const {
+  std::cout << "ReorganizeWeights" << std::endl;
   typedef typename ToHipType<T>::MappedType HipT;
   int64_t input_size = W->Shape()[2];
   // RNN W[num_directions_, hidden_size_, input_size]
@@ -103,7 +107,7 @@ Status MiopenRnnBase<T>::ReorganizeWeights(const Tensor* W, const Tensor* R, con
   // in call to miopenRNNForwardInference()
   // TODO! refine allocation size for each case.
   hipStream_t hip_stream = ort_stream ? static_cast<hipStream_t>(ort_stream->GetHandle()) : nullptr;
-  hipMemsetAsync(reorganized_w_data.get(), 0, w_size * sizeof(T), hip_stream);
+  HIP_RETURN_IF_ERROR(hipMemsetAsync(reorganized_w_data.get(), 0, w_size * sizeof(T), hip_stream));
 
   const T* W_data = W->Data<T>();
   const T* R_data = R->Data<T>();
@@ -119,6 +123,7 @@ Status MiopenRnnBase<T>::ReorganizeWeights(const Tensor* W, const Tensor* R, con
 
 template <typename T>
 Status MiopenRnnBase<T>::CacheMiopenRnnWeights(const OpKernelInfo& info) {
+  std::cout << "CacheMiopenRnnWeights" << std::endl;
   typedef typename ToHipType<T>::MappedType HipT;
   // Cache the weight
   const Tensor* W;
@@ -143,7 +148,7 @@ Status MiopenRnnBase<T>::CacheMiopenRnnWeights(const OpKernelInfo& info) {
     } else {
       ORT_RETURN_IF_ERROR(ReorganizeWeights(W, R, nullptr, w_data_cache_, w_desc_cache_, tmp_rnn_desc, nullptr));
     }
-    hipStreamSynchronize(nullptr);
+    HIP_RETURN_IF_ERROR(hipStreamSynchronize(nullptr));
     weight_cached_ = true;
   }
 
@@ -152,6 +157,7 @@ Status MiopenRnnBase<T>::CacheMiopenRnnWeights(const OpKernelInfo& info) {
 
 template <typename T>
 Status MiopenRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
+  std::cout << "COM INT start" << std::endl;
   typedef typename ToHipType<T>::MappedType HipT;
   // inputs
   const Tensor* X = ctx->Input<Tensor>(RNN_Input_Index::X);  // inputs. [seq_length, batch_size, input_size]
@@ -164,6 +170,8 @@ Status MiopenRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   if (rnn_mode_ == miopenLSTM) {
     initial_c = ctx->Input<Tensor>(RNN_Input_Index::initial_c);  // initial cell. [num_directions_, batch_size, hidden_size_]
   }
+
+    std::cout << "COM INT perf tensors" << std::endl;
 
   int64_t seq_length = X->Shape()[0];
   int64_t batch_size = X->Shape()[1];
@@ -240,7 +248,7 @@ Status MiopenRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
 
   // Prepare the weight data
   IAllocatorUniquePtr<void> w_data;
-  MiopenFilterDescriptor w_desc;
+  MiopenTensorDescriptor w_desc;
   if (!weight_cached_) {
     const Tensor& W = *ctx->Input<Tensor>(RNN_Input_Index::W);
     const Tensor& R = *ctx->Input<Tensor>(RNN_Input_Index::R);
@@ -249,7 +257,7 @@ Status MiopenRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   }
 
   // MIOPEN_RNN_DATA_LAYOUT_SEQ_MAJOR_UNPACKED works with MIOPEN_RNN_PADDED_IO_ENABLED, so that it will auto fill 0 for the shorter sequences
-  MIOPEN_RETURN_IF_ERROR(miopenSetRNNPaddingMode(rnn_desc, MIOPEN_RNN_PADDED_IO_ENABLED));
+  MIOPEN_RETURN_IF_ERROR(miopenSetRNNPaddingMode(rnn_desc, miopenRNNIOWithPadding));
 
   size_t workspace_bytes;
   MIOPEN_RETURN_IF_ERROR(miopenGetRNNWorkspaceSize(GetMiopenHandle(ctx), rnn_desc, gsl::narrow_cast<int>(seq_length), x_desc.data(), &workspace_bytes));
@@ -257,6 +265,8 @@ Status MiopenRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   int64_t zero_seq_count = 0;
   std::vector<int32_t> zero_seq_index_cache(batch_size, 0);
   int64_t zero_seq_index_cache_size = 0;
+
+  std::cout << "miopenRNNForwardInference FIRST" << std::endl;
 
   if (miopenRNNRELU == rnn_mode_ || miopenRNNTANH == rnn_mode_ || nullptr == sequence_lens_data) {
     MIOPEN_RETURN_IF_ERROR(miopenRNNForwardInference(GetMiopenHandle(ctx),
@@ -278,64 +288,62 @@ Status MiopenRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
                                                    y_c_data,
                                                    workspace_rocm.get(),
                                                    workspace_bytes));
-  } else {
-    // miopen doesn't support 0 sequence inside the batch, find the 0 sequence and set it to 1
-    // there's a ZeroMask kernel to reset the result to 0 for the 0 sequence
-    std::vector<int32_t> seq_len_array(sequence_lens_data, sequence_lens_data + batch_size);
-    for (int i = 0; i < batch_size; ++i) {
-      if (0 == seq_len_array[i]) {
-        seq_len_array[i] = 1;
-        zero_seq_index_cache[zero_seq_count] = i;
-        ++zero_seq_count;
-      }
-    }
+  } // else {
+  //   // miopen doesn't support 0 sequence inside the batch, find the 0 sequence and set it to 1
+  //   // there's a ZeroMask kernel to reset the result to 0 for the 0 sequence
+  //   std::vector<int32_t> seq_len_array(sequence_lens_data, sequence_lens_data + batch_size);
+  //   for (int i = 0; i < batch_size; ++i) {
+  //     if (0 == seq_len_array[i]) {
+  //       seq_len_array[i] = 1;
+  //       zero_seq_index_cache[zero_seq_count] = i;
+  //       ++zero_seq_count;
+  //     }
+  //   }
 
-    // Calculate the zero position cache for reverse direction if it's bidirectional
-    // The cache is for Y_h or Y_c, and the 1st sequence for Y, no need to do it for other sequence in Y since
-    // we hacked the 0 sequence to 1
-    if (zero_seq_count && num_directions_ > 1) {
-      zero_seq_index_cache_size = zero_seq_count * num_directions_;
-      zero_seq_index_cache.resize(zero_seq_index_cache_size);
-      for (int64_t i = 0; i < zero_seq_count; ++i) {
-        zero_seq_index_cache[static_cast<size_t>(zero_seq_count) + i] = static_cast<int32_t>(batch_size + zero_seq_index_cache[i]);
-      }
-    }
+  //   // Calculate the zero position cache for reverse direction if it's bidirectional
+  //   // The cache is for Y_h or Y_c, and the 1st sequence for Y, no need to do it for other sequence in Y since
+  //   // we hacked the 0 sequence to 1
+  //   if (zero_seq_count && num_directions_ > 1) {
+  //     zero_seq_index_cache_size = zero_seq_count * num_directions_;
+  //     zero_seq_index_cache.resize(zero_seq_index_cache_size);
+  //     for (int64_t i = 0; i < zero_seq_count; ++i) {
+  //       zero_seq_index_cache[static_cast<size_t>(zero_seq_count) + i] = static_cast<int32_t>(batch_size + zero_seq_index_cache[i]);
+  //     }
+  //   }
 
-    MiopenDataTensor x_desc1;
-    ORT_RETURN_IF_ERROR(x_desc1.Set(MiopenTensor::GetDataType<HipT>(), seq_length, batch_size, input_size, seq_len_array.data()));
-    MiopenDataTensor y_desc1;
-    ORT_RETURN_IF_ERROR(y_desc1.Set(MiopenTensor::GetDataType<HipT>(), seq_length, batch_size, hidden_size_ * num_directions_, seq_len_array.data()));
+  //   miopenTensorDescriptor_t  x_desc1;
+  //   ORT_RETURN_IF_ERROR(x_desc1.Set(MiopenTensor::GetDataType<HipT>(), seq_length, batch_size, input_size, seq_len_array.data()));
+  //   miopenTensorDescriptor_t  y_desc1;
+  //   ORT_RETURN_IF_ERROR(y_desc1.Set(MiopenTensor::GetDataType<HipT>(), seq_length, batch_size, hidden_size_ * num_directions_, seq_len_array.data()));
 
-    MIOPEN_RETURN_IF_ERROR(miopenRNNForwardInferenceEx(GetMiopenHandle(ctx),
-                                                     rnn_desc,
-                                                     x_desc1,
-                                                     x_data_input,
-                                                     hx_desc,
-                                                     hx_data,
-                                                     cx_desc,
-                                                     cx_data,
-                                                     weight_cached_ ? w_desc_cache_ : w_desc,
-                                                     weight_cached_ ? w_data_cache_.get() : w_data.get(),
-                                                     y_desc1,
-                                                     y_data,
-                                                     y_h_desc,
-                                                     y_h_data,
-                                                     y_c_desc,
-                                                     y_c_data,
-                                                     nullptr, nullptr, nullptr, nullptr,
-                                                     nullptr, nullptr, nullptr, nullptr,
-                                                     workspace_rocm.get(),
-                                                     workspace_bytes));
+  //   MIOPEN_RETURN_IF_ERROR(miopenRNNForwardInference(GetMiopenHandle(ctx),
+  //                                                    rnn_desc,
+  //                                                    x_desc1,
+  //                                                    x_data_input,
+  //                                                    hx_desc,
+  //                                                    hx_data,
+  //                                                    cx_desc,
+  //                                                    cx_data,
+  //                                                    weight_cached_ ? w_desc_cache_ : w_desc,
+  //                                                    weight_cached_ ? w_data_cache_.get() : w_data.get(),
+  //                                                    y_desc1,
+  //                                                    y_data,
+  //                                                    y_h_desc,
+  //                                                    y_h_data,
+  //                                                    y_c_desc,
+  //                                                    y_c_data,
+  //                                                    workspace_rocm.get(),
+  //                                                    workspace_bytes));
 
-    // Early terminate for this case since Y data is not required, and Y_h is obtained correctly, no need the following code to retrive Y_h from Y data.
-    if (nullptr == Y) {
-      // Mask on output for 0 sequence batches
-      if (zero_seq_count > 0) {
-        SetZeroSequences(zero_seq_index_cache_size, zero_seq_index_cache, y_data, y_h_data, y_c_data, ctx->GetComputeStream());
-      }
-      return Status::OK();
-    }
-  }
+  //   // Early terminate for this case since Y data is not required, and Y_h is obtained correctly, no need the following code to retrive Y_h from Y data.
+  //   if (nullptr == Y) {
+  //     // Mask on output for 0 sequence batches
+  //     if (zero_seq_count > 0) {
+  //       SetZeroSequences(zero_seq_index_cache_size, zero_seq_index_cache, y_data, y_h_data, y_c_data, ctx->GetComputeStream());
+  //     }
+  //     return Status::OK();
+  //   }
+  // }
 
   IAllocatorUniquePtr<T> y_reorganized_data;
   if (reverse_ || num_directions_ == 2) {
@@ -397,6 +405,8 @@ void MiopenRnnBase<T>::SetZeroSequences(const int64_t zero_seq_index_cache_size,
                                        T* y_h_data,
                                        T* y_c_data,
                                        onnxruntime::Stream* ort_stream) const {
+  std::cout << "SetZeroSequences" << std::endl;
+
   typedef typename ToHipType<T>::MappedType HipT;
   RocmAsyncBuffer<int32_t> zero_seq_index_cache_async_buffer(this, zero_seq_index_cache_size);
   memcpy(zero_seq_index_cache_async_buffer.CpuPtr(), zero_seq_index_cache.data(), zero_seq_index_cache_size * sizeof(int32_t));
@@ -412,7 +422,8 @@ void MiopenRnnBase<T>::SetZeroSequences(const int64_t zero_seq_index_cache_size,
 }
 
 template class MiopenRnnBase<float>;
-template class MiopenRnnBase<double>;
+// double not currently supported
+//template class MiopenRnnBase<double>;
 template class MiopenRnnBase<MLFloat16>;
 
 }  // namespace rocm

@@ -48,6 +48,26 @@ class MiopenTensor final {
   miopenTensorDescriptor_t tensor_;
 };
 
+/* class MiopenDataTensor final { */
+/*  public: */
+/*   MiopenDataTensor(); */
+/*   ~MiopenDataTensor(); */
+/*   ORT_DISALLOW_COPY_ASSIGNMENT_AND_MOVE(MiopenDataTensor); */
+
+/*   Status Set(miopenDataType_t dataType, */
+/*              int64_t max_seq_length, */
+/*              int64_t batch_size, */
+/*              int64_t data_size, */
+/*              const int32_t* seq_lengths); */
+
+/*   operator miopenTensorDescriptor_t () const { return tensor_; } */
+
+/*  private: */
+/*   Status CreateTensorIfNeeded(); */
+
+/*   miopenTensorDescriptor_t tensor_; */
+/* }; */
+
 class MiopenTensorDescriptor final {
  public:
   MiopenTensorDescriptor();
@@ -62,6 +82,57 @@ class MiopenTensorDescriptor final {
 
  private:
   miopenTensorDescriptor_t desc_;
+};
+
+class MiopenDropout final {
+ public:
+  MiopenDropout() : dropout_desc_(nullptr) {
+  }
+  ORT_DISALLOW_COPY_ASSIGNMENT_AND_MOVE(MiopenDropout);
+
+  Status GetMiopenDropoutStatesSize(const miopenHandle_t& miopenHandle, size_t& stateSize) {
+    MIOPEN_RETURN_IF_ERROR(miopenDropoutGetStatesSize(miopenHandle, &stateSize));
+
+    return Status::OK();
+  }
+
+  Status Set(const miopenHandle_t& miopenHandle,
+             void* states,
+             size_t stateSize,
+             float dropout = 0.0f,
+             unsigned long long seed = 1) {
+    ORT_RETURN_IF_ERROR(CreateDescriptorIfNeeded());
+    MIOPEN_RETURN_IF_ERROR(miopenSetDropoutDescriptor(dropout_desc_,
+						      miopenHandle,
+						      dropout,
+						      states,
+						      stateSize,
+						      seed,
+						      false,
+						      false,
+						      MIOPEN_RNG_PSEUDO_XORWOW));
+
+    return Status::OK();
+  }
+
+  ~MiopenDropout() {
+    if (dropout_desc_ != nullptr) {
+      miopenDestroyDropoutDescriptor(dropout_desc_);
+    }
+  }
+
+  operator miopenDropoutDescriptor_t() const {
+    return dropout_desc_;
+  }
+
+  Status CreateDescriptorIfNeeded() {
+    if (!dropout_desc_)
+      MIOPEN_RETURN_IF_ERROR(miopenCreateDropoutDescriptor(&dropout_desc_));
+    return Status::OK();
+  }
+
+ private:
+  miopenDropoutDescriptor_t dropout_desc_;
 };
 
 template <typename ElemType>
