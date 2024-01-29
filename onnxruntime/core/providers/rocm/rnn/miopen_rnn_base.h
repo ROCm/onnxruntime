@@ -44,20 +44,23 @@ class MiopenRNN {
     if (!miopen_rnn_desc_)
       MIOPEN_RETURN_IF_ERROR(miopenCreateRNNDescriptor(&miopen_rnn_desc_));
 
-    MIOPEN_RETURN_IF_ERROR(miopenSetRNNDescriptor_V2(miopenHandle,
-                                                   miopen_rnn_desc_,
+    // JCG TODO do we need the handle? why does cuda need it?
+
+    MIOPEN_RETURN_IF_ERROR(miopenSetRNNDescriptor_V2(miopen_rnn_desc_,
                                                    gsl::narrow_cast<int>(hidden_size),
                                                    num_layers,
                                                    miopen_dropout_desc,
+						     //////////////////////
                                                    miopenRNNlinear,  // We can also skip the input matrix transformation
                                                    miopen_direction_model,
                                                    rnn_mode,
-                                                   miopenRNNdefault,  // MIOPEN_RNN_ALGO_PERSIST_STATIC, MIOPEN_RNN_ALGO_PERSIST_DYNAMIC
+						   miopenRNNwithBias, // Verify set properly elsewhere //miopenRNNNoBias
+                                                   miopenRNNdefault,
                                                    dataType));
 
-    if (prop.major >= 7 && dataType == miopenHalf) {
-      miopenSetRNNMatrixMathType(miopen_rnn_desc_, MIOPEN_TENSOR_OP_MATH);
-    }
+    /* if (prop.major >= 7 && dataType == miopenHalf) { */
+    /*   miopenSetRNNMatrixMathType(miopen_rnn_desc_, MIOPEN_TENSOR_OP_MATH); */
+    /* } */
 
     return Status::OK();
   }
@@ -129,7 +132,7 @@ class MiopenRnnBase : public RocmKernel {
 
   Status ReorganizeWeights(const Tensor* W, const Tensor* R, const Tensor* B,
                            IAllocatorUniquePtr<void>& target_w_data,
-                           MiopenFilterDescriptor& target_w_desc,
+                           MiopenTensorDescriptor& target_w_desc,
                            MiopenRNN& rnn_desc,
                            onnxruntime::Stream* ort_stream) const;
 
@@ -166,7 +169,7 @@ class MiopenRnnBase : public RocmKernel {
   int64_t hidden_size_;
   miopenRNNMode_t rnn_mode_;
   // w_desc_cache_ & w_data_cache_ are changed in Constructor if we can get the weights as constant input
-  MiopenFilterDescriptor w_desc_cache_;
+  MiopenTensorDescriptor w_desc_cache_;
   IAllocatorUniquePtr<void> w_data_cache_;
   bool weight_cached_;
   int64_t layout_;
