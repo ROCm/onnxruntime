@@ -44,23 +44,17 @@ class MiopenRNN {
     if (!miopen_rnn_desc_)
       MIOPEN_RETURN_IF_ERROR(miopenCreateRNNDescriptor(&miopen_rnn_desc_));
 
-    // JCG TODO do we need the handle? why does cuda need it?
-
     MIOPEN_RETURN_IF_ERROR(miopenSetRNNDescriptor_V2(miopen_rnn_desc_,
-                                                   gsl::narrow_cast<int>(hidden_size),
-                                                   num_layers,
-                                                   miopen_dropout_desc,
-						     //////////////////////
-                                                   miopenRNNlinear,  // We can also skip the input matrix transformation
-                                                   miopen_direction_model,
-                                                   rnn_mode,
-						   miopenRNNwithBias, // Verify set properly elsewhere //miopenRNNNoBias
-                                                   miopenRNNdefault,
-                                                   dataType));
+                                                     gsl::narrow_cast<int>(hidden_size),
+                                                     num_layers,
+                                                     miopen_dropout_desc,
+                                                     miopenRNNlinear,  // We can also skip the input matrix transformation
+                                                     miopen_direction_model,
+                                                     rnn_mode,
+                                                     miopenRNNwithBias, // Verify set properly elsewhere
+                                                     miopenRNNdefault,
+                                                     dataType));
 
-    /* if (prop.major >= 7 && dataType == miopenHalf) { */
-    /*   miopenSetRNNMatrixMathType(miopen_rnn_desc_, MIOPEN_TENSOR_OP_MATH); */
-    /* } */
 
     return Status::OK();
   }

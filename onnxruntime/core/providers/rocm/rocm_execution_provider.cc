@@ -2341,6 +2341,62 @@ std::shared_ptr<KernelRegistry> ROCMExecutionProvider::GetKernelRegistry() const
   return s_kernel_registry;
 }
 
+static bool RNNNeedFallbackToCPU(const onnxruntime::Node& node,
+                                 const std::vector<std::string> activations_supported,
+                                 const std::string& op_type) {
+  const auto& node_attributes = node.GetAttributes();
+  // Check attributes
+  for (auto& attr : node_attributes) {
+    auto& attr_name = attr.first;
+    auto& attr_value = attr.second;
+
+    if ("activation_alpha" == attr_name || "activation_beta" == attr_name || "clip" == attr_name) {
+      return true;
+    }
+
+    if ("activations" == attr_name &&
+        ::ONNX_NAMESPACE::AttributeProto_AttributeType::AttributeProto_AttributeType_STRINGS == attr_value.type()) {
+      for (int i = 0; i < attr_value.strings_size(); ++i) {
+        std::string activation_lowercase(attr_value.strings(i));
+        std::transform(activation_lowercase.begin(), activation_lowercase.end(), activation_lowercase.begin(),
+                       [](const unsigned char i) { return static_cast<char>(::tolower(i)); });
+        if (activations_supported[i] != activation_lowercase) {
+          return true;
+        }
+      }
+    }
+
+    if ("LSTM" == op_type &&
+        "input_forget" == attr_name &&
+        ::ONNX_NAMESPACE::AttributeProto_AttributeType::AttributeProto_AttributeType_INT == attr_value.type()) {
+      if (0 != attr_value.i()) {
+        return true;
+      }
+    }
+
+    if ("GRU" == op_type &&
+        "linear_before_reset" == attr_name &&
+        ::ONNX_NAMESPACE::AttributeProto_AttributeType::AttributeProto_AttributeType_INT == attr_value.type()) {
+      // cudnn GRU only support linear_before_reset = 1
+      if (1 != attr_value.i()) {
+        return true;
+      }
+    }
+  }
+
+  if ("LSTM" == op_type) {
+    // cudnn LSTM not support peephole
+    auto input_defs = node.InputDefs();
+    if (8 == input_defs.size()) {
+      auto peephole = input_defs.at(7);
+      if (peephole->Exists()) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 static bool CastNeedFallbackToCPU(const onnxruntime::Node& node) {
   const auto& node_attributes = node.GetAttributes();
   // Check attributes
@@ -2385,27 +2441,33 @@ ROCMExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph,
     }
 
     bool not_supported = false;
-    // bool force_inside = false;  // for some compute heavy ops, we'll force it to run inside ROCM
-    // if ("LSTM" == node.OpType() ||
-    //     "RNN" == node.OpType() ||
-    //     "GRU" == node.OpType()) {
-    //   not_supported = true;
-    //   force_inside = !not_supported;
-    // } else
-    if ("Cast" == node.OpType()) {
+    bool force_inside = false;  // for some compute heavy ops, we'll force it to run inside ROCm
+    if ("LSTM" == node.OpType()) {
+      // the supported activations covers the bidirectional mode
+      std::vector<std::string> activations_supported{"relu", "tanh", "tanh", "relu", "tanh", "tanh"};
+      not_supported = RNNNeedFallbackToCPU(node, activations_supported, node.OpType());
+      force_inside = !not_supported;
+    } else if ("RNN" == node.OpType()) {
+      std::vector<std::string> activations_supported{"tanh", "tanh"};
+      not_supported = RNNNeedFallbackToCPU(node, activations_supported, node.OpType());
+      force_inside = !not_supported;
+    } else if ("GRU" == node.OpType()) {
+      std::vector<std::string> activations_supported{"relu", "tanh", "relu", "tanh"};
+      not_supported = RNNNeedFallbackToCPU(node, activations_supported, node.OpType());
+      force_inside = !not_supported;
+    } else if ("Cast" == node.OpType()) {
       not_supported = CastNeedFallbackToCPU(node);
       // cast is not compute heavy, and may be placed outside
     }
-    //TODO:: See cuda reference.  This is very out of date.
-    // if (!force_inside && not_supported) {
+
+    if (!force_inside && not_supported) {
       if (not_supported) {
-        LOGS_DEFAULT(WARNING) << "ROCM kernel not supported. Fallback to CPU execution provider for Op type: " << node.OpType() << " node name: " << node.Name();
-      // }
+        LOGS_DEFAULT(INFO) << "ROCm kernel not supported. Fallback to CPU execution provider for Op type: " << node.OpType() << " node name: " << node.Name();
+      }
     } else {
       candidates.push_back(node.Index());
     }
   }
-
   // For ROCM EP, exclude the subgraph that is preferred to be placed in CPU
   // These are usually shape related computation subgraphs
   // Following logic can be extended for other EPs
