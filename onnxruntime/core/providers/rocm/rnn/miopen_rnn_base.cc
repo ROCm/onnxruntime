@@ -34,7 +34,7 @@ void MiopenRnnBase<T>::SetWeightBias(const miopenHandle_t handle,
   } else {
     miopenGetRNNLayerBias(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
   }
-  miopenGetTensorDescriptor(filter_desc, &dt, &numDims, matDims.data());//  JCG checkme THIS  IS THE ISSUE //buffer init
+  miopenGetTensorDescriptor(filter_desc, &dt, &numDims, matDims.data());
 
   int count = matDims[0] * matDims[1] * matDims[2];
   HIP_CALL_THROW(hipMemcpyAsync(mem_offset, pos + offset, count * sizeof(T), hipMemcpyDeviceToDevice, hip_stream));
@@ -288,7 +288,10 @@ Status MiopenRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
                                                    y_c_data,
                                                    workspace_rocm.get(),
                                                    workspace_bytes));
-  } // else {
+  } else {
+    ORT_THROW("Unsupported RNN Operator on ROCm");
+  }
+  // else {
   //   // miopen doesn't support 0 sequence inside the batch, find the 0 sequence and set it to 1
   //   // there's a ZeroMask kernel to reset the result to 0 for the 0 sequence
   //   std::vector<int32_t> seq_len_array(sequence_lens_data, sequence_lens_data + batch_size);

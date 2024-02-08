@@ -161,40 +161,6 @@ Status MiopenTensorDescriptor::Set(miopenDataType_t data_type, miopenTensorLayou
   return Status::OK();
 }
 
-// MiopenDataTensor::MiopenDataTensor()
-//     : tensor_(nullptr) {
-// }
-
-// MiopenDataTensor::~MiopenDataTensor() {
-//   if (tensor_ != nullptr) {
-//     miopenDestroyTensorDescriptor(tensor_);
-//     tensor_ = nullptr;
-//   }
-// }Status MiopenDataTensor::CreateTensorIfNeeded() {
-//   if (!tensor_)
-//     MIOPEN_RETURN_IF_ERROR(miopenCreateTensorDescriptor(&tensor_));// JCG right api?
-//   return Status::OK();
-// }
-
-// Status MiopenDataTensor::Set(miopenDataType_t dataType,
-//                             int64_t max_seq_length,
-//                             int64_t batch_size,
-//                             int64_t data_size,
-//                             const int32_t* seq_lengths) {
-//   ORT_RETURN_IF_ERROR(CreateTensorIfNeeded());
-
-//   // CUDNN_RNN_DATA_LAYOUT_SEQ_MAJOR_UNPACKED works with CUDNN_RNN_PADDED_IO_ENABLED, so that it will auto fill 0 for the shorter sequences
-//   miopenTensorLayout_t layout = MIOPEN_NCHW_LAYOUT;
-//   float padding_fill = 0.0f;
-//   MIOPEN_RETURN_IF_ERROR(miopenSetRNNDescriptor(tensor_, dataType, layout,
-//                                                   static_cast<int>(max_seq_length),
-//                                                   static_cast<int>(batch_size),
-//                                                   static_cast<int>(data_size),
-//                                                   seq_lengths,
-//                                                   static_cast<void*>(&padding_fill)));
-//   return Status::OK();
-// }
-
 template <typename ElemType>
 miopenDataType_t MiopenTensor::GetDataType() {
   ORT_THROW("miopen engine currently supports only single/half/int32/int8 precision data types.");
