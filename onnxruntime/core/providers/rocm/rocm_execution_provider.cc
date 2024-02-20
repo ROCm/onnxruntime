@@ -2336,7 +2336,7 @@ ROCMExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph,
     bool force_inside = false;  // for some compute heavy ops, we'll force it to run inside ROCm
     if ("LSTM" == node.OpType()) {
       // the supported activations covers the bidirectional mode
-      std::vector<std::string> activations_supported{"relu", "tanh", "tanh", "relu", "tanh", "tanh"};
+      std::vector<std::string> activations_supported{"sigmoid", "tanh", "tanh", "sigmoid", "tanh", "tanh"};
       not_supported = RNNNeedFallbackToCPU(node, activations_supported, node.OpType());
       force_inside = !not_supported;
     } else if ("RNN" == node.OpType()) {
@@ -2344,7 +2344,7 @@ ROCMExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph,
       not_supported = RNNNeedFallbackToCPU(node, activations_supported, node.OpType());
       force_inside = !not_supported;
     } else if ("GRU" == node.OpType()) {
-      std::vector<std::string> activations_supported{"relu", "tanh", "relu", "tanh"};
+      std::vector<std::string> activations_supported{"sigmoid", "tanh", "sigmoid", "tanh"};
       not_supported = RNNNeedFallbackToCPU(node, activations_supported, node.OpType());
       force_inside = !not_supported;
     } else if ("Cast" == node.OpType()) {
