@@ -336,7 +336,7 @@
       "component": {
         "type": "git",
         "git": {
-          "commitHash": "5356c4a943a35e74d7cdc69486afcb8703b9a59a",
+          "commitHash": "3726a1730e60242a27770c2153aa76cf3da75fb2",
           "repositoryUrl": "https://github.com/ROCmSoftwarePlatform/composable_kernel.git"
         },
         "comments": "composable_kernel"
