@@ -17,7 +17,7 @@ void MiopenRnnBase<T>::SetWeightBias(const miopenHandle_t handle,
                                     const miopenTensorDescriptor_t x_desc,
                                     const miopenTensorDescriptor_t w_desc,
                                     const miopenTensorDescriptor_t filter_desc,
-                                    const void* reorganized_w_data,
+                                    void* reorganized_w_data,
                                     const int lin_layer_id,
                                     const T* pos,
                                     int& offset,
@@ -34,10 +34,18 @@ void MiopenRnnBase<T>::SetWeightBias(const miopenHandle_t handle,
   } else {
     miopenGetRNNLayerBias(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
   }
+
   miopenGetTensorDescriptor(filter_desc, &dt, &numDims, matDims.data());
 
   int count = matDims[0] * matDims[1] * matDims[2];
-  HIP_CALL_THROW(hipMemcpyAsync(mem_offset, pos + offset, count * sizeof(T), hipMemcpyDeviceToDevice, hip_stream));
+  //HIP_CALL_THROW(hipMemcpyAsync(mem_offset, pos + offset, count * sizeof(T), hipMemcpyDeviceToDevice, hip_stream));
+
+  if (is_matrix) {
+    miopenSetRNNLayerParam(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
+  } else {
+    miopenSetRNNLayerBias(handle, rnn_desc, pseudo_layer, x_desc, w_desc, reorganized_w_data, lin_layer_id, filter_desc, (void**)&mem_offset);
+  }
+
   offset += count;
 }
 template <typename T>
