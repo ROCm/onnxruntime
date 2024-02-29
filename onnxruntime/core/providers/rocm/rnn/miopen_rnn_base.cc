@@ -23,9 +23,9 @@ Status MiopenRnnBase<T>::SetWeightBias(const miopenHandle_t handle,
                                     int& offset,
                                     bool is_matrix,
                                     hipStream_t hip_stream) const {
-  int numDims;
-  std::vector<int> matDims(3);
-  miopenDataType_t dt;
+  //int numDims;
+  //                       std::vector<int> matDims(3);
+  //  miopenDataType_t dt;
   size_t mem_offset;
   size_t num_bytes;
 
@@ -39,10 +39,10 @@ Status MiopenRnnBase<T>::SetWeightBias(const miopenHandle_t handle,
 
   //  MIOPEN_RETURN_IF_ERROR(miopenGetTensorDescriptor(filter_desc, &dt, &numDims, matDims.data()));
 
-  int count = matDims[0] * matDims[1] * matDims[2];
+  //  int count = matDims[0] * matDims[1] * matDims[2];
   HIP_CALL_THROW(hipMemcpyAsync((T*)(reorganized_w_data) + mem_offset, pos + offset, num_bytes, hipMemcpyDeviceToDevice, hip_stream));
 
-  offset += count;
+  offset += (num_bytes / sizeof(T));
 
   return Status::OK();
 }

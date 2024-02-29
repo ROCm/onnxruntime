@@ -130,13 +130,13 @@ class MiopenRnnBase : public RocmKernel {
                            MiopenRNN& rnn_desc,
                            onnxruntime::Stream* ort_stream) const;
 
-  void SetWeightBias(const miopenHandle_t handle,
+  Status SetWeightBias(const miopenHandle_t handle,
                      const miopenRNNDescriptor_t rnn_desc,
                      const int pseudo_layer,
                      const miopenTensorDescriptor_t x_desc,
                      const miopenTensorDescriptor_t w_desc,
                      const miopenTensorDescriptor_t filter_desc,
-                     const void* w_data,
+                     void* w_data,
                      const int lin_layer_id,
                      const T* pos,
                      int& offset,
