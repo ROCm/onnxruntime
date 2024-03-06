@@ -1,17 +1,17 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 6fc22b18..c2c22925 100644
+index bdeba33e..afe406b3 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -19,7 +19,7 @@ endif()
+@@ -23,7 +23,7 @@ endif()
  
  set(version 1.1.0)
  # Check support for CUDA/HIP in Cmake
--project(composable_kernel VERSION ${version})
+-project(composable_kernel VERSION ${version} LANGUAGES CXX)
 +project(composable_kernel VERSION ${version} LANGUAGES CXX HIP)
+ include(CTest)
  
  list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
- 
-@@ -201,27 +201,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+@@ -206,27 +206,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
  set(CMAKE_CXX_EXTENSIONS OFF)
  message("CMAKE_CXX_COMPILER_ID: ${CMAKE_CXX_COMPILER_ID}")
  
@@ -39,16 +39,20 @@ index 6fc22b18..c2c22925 100644
  ## HIP
  find_package(HIP REQUIRED)
  # Override HIP version in config.h, if necessary.
-@@ -243,8 +222,6 @@ if( DEFINED CK_OVERRIDE_HIP_VERSION_PATCH )
+@@ -248,12 +227,6 @@ if( DEFINED CK_OVERRIDE_HIP_VERSION_PATCH )
      message(STATUS "CK_HIP_VERSION_PATCH overriden with ${CK_OVERRIDE_HIP_VERSION_PATCH}")
  endif()
  message(STATUS "Build with HIP ${HIP_VERSION}")
 -link_libraries(hip::device)
--add_compile_definitions(__HIP_PLATFORM_HCC__=1)
+-if(CK_hip_VERSION VERSION_GREATER_EQUAL 6.0.23494)
+-    add_compile_definitions(__HIP_PLATFORM_AMD__=1)
+-else()
+-    add_compile_definitions(__HIP_PLATFORM_HCC__=1)
+-endif()
  
  ## tidy
  include(EnableCompilerWarnings)
-@@ -509,11 +486,3 @@ rocm_install(FILES
+@@ -520,11 +493,3 @@ rocm_install(FILES
  
  set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
  set(CPACK_RPM_PACKAGE_LICENSE "MIT")
@@ -61,10 +65,10 @@ index 6fc22b18..c2c22925 100644
 -    HEADER_ONLY
 -)
 diff --git a/library/src/tensor_operation_instance/gpu/CMakeLists.txt b/library/src/tensor_operation_instance/gpu/CMakeLists.txt
-index ac01c1b4..27f2a720 100644
+index 0a12e1c4..dcdaaf5a 100644
 --- a/library/src/tensor_operation_instance/gpu/CMakeLists.txt
 +++ b/library/src/tensor_operation_instance/gpu/CMakeLists.txt
-@@ -44,8 +44,14 @@ function(add_instance_library INSTANCE_NAME)
+@@ -44,8 +44,13 @@ function(add_instance_library INSTANCE_NAME)
      endforeach()
      #only continue if there are some source files left on the list
      if(ARGN)
@@ -73,13 +77,12 @@ index ac01c1b4..27f2a720 100644
 +        # Always disable debug symbol and C debug assert due to
 +        # - Linker error: ... relocation truncated to fit ..., caused by object files to be linked are too huge.
 +        # - https://github.com/ROCmSoftwarePlatform/composable_kernel/issues/622
-+        target_compile_options(${INSTANCE_NAME} PRIVATE -g0 -DNDEBUG)
          target_compile_features(${INSTANCE_NAME} PUBLIC)
 +        target_compile_definitions(${INSTANCE_NAME} PRIVATE "__HIP_PLATFORM_AMD__=1" "__HIP_PLATFORM_HCC__=1")
          set_target_properties(${INSTANCE_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
          clang_tidy_check(${INSTANCE_NAME})
          set(result 0)
-@@ -281,4 +287,3 @@ set(DEV_OPS_INC_DIRS
+@@ -280,4 +285,3 @@ set(DEV_OPS_INC_DIRS
      ${PROJECT_SOURCE_DIR}/library/include/ck/
  )
  rocm_install(DIRECTORY ${DEV_OPS_INC_DIRS} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/ck)
