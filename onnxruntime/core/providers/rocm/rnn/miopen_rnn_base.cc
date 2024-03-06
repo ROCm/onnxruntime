@@ -5,8 +5,6 @@
 #include "miopen_rnn_base.h"
 #include "rnn_impl.h"
 
-#include <iostream>
-
 namespace onnxruntime {
 namespace rocm {
 
@@ -23,9 +21,6 @@ Status MiopenRnnBase<T>::SetWeightBias(const miopenHandle_t handle,
                                     int& offset,
                                     bool is_matrix,
                                     hipStream_t hip_stream) const {
-  //int numDims;
-  //                       std::vector<int> matDims(3);
-  //  miopenDataType_t dt;
   size_t mem_offset;
   size_t num_bytes;
 
@@ -37,9 +32,6 @@ Status MiopenRnnBase<T>::SetWeightBias(const miopenHandle_t handle,
     MIOPEN_RETURN_IF_ERROR(miopenGetRNNLayerBiasSize(handle, rnn_desc, pseudo_layer, lin_layer_id, &num_bytes));
   }
 
-  //  MIOPEN_RETURN_IF_ERROR(miopenGetTensorDescriptor(filter_desc, &dt, &numDims, matDims.data()));
-
-  //  int count = matDims[0] * matDims[1] * matDims[2];
   HIP_CALL_THROW(hipMemcpyAsync((T*)(reorganized_w_data) + mem_offset, pos + offset, num_bytes, hipMemcpyDeviceToDevice, hip_stream));
 
   offset += (num_bytes / sizeof(T));
@@ -56,7 +48,6 @@ Status MiopenRnnBase<T>::SetMiopenRnnWeightBias(const miopenHandle_t miopen_hand
                                               const T* R_data,
                                               const T* B_data,
                                               hipStream_t hip_stream) const {
-  //std::cout << "SetMiopenRnnWeightBias" << std::endl;
   int w_offset = 0;
   int r_offset = 0;
   int bias_offset = 0;
@@ -84,7 +75,6 @@ Status MiopenRnnBase<T>::ReorganizeWeights(const Tensor* W, const Tensor* R, con
                                           IAllocatorUniquePtr<void>& reorganized_w_data,
                                           MiopenTensorDescriptor& target_w_desc,
                                           MiopenRNN& rnn_desc, onnxruntime::Stream* ort_stream) const {
-  //std::cout << "ReorganizeWeights" << std::endl;
   typedef typename ToHipType<T>::MappedType HipT;
   int64_t input_size = W->Shape()[2];
   // RNN W[num_directions_, hidden_size_, input_size]
@@ -129,7 +119,6 @@ Status MiopenRnnBase<T>::ReorganizeWeights(const Tensor* W, const Tensor* R, con
 
 template <typename T>
 Status MiopenRnnBase<T>::CacheMiopenRnnWeights(const OpKernelInfo& info) {
-  //std::cout << "CacheMiopenRnnWeights" << std::endl;
   typedef typename ToHipType<T>::MappedType HipT;
   // Cache the weight
   const Tensor* W;
@@ -163,7 +152,6 @@ Status MiopenRnnBase<T>::CacheMiopenRnnWeights(const OpKernelInfo& info) {
 
 template <typename T>
 Status MiopenRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
-  //std::cout << "COM INT start" << std::endl;
   typedef typename ToHipType<T>::MappedType HipT;
   // inputs
   const Tensor* X = ctx->Input<Tensor>(RNN_Input_Index::X);  // inputs. [seq_length, batch_size, input_size]
@@ -176,8 +164,6 @@ Status MiopenRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   if (rnn_mode_ == miopenLSTM) {
     initial_c = ctx->Input<Tensor>(RNN_Input_Index::initial_c);  // initial cell. [num_directions_, batch_size, hidden_size_]
   }
-
-    //std::cout << "COM INT perf tensors" << std::endl;
 
   int64_t seq_length = X->Shape()[0];
   int64_t batch_size = X->Shape()[1];
@@ -271,8 +257,6 @@ Status MiopenRnnBase<T>::ComputeInternal(OpKernelContext* ctx) const {
   int64_t zero_seq_count = 0;
   std::vector<int32_t> zero_seq_index_cache(batch_size, 0);
   int64_t zero_seq_index_cache_size = 0;
-
-  //std::cout << "miopenRNNForwardInference FIRST" << std::endl;
 
   if (miopenRNNRELU == rnn_mode_ || miopenRNNTANH == rnn_mode_ || nullptr == sequence_lens_data) {
     MIOPEN_RETURN_IF_ERROR(miopenRNNForwardInference(GetMiopenHandle(ctx),
@@ -414,8 +398,6 @@ void MiopenRnnBase<T>::SetZeroSequences(const int64_t zero_seq_index_cache_size,
                                        T* y_h_data,
                                        T* y_c_data,
                                        onnxruntime::Stream* ort_stream) const {
-  //std::cout << "SetZeroSequences" << std::endl;
-
   typedef typename ToHipType<T>::MappedType HipT;
   RocmAsyncBuffer<int32_t> zero_seq_index_cache_async_buffer(this, zero_seq_index_cache_size);
   memcpy(zero_seq_index_cache_async_buffer.CpuPtr(), zero_seq_index_cache.data(), zero_seq_index_cache_size * sizeof(int32_t));
