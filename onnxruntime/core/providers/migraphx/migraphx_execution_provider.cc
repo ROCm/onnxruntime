@@ -101,10 +101,10 @@ std::shared_ptr<KernelRegistry> MIGraphXExecutionProvider::GetKernelRegistry() c
 }
 
 MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProviderInfo& info)
-    : IExecutionProvider{onnxruntime::kMIGraphXExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, info.device_id)}, device_id_(info.device_id) {
+    : IExecutionProvider{onnxruntime::kMIGraphXExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, info.device_id)}, info_(info) {
   InitProviderOrtApi();
   // Set GPU device to be used
-  HIP_CALL_THROW(hipSetDevice(device_id_));
+  HIP_CALL_THROW(hipSetDevice(info_.device_id));
   t_ = migraphx::target(info.target_device.c_str());
 
   // whether fp16 is enable
@@ -161,7 +161,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   metadef_id_generator_ = ModelMetadefIdGenerator::Create();
 
   LOGS_DEFAULT(VERBOSE) << "[MIGraphX EP] MIGraphX provider options: "
-                        << "device_id: " << device_id_
+                        << "device_id: " << info_.device_id
                         << ", migraphx_fp16_enable: " << fp16_enable_
                         << ", migraphx_int8_enable: " << int8_enable_
                         << ", dump_model_ops: " << dump_model_ops_
@@ -175,7 +175,7 @@ MIGraphXExecutionProvider::~MIGraphXExecutionProvider() {
 
 std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators() {
   AllocatorCreationInfo default_memory_info(
-      [](OrtDevice::DeviceId device_id) { return CreateMIGraphXAllocator(device_id, onnxruntime::CUDA); }, device_id_);
+      [](OrtDevice::DeviceId device_id) { return CreateMIGraphXAllocator(device_id, onnxruntime::CUDA); }, info_.device_id);
   AllocatorCreationInfo pinned_allocator_info(
       [](OrtDevice::DeviceId device_id) {
         return CreateMIGraphXPinnedAllocator(device_id, onnxruntime::CUDA_PINNED);
