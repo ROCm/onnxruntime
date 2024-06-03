@@ -71,7 +71,13 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   OrtDevice GetOrtDeviceByMemType(OrtMemType mem_type) const override;
   std::vector<AllocatorPtr> CreatePreferredAllocators() override;
 
+  int GetDeviceId() const override { return info_.device_id; }
+  ProviderOptions GetProviderOptions() const override {
+    return MIGraphXExecutionProviderInfo::ToProviderOptions(info_);
+  }
+
  private:
+  MIGraphXExecutionProviderInfo info_;
   bool fp16_enable_ = false;
   bool int8_enable_ = false;
   std::string int8_calibration_cache_name_;
@@ -80,7 +86,6 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   std::string calibration_cache_path_;
   std::unordered_map<std::string, float> dynamic_range_map_;
   bool dump_model_ops_ = false;
-  OrtDevice::DeviceId device_id_;
   migraphx::target t_;
   OrtMutex mgx_mu_;
   hipStream_t stream_ = nullptr;
