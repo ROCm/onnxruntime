@@ -64,13 +64,10 @@ if wheel_name_suffix == "gpu":
     # TODO: how to support multiple CUDA versions?
     cuda_version = parse_arg_remove_string(sys.argv, "--cuda_version=")
 elif parse_arg_remove_boolean(sys.argv, "--use_rocm"):
-    is_migraphx = parse_arg_remove_boolean(sys.argv, "--use_migraphx")
     is_rocm = True
-    package_name = "onnxruntime-rocm" if not nightly_build else "ort-rocm-nightly"
     rocm_version = parse_arg_remove_string(sys.argv, "--rocm_version=")
 elif parse_arg_remove_boolean(sys.argv, "--use_migraphx"):
     is_migraphx = True
-    package_name = "onnxruntime-migraphx" if not nightly_build else "ort-migraphx-nightly"
 elif parse_arg_remove_boolean(sys.argv, "--use_openvino"):
     is_openvino = True
     package_name = "onnxruntime-openvino"
@@ -91,6 +88,9 @@ elif parse_arg_remove_boolean(sys.argv, "--use_azure"):
     pass
 elif parse_arg_remove_boolean(sys.argv, "--use_qnn"):
     package_name = "onnxruntime-qnn"
+
+if is_rocm or is_migraphx:
+    package_name = "onnxruntime-rocm" if not nightly_build else "ort-rocm-nightly"
 
 # PEP 513 defined manylinux1_x86_64 and manylinux1_i686
 # PEP 571 defined manylinux2010_x86_64 and manylinux2010_i686
