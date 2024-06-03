@@ -34,13 +34,13 @@ std::unique_ptr<IExecutionProvider> MIGraphXProviderFactory::CreateProvider() {
 }
 
 struct ProviderInfo_MIGraphX_Impl final : ProviderInfo_MIGraphX {
-    std::unique_ptr<IAllocator> CreateMIGraphXAllocator(int16_t device_id, const char* name) override {
-        return std::make_unique<MIGraphXAllocator>(device_id, name);
-    }
+  std::unique_ptr<IAllocator> CreateMIGraphXAllocator(int16_t device_id, const char* name) override {
+    return std::make_unique<MIGraphXAllocator>(device_id, name);
+  }
 
-    std::unique_ptr<IAllocator> CreateMIGraphXPinnedAllocator(int16_t device_id, const char* name) override {
-        return std::make_unique<HIPPinnedAllocator>(device_id, name);
-    }
+  std::unique_ptr<IAllocator> CreateMIGraphXPinnedAllocator(int16_t device_id, const char* name) override {
+    return std::make_unique<HIPPinnedAllocator>(device_id, name);
+  }
 
 } g_info;
 

@@ -39,9 +39,9 @@ MIGraphXStream::MIGraphXStream(hipStream_t stream,
                                const OrtDevice& device,
                                AllocatorPtr cpu_allocator,
                                bool release_cpu_buffer_on_migraphx_stream)
-                               : Stream(stream, device),
-                                 cpu_allocator_(cpu_allocator),
-                                 release_cpu_buffer_on_migraphx_stream_(release_cpu_buffer_on_migraphx_stream) {
+    : Stream(stream, device),
+      cpu_allocator_(cpu_allocator),
+      release_cpu_buffer_on_migraphx_stream_(release_cpu_buffer_on_migraphx_stream) {
 }
 
 MIGraphXStream::~MIGraphXStream() {

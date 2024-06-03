@@ -316,9 +316,14 @@ if platform.system() == "Linux":
         "libonnxruntime_providers_vitisai.so",
         providers_cuda_or_rocm,
         providers_tensorrt_or_migraphx,
-        providers_cann]
-    dl_libs = ["libonnxruntime_providers_shared.so", providers_cuda_or_rocm, providers_tensorrt_or_migraphx,
-               providers_cann]
+        providers_cann,
+    ]
+    dl_libs = [
+        "libonnxruntime_providers_shared.so",
+        providers_cuda_or_rocm,
+        providers_tensorrt_or_migraphx,
+        providers_cann,
+    ]
     # DNNL, TensorRT & OpenVINO EPs are built as shared libs
     if nightly_build:
         libs.extend(["libonnxruntime_pywrapper.so"])
@@ -333,8 +338,15 @@ elif platform.system() == "Darwin":
     if nightly_build:
         libs.extend(["libonnxruntime_pywrapper.dylib"])
 else:
-    libs = ["onnxruntime_pybind11_state.pyd", "dnnl.dll", "mklml.dll", "libiomp5md.dll", providers_cuda_or_rocm,
-            providers_tensorrt_or_migraphx, providers_cann]
+    libs = [
+        "onnxruntime_pybind11_state.pyd",
+        "dnnl.dll",
+        "mklml.dll",
+        "libiomp5md.dll",
+        providers_cuda_or_rocm,
+        providers_tensorrt_or_migraphx,
+        providers_cann,
+    ]
     # DNNL, TensorRT & OpenVINO EPs are built as shared libs
     libs.extend(["onnxruntime_providers_shared.dll"])
     libs.extend(["onnxruntime_providers_dnnl.dll"])
@@ -628,9 +640,7 @@ if nightly_build:
             # TODO: this is the last time we have to do this!!!
             # We shall bump up release number right after release cut.
             if ort_version.major == 1 and ort_version.minor == 8 and ort_version.micro == 0:
-                version_number = "{major}.{minor}.{macro}".format(
-                    major=ort_version.major, minor=ort_version.minor + 1, macro=ort_version.micro
-                )
+                version_number = f"{ort_version.major}.{ort_version.minor + 1}.{ort_version.micro}"
 
     version_number = version_number + ".dev" + build_suffix
 
@@ -681,9 +691,11 @@ if enable_training:
                 else:
                     print(
                         "Error getting cudart version. ",
-                        "did not find any cudart library"
-                        if not cudart_versions or len(cudart_versions) == 0
-                        else "found multiple cudart libraries",
+                        (
+                            "did not find any cudart library"
+                            if not cudart_versions or len(cudart_versions) == 0
+                            else "found multiple cudart libraries"
+                        ),
                     )
             elif rocm_version:
                 f.write(f"rocm_version = '{rocm_version}'\n")

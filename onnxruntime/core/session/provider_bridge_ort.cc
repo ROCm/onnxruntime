@@ -1830,17 +1830,17 @@ ProviderInfo_ROCM& GetProviderInfo_ROCM() {
 }
 
 ProviderInfo_MIGraphX* TryGetProviderInfo_MIGraphX() try {
-    return reinterpret_cast<ProviderInfo_MIGraphX*>(s_library_migraphx.Get().GetInfo());
+  return reinterpret_cast<ProviderInfo_MIGraphX*>(s_library_migraphx.Get().GetInfo());
 } catch (const std::exception& exception) {
-    LOGS_DEFAULT(ERROR) << exception.what();
-    return nullptr;
+  LOGS_DEFAULT(ERROR) << exception.what();
+  return nullptr;
 }
 
 ProviderInfo_MIGraphX& GetProviderInfo_MIGraphX() {
-    if (auto* info = TryGetProviderInfo_MIGraphX())
-        return *info;
+  if (auto* info = TryGetProviderInfo_MIGraphX())
+    return *info;
 
-    ORT_THROW("MIGraphX Provider not available, can't get interface for it");
+  ORT_THROW("MIGraphX Provider not available, can't get interface for it");
 }
 
 void CopyGpuToCpu(

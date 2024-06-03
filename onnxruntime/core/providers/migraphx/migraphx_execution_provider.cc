@@ -547,7 +547,7 @@ void SubgraphPostProcessing(const onnxruntime::GraphViewer& graph_viewer, std::v
                   if (arg_s == nullptr) return false;
                   const auto& tensor_dims = arg_s->dim();
                   std::vector<std::size_t> dims;
-                  for(auto&& dim : tensor_dims) {
+                  for (auto&& dim : tensor_dims) {
                     dims.emplace_back(dim.has_dim_value() ? dim.dim_value() : 1);
                   }
                   return (std::accumulate(dims.begin(), dims.end(), 1ULL, std::multiplies<std::size_t>{}) > 300);
