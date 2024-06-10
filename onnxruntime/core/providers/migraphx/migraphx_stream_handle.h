@@ -29,9 +29,9 @@ struct MIGraphXStream : Stream {
 
   bool own_stream_{true};
 
-  void* GetResource(int version, int id) const override;
+  virtual void* GetResource(int version, int id) const;
 
-  WaitNotificationFn GetWaitNotificationFn() const override { return WaitMIGraphXNotificationOnDevice; }
+  virtual WaitNotificationFn GetWaitNotificationFn() const { return WaitMIGraphXNotificationOnDevice; }
 
  private:
   std::vector<void*> deferred_cpu_buffers_;
