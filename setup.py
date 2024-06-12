@@ -310,6 +310,7 @@ if platform.system() == "Linux":
         "libmklml_gnu.so",
         "libiomp5.so",
         "mimalloc.so",
+        # DNNL, TensorRT & OpenVINO EPs are built as shared libs
         "libonnxruntime_providers_shared.so",
         "libonnxruntime_providers_dnnl.so",
         "libonnxruntime_providers_openvino.so",
@@ -324,7 +325,7 @@ if platform.system() == "Linux":
         providers_tensorrt_or_migraphx,
         providers_cann,
     ]
-    # DNNL, TensorRT & OpenVINO EPs are built as shared libs
+
     if nightly_build:
         libs.extend(["libonnxruntime_pywrapper.so"])
 elif platform.system() == "Darwin":

@@ -24,6 +24,10 @@
   # Suppress the warning about the small capitals of the package name
   cmake_policy(SET CMP0144 NEW)
 
+  if(WIN32 AND NOT HIP_PLATFORM)
+    set(HIP_PLATFORM "amd")
+  endif()
+
   find_package(hip REQUIRED)
   find_package(migraphx REQUIRED PATHS ${AMD_MIGRAPHX_HOME})
 
