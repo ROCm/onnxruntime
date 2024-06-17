@@ -1112,7 +1112,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         auto param_shapes = prog.get_parameter_shapes();
 
         // Add all calibration data read in from int8 table
-        for (auto& [cal_key, cal_val] : dynamic_range_map) {
+        for (auto& [cal_key, cal_val] : dynamic_range_map_) {
           auto cal_val_shape = migraphx::shape(migraphx_shape_float_type);
           quant_params.add(cal_key.c_str(), migraphx::argument(cal_val_shape, static_cast<void*>(std::move(&cal_val))));
         }
