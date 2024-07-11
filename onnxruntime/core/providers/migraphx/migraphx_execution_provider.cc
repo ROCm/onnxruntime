@@ -183,7 +183,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
 
   // Allow for exhaustive tune during compile
   const std::string exhaustive_tune_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kExhaustiveTune);
-  if (!exhaustibe_tune_env.empty()) {
+  if (!exhaustive_tune_env.empty()) {
     exhaustive_tune_ = (std::stoi(exhaustive_tune_env) == 0 ? false : true);
   }
 
@@ -1200,8 +1200,9 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
         migraphx::compile_options co;
         co.set_fast_math(false);
-        if (exhaustive_tune) {
-          co.set_exhaustive_tune(true);
+        co.set_exhaustive_tune_flag(false);
+        if (exhaustive_tune_) {
+          co.set_exhaustive_tune_flag(true);
         }
         LOGS_DEFAULT(INFO) << "Model Compile: Begin" << std::endl;
         prog.compile(t_, co);
@@ -1364,8 +1365,9 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           LOGS_DEFAULT(INFO) << "Model Compile: Begin" << std::endl;
           migraphx::compile_options co;
           co.set_fast_math(false);
-          if (exhaustive_tune) {
-            co.set_exhaustive_tune(true);
+            co.set_exhaustive_tune_flag(false);
+          if (exhaustive_tune_) {
+            co.set_exhaustive_tune_flag(true);
           }
           prog.compile(t, co);
 

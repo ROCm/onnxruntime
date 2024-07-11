@@ -872,7 +872,7 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
                 "[ERROR] [MIGraphX] The value for the key 'migraphx_exhaustive_tune' should be"
                 " 'True' or 'False'. Default value is 'False'.\n");
           }
-          else {
+        } else {
             ORT_THROW("Invalid MIGraphX EP option: ", option.first);
           }
         }
