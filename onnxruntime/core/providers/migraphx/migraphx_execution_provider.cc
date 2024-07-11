@@ -1200,8 +1200,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
         migraphx::compile_options co;
         co.set_fast_math(false);
-        if (exhaustive_tune)
-        {
+        if (exhaustive_tune) {
           co.set_exhaustive_tune(true);
         }
         LOGS_DEFAULT(INFO) << "Model Compile: Begin" << std::endl;
@@ -1365,8 +1364,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           LOGS_DEFAULT(INFO) << "Model Compile: Begin" << std::endl;
           migraphx::compile_options co;
           co.set_fast_math(false);
-          if (exhaustive_tune)
-          {
+          if (exhaustive_tune) {
             co.set_exhaustive_tune(true);
           }
           prog.compile(t, co);
