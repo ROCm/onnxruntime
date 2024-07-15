@@ -1365,7 +1365,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           LOGS_DEFAULT(INFO) << "Model Compile: Begin" << std::endl;
           migraphx::compile_options co;
           co.set_fast_math(false);
-            co.set_exhaustive_tune_flag(false);
+          co.set_exhaustive_tune_flag(false);
           if (exhaustive_tune_) {
             co.set_exhaustive_tune_flag(true);
           }
