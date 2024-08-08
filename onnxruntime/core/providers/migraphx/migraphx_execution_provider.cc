@@ -1200,10 +1200,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
         migraphx::compile_options co;
         co.set_fast_math(false);
-        co.set_exhaustive_tune_flag(false);
-        if (exhaustive_tune_) {
-          co.set_exhaustive_tune_flag(true);
-        }
+        co.set_exhaustive_tune_flag(exhaustive_tune_);
         LOGS_DEFAULT(INFO) << "Model Compile: Begin" << std::endl;
         prog.compile(t_, co);
         LOGS_DEFAULT(INFO) << "Model Compile: Complete" << std::endl;
@@ -1310,7 +1307,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       if (!input_shape_match) {
         if (!load_precompiled_model(prog, load_compiled_model_, std::string{load_compiled_path_})) {
           LOGS_DEFAULT(VERBOSE) << "No Input shapes mismatch detected. Recompiling" << std::endl;
-          cmp_options.set_external_data_path(model_path_.parent_path().string());
+          cmp_options.set_external_data_path(model_path_.has_parent_path() ? model_path_.parent_path().string() : std::filesystem::current_path().string());
           prog = migraphx::parse_onnx_buffer(onnx_string, cmp_options);
 
           // Read in the calibration data and map it to an migraphx paramater map for the calibration ops
@@ -1365,10 +1362,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           LOGS_DEFAULT(INFO) << "Model Compile: Begin" << std::endl;
           migraphx::compile_options co;
           co.set_fast_math(false);
-          co.set_exhaustive_tune_flag(false);
-          if (exhaustive_tune_) {
-            co.set_exhaustive_tune_flag(true);
-          }
+          co.set_exhaustive_tune_flag(exhaustive_tune_);
           prog.compile(t, co);
 
           save_compiled_model(prog, mgx_state->save_compiled_mode, mgx_state->save_compiled_path);
