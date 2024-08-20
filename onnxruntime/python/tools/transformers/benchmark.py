@@ -122,7 +122,7 @@ def run_onnxruntime(
         and ("DmlExecutionProvider" not in onnxruntime.get_available_providers())
     ):
         logger.error(
-            "Please install onnxruntime-gpu or onnxruntime-directml package instead of onnxruntime, and use a machine with GPU for testing gpu performance."
+            "Please install onnxruntime-gpu, onnxruntime-rocm or onnxruntime-directml package instead of onnxruntime, and use a machine with GPU for testing gpu performance."
         )
         return results
 
@@ -135,6 +135,16 @@ def run_onnxruntime(
                 "Please install onnxruntime-gpu-tensorrt package, and use a machine with GPU for testing gpu performance."
             )
             return results
+
+    if provider == "migraphx":
+        optimizer_info = OptimizerInfo.NOOPT
+        warm_up_repeat = 5
+        if "MIGraphXExecutionProvider" not in onnxruntime.get_available_providers():
+            logger.error(
+                "Please install onnxruntime-rocm package, and use a machine with GPU for testing gpu performance."
+            )
+            return results
+
 
     if optimizer_info == OptimizerInfo.NOOPT:
         logger.warning(
