@@ -145,7 +145,6 @@ def run_onnxruntime(
             )
             return results
 
-
     if optimizer_info == OptimizerInfo.NOOPT:
         logger.warning(
             f"OptimizerInfo is set to {optimizer_info}, graph optimizations specified in FusionOptions are not applied."
