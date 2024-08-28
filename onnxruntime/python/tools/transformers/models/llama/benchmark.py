@@ -593,7 +593,7 @@ def get_args(rank=0):
         "--device",
         type=str,
         default="cuda" if torch.cuda.is_available() else "cpu",
-        choices=["cpu", "cuda", "rocm"],
+        choices=["cpu", "cuda", "rocm", "migraphx"],
     )
     parser.add_argument("-id", "--device-id", type=int, default=0)
     parser.add_argument("-w", "--warmup-runs", type=int, default=5)
@@ -622,9 +622,11 @@ def get_args(rank=0):
     # Set runtime properties
     if "ort" in args.benchmark_type:
         setattr(args, "execution_provider", f"{args.device.upper()}ExecutionProvider")  # noqa: B010
+        if args.device == "migraphx":
+            setattr(args, "execution_provider", "MIGraphXExecutionProvider")
         if args.execution_provider == "CUDAExecutionProvider":
             args.execution_provider = (args.execution_provider, {"device_id": rank})
-        elif args.execution_provider == "ROCMExecutionProvider":
+        elif args.execution_provider == "ROCMExecutionProvider" or args.execution_provider == "MIGraphXExecutionProvider":
             args.execution_provider = (args.execution_provider, {"device_id": rank})
             args.device = "cuda"
 
