@@ -288,6 +288,7 @@ bool TryMatMul4Bits(
   if (n % kColsPerThreadBlock != 0 || k % 8 != 0 || m > 1) {
     return false;
   }
+  const int kWarpSize = GPU_WARP_SIZE_HOST;
   dim3 blocks((n + kColsPerThreadBlock - 1) / kColsPerThreadBlock, m);
   dim3 threads(kWarpSize, kColsPerThreadBlock);
   int blocks_per_K = (k + block_size - 1) / block_size;
