@@ -205,4 +205,4 @@ if __name__ == "__main__":
     parser.add_argument("src", help="src")
     args = parser.parse_args()
 
-    hipify("/onnxruntime", args.src, args.output)
+    hipify("/onnxruntime/tools/ci_build/hipify-perl", args.src, args.output)
