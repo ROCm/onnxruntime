@@ -89,13 +89,17 @@ void* ROCMExternalAllocator::Reserve(size_t size) {
 void* ROCMPinnedAllocator::Alloc(size_t size) {
   void* p = nullptr;
   if (size > 0) {
+#ifdef hipExtHostAllocCoherent
+    HIP_CALL_THROW(hipExtHostAlloc((void**)&p, size));
+#else
     HIP_CALL_THROW(hipHostMalloc((void**)&p, size));
+#endif
   }
   return p;
 }
 
 void ROCMPinnedAllocator::Free(void* p) {
-  HIP_CALL_THROW(hipHostFree(p));
+  HIP_CALL_THROW(hipFreeHost(p));
 }
 
 }  // namespace onnxruntime
