@@ -890,7 +890,7 @@ GemmSoftmaxGemmPermuteTunableOp<T>::GemmSoftmaxGemmPermuteTunableOp() {
     return GemmSoftmaxGemmPermuteGenericPipeline<T>::Run(params, false);
   });
 
-#ifdef USE_COMPOSABLE_KERNEL
+#ifdef USE_COMPOSABLE_KERNEL && (__AMDGCN_WAVEFRONT_SIZE == 64u)
   for (auto&& [_, op] : GetCKGemmSoftmaxGemmPermuteTypeStringAndOps<T, /*USE_BIAS=*/false, /*USE_MASK=*/false>()) {
     this->RegisterOp(std::move(op));
   }
