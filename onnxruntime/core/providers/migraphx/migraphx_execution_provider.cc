@@ -1445,11 +1445,15 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
             auto output_tensor = ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
             void* output_data = output_tensor.GetTensorMutableRawData();
-            HIP_CALL_THROW(hipMemcpyWithStream(output_data,
-                                               gpu_res.data(),
-                                               res_shape.bytes(),
-                                               hipMemcpyDeviceToDevice,
-                                               static_cast<hipStream_t>(rocm_stream)));
+            // Prefer hipMemcpyAsync over hipMemcpyWithStream, due to
+            // 1. hipMemcpyAsync will automatically block when the host memory is not pinned
+            // 2. hipMemcpyWithStream has a known performance problem:
+            //    https://github.com/ROCm/clr/issues/78
+            HIP_CALL_THROW(hipMemcpyAsync(output_data,
+                                          gpu_res.data(),
+                                          res_shape.bytes(),
+                                          hipMemcpyDeviceToDevice,
+                                          static_cast<hipStream_t>(rocm_stream)));
           }
         }
       };

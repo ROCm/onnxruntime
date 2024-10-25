@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
+// TODO: Unify this file with onnxruntime/core/providers/migraphx/gpu_data_transfer.cc
+
 #include "core/providers/shared_library/provider_api.h"
 
 #include "core/providers/rocm/gpu_data_transfer.h"

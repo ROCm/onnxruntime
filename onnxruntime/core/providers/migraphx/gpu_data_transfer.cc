@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
+// TODO: Unify this file with onnxruntime/core/providers/rocm/gpu_data_transfer.cc
+
 #include "core/providers/shared_library/provider_api.h"
 #include "gpu_data_transfer.h"
 #include "migraphx_call.h"
@@ -49,15 +51,13 @@ common::Status GPUDataTransfer::CopyTensorAsync(const Tensor& src, Tensor& dst, 
   auto& dst_device = dst.Location().device;
 
   if (dst_device.Type() == OrtDevice::GPU) {
-    if (src_device.Type() == OrtDevice::CPU && src_device.MemType() == OrtDevice::MemType::HIP_PINNED) {
-      // copy from pinned memory to GPU, this is non-blocking
+    if (src_device.Type() == OrtDevice::CPU) {
+      // copy from host memory to GPU,
+      // this is non-blocking if src is pinned, otherwise it is blocking
       HIP_CALL_THROW(hipMemcpyAsync(dst_data, src_data, bytes, hipMemcpyHostToDevice, static_cast<hipStream_t>(stream.GetHandle())));
     } else if (src_device.Type() == OrtDevice::GPU) {
       // copying between GPU, this is non-blocking
       HIP_CALL_THROW(hipMemcpyAsync(dst_data, src_data, bytes, hipMemcpyDeviceToDevice, static_cast<hipStream_t>(stream.GetHandle())));
-    } else {
-      // copy from other CPU memory to GPU, this is blocking
-      HIP_CALL_THROW(hipMemcpyWithStream(dst_data, src_data, bytes, hipMemcpyHostToDevice, static_cast<hipStream_t>(stream.GetHandle())));
     }
   } else if (src_device.Type() == OrtDevice::GPU) {
     HIP_CALL_THROW(hipMemcpyAsync(dst_data, src_data, bytes, hipMemcpyDeviceToHost, static_cast<hipStream_t>(stream.GetHandle())));
