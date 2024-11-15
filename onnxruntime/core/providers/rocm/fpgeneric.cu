@@ -53,6 +53,25 @@ __global__ void CopyVectorBFloat16(const onnxruntime::BFloat16* x, int incx, onn
 
 }  // namespace
 
+dim3 rocblasTransposeHelperDimGrid(int m, int n) {
+  return dim3((n + TRANS_TILE_DIM - 1) / TRANS_TILE_DIM, (m + TRANS_TILE_DIM - 1) / TRANS_TILE_DIM, 1);
+}
+
+// rocblasTransposeHelper can only be used if it won't overflow the maxGridSize y dimension size
+__host__ bool CanUse_rocblasTransposeHelper_MLFloat16(int m, int n) {
+  dim3 dimGrid = rocblasTransposeHelperDimGrid(m, n);
+
+  int deviceId;
+  hipError_t hipError = hipGetDevice(&deviceId);
+  if(hipError != 0) return false;
+
+  hipDeviceProp_t deviceProp;
+  hipError = hipGetDeviceProperties(&deviceProp, deviceId);
+  if(hipError != 0) return false;
+
+  return dimGrid.y < deviceProp.maxGridSize[1];
+}
+
 rocblas_status rocblasTransposeHelper(hipStream_t stream, rocblas_handle, rocblas_operation , rocblas_operation , int m, int n, const half*, const half* A, int, const half*, const half*, int, half* C, int) {
   if (C != A) {
     dim3 dimGrid((n + TRANS_TILE_DIM - 1) / TRANS_TILE_DIM, (m + TRANS_TILE_DIM - 1) / TRANS_TILE_DIM, 1);
