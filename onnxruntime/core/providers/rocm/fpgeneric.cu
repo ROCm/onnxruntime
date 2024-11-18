@@ -63,16 +63,16 @@ __host__ bool CanUse_rocblasTransposeHelper_MLFloat16(int m, int n) {
 
   int deviceId;
   hipError_t hipError = hipGetDevice(&deviceId);
-  if(hipError != 0) return false;
+  if (hipError != 0) return false;
 
   hipDeviceProp_t deviceProp;
   hipError = hipGetDeviceProperties(&deviceProp, deviceId);
-  if(hipError != 0) return false;
+  if (hipError != 0) return false;
 
   return dimGrid.y < deviceProp.maxGridSize[1];
 }
 
-rocblas_status rocblasTransposeHelper(hipStream_t stream, rocblas_handle, rocblas_operation , rocblas_operation , int m, int n, const half*, const half* A, int, const half*, const half*, int, half* C, int) {
+rocblas_status rocblasTransposeHelper(hipStream_t stream, rocblas_handle, rocblas_operation, rocblas_operation, int m, int n, const half*, const half* A, int, const half*, const half*, int, half* C, int) {
   if (C != A) {
     dim3 dimGrid((n + TRANS_TILE_DIM - 1) / TRANS_TILE_DIM, (m + TRANS_TILE_DIM - 1) / TRANS_TILE_DIM, 1);
     dim3 dimBlock(TRANS_TILE_DIM, BLOCK_ROWS, 1);
@@ -92,7 +92,7 @@ rocblas_status rocblasCopyHelper(hipStream_t stream, rocblas_handle, int n, cons
 }
 
 rocblas_status rocblasCopyHelper(hipStream_t stream, rocblas_handle, int n, const onnxruntime::BFloat16* x, int incx,
-                                onnxruntime::BFloat16* y, int incy) {
+                                 onnxruntime::BFloat16* y, int incy) {
   dim3 dimGrid((unsigned int)(n + COPY_BLOCK_DIM - 1) / COPY_BLOCK_DIM, 1, 1);
   dim3 dimBlock(COPY_BLOCK_DIM, 1, 1);
   CopyVectorBFloat16<<<dimGrid, dimBlock, 0, stream>>>(x, incx, y, incy, n);
