@@ -271,6 +271,10 @@ static bool IsTypeSupported(const NodeArg* node_arg) {
   switch (type_proto->tensor_type().elem_type()) {
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT16:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT:
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT8E4M3FN:
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT8E4M3FNUZ:
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT8E5M2:
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT8E5M2FNUZ:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_DOUBLE:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT8:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT16:
@@ -299,6 +303,18 @@ static bool getMIGraphXType(ONNXTensorElementDataType type,
       break;
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE:
       mgx_type = migraphx_shape_double_type;
+      break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E4M3FNUZ:
+      mgx_type = migraphx_shape_fp8e4m3fnuz_type;
+      break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E4M3FN:
+      mgx_type = migraphx_shape_fp8e4m3fn_type;
+      break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E5M2:
+      mgx_type = migraphx_shape_fp8e5m2_type;
+      break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E5M2FNUZ:
+      mgx_type = migraphx_shape_fp8e5m2fnuz_type;
       break;
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:
       mgx_type = migraphx_shape_int8_type;
