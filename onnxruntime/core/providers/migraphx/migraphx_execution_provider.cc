@@ -276,10 +276,12 @@ static bool IsTypeSupported(const NodeArg* node_arg) {
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT8E5M2:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT8E5M2FNUZ:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_DOUBLE:
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT4:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT8:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT16:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT64:
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT4:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT8:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT16:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT32:
@@ -316,6 +318,9 @@ static bool getMIGraphXType(ONNXTensorElementDataType type,
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E5M2FNUZ:
       mgx_type = migraphx_shape_fp8e5m2fnuz_type;
       break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT4:
+      mgx_type = migraphx_shape_int8_type;
+      break;
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:
       mgx_type = migraphx_shape_int8_type;
       break;
@@ -327,6 +332,9 @@ static bool getMIGraphXType(ONNXTensorElementDataType type,
       break;
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
       mgx_type = migraphx_shape_int64_type;
+      break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT4:
+      mgx_type = migraphx_shape_uint8_type;
       break;
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:
       mgx_type = migraphx_shape_uint8_type;
