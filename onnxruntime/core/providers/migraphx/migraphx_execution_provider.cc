@@ -115,6 +115,12 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
     fp16_enable_ = (std::stoi(fp16_enable_env) == 0 ? false : true);
   }
 
+  // whether fp8 quantization is enabled
+  const std::string fp8_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kFP8Enable);
+  if (!fp8_enable_env.empty()) {
+    fp8_enable_ = (std::stoi(fp8_enable_env) == 0 ? false : true);
+  }
+
   // whether int8 is enabled
   const std::string int8_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kINT8Enable);
   if (!int8_enable_env.empty()) {
@@ -193,6 +199,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   LOGS_DEFAULT(VERBOSE) << "[MIGraphX EP] MIGraphX provider options: "
                         << "device_id: " << info_.device_id
                         << ", migraphx_fp16_enable: " << fp16_enable_
+                        << ", migraphx_fp8_enable: " << fp8_enable_
                         << ", migraphx_int8_enable: " << int8_enable_
                         << ", migraphx_int8_enable: " << int8_enable_
                         << ", dump_model_ops: " << dump_model_ops_
@@ -1222,7 +1229,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         prog = migraphx::parse_onnx_buffer(onnx_string_buffer, options);
 
         // Read in the calibration data and map it to an migraphx paramater map for the calibration ops
-        if (int8_enable_ && int8_calibration_cache_available_) {
+        if ((int8_enable_ || fp8_enable_) && int8_calibration_cache_available_) {
           LOGS_DEFAULT(INFO) << "Quantizing input program to int8" << std::endl;
           migraphx::quantize_int8_options quant_opts;
           migraphx::program_parameters quant_params;
@@ -1279,7 +1286,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       std::unique_ptr<MIGraphXFuncState> p = std::make_unique<MIGraphXFuncState>();
       *p = {context->allocate_func, context->release_func, context->allocator_handle, map_progs_[context->node_name],
             map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_mu_,
-            map_no_input_shape_[context->node_name], fp16_enable_, int8_enable_,
+            map_no_input_shape_[context->node_name], fp16_enable_, fp8_enable_, int8_enable_,
             int8_calibration_cache_available_, dynamic_range_map_,
             save_compiled_model_, save_compiled_path_,
             load_compiled_model_, load_compiled_path_, dump_model_ops_};
@@ -1304,6 +1311,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       migraphx::onnx_options& cmp_options = mgx_state->options;
       bool& no_input_shape = mgx_state->no_input_shape;
       bool fp16_enable = mgx_state->fp16_enable;
+      bool fp8_enable = mgx_state->fp8_enable;
       bool int8_enable = mgx_state->int8_enable;
       bool int8_calibration_cache_available = mgx_state->int8_calibration_cache_available;
 
