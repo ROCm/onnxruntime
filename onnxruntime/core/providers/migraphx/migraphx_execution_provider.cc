@@ -1091,7 +1091,7 @@ MIGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
     if (dump_model_ops_) {
       LOGS_DEFAULT(INFO) << "============= Unsupported nodes ====================";
       for (auto idx : unsupported_nodes) {
-        LOGS_DEFAULT(INFO) << graph_viewer.GetNode(idx)->OpType() << std::endl;
+        LOGS_DEFAULT(INFO) << graph_viewer.GetNode(idx)->OpType();
       }
       LOGS_DEFAULT(INFO) << "************* Unsupported nodes ********************";
     }
@@ -1179,11 +1179,11 @@ bool load_precompiled_model(migraphx::program& prog, bool load_enable, std::stri
 
 void save_compiled_model(migraphx::program& prog, bool save_enable, std::string out_path) {
   if (save_enable) {
-    LOGS_DEFAULT(INFO) << "Model Save at " << out_path << ": Begin" << std::endl;
+    LOGS_DEFAULT(INFO) << "Model Save at " << out_path << ": Begin";
     migraphx::file_options fo;
     fo.set_file_format("msgpack");
     migraphx::save(prog, out_path.c_str(), fo);
-    LOGS_DEFAULT(INFO) << "Model Save: Complete" << std::endl;
+    LOGS_DEFAULT(INFO) << "Model Save: Complete";
   }
 }
 
@@ -1230,7 +1230,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
         // Read in the calibration data and map it to an migraphx paramater map for the calibration ops
         if ((int8_enable_ xor fp8_enable_) && int8_calibration_cache_available_) {
-          LOGS_DEFAULT(INFO) << "Quantizing input program to int8" << std::endl;
+          LOGS_DEFAULT(INFO) << "Quantizing input program to int8";
           migraphx::program_parameters quant_params;
 
           auto param_shapes = prog.get_parameter_shapes();
@@ -1250,30 +1250,30 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             quant_opts.add_op_name("convolution");
             quant_opts.add_op_name("dot");
             migraphx::quantize_int8(prog, t_, quant_opts);
-            LOGS_DEFAULT(INFO) << "Quantizing input program to int8: Complete" << std::endl;
+            LOGS_DEFAULT(INFO) << "Quantizing input program to int8: Complete";
           }
           else if(fp8_enable_)
           {
             migraphx::quantize_fp8_options quant_opts;
             quant_opts.add_calibration_data(quant_params);
             migraphx::quantize_fp8(prog, t_, quant_opts);
-            LOGS_DEFAULT(INFO) << "Quantizing input program to fp8: Complete" << std::endl;
+            LOGS_DEFAULT(INFO) << "Quantizing input program to fp8: Complete";
           }
 
         }
 
         if (fp16_enable_) {
-          LOGS_DEFAULT(INFO) << "Quantizing input program to fp16" << std::endl;
+          LOGS_DEFAULT(INFO) << "Quantizing input program to fp16";
           migraphx::quantize_fp16(prog);
-          LOGS_DEFAULT(INFO) << "Quantizing input program to fp16: Complete" << std::endl;
+          LOGS_DEFAULT(INFO) << "Quantizing input program to fp16: Complete";
         }
 
         migraphx::compile_options co;
         co.set_fast_math(false);
         co.set_exhaustive_tune_flag(exhaustive_tune_);
-        LOGS_DEFAULT(INFO) << "Model Compile: Begin" << std::endl;
+        LOGS_DEFAULT(INFO) << "Model Compile: Begin";
         prog.compile(t_, co);
-        LOGS_DEFAULT(INFO) << "Model Compile: Complete" << std::endl;
+        LOGS_DEFAULT(INFO) << "Model Compile: Complete";
 
         save_compiled_model(prog, save_compiled_model_, save_compiled_path_);
       }
@@ -1330,7 +1330,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       bool input_shape_match = true;
       migraphx::program_parameter_shapes param_shapes;
       if (no_input_shape) {
-        LOGS_DEFAULT(VERBOSE) << "Missing input shape setting input parameters again" << std::endl;
+        LOGS_DEFAULT(VERBOSE) << "Missing input shape setting input parameters again";
         for (auto& it : map_input_name_index) {
           auto& name = it.first;
           auto& index = it.second;
@@ -1342,7 +1342,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           input_shape_match = false;
         }
       } else {
-        LOGS_DEFAULT(VERBOSE) << "Assigning inputs, and parameters from compiled model" << std::endl;
+        LOGS_DEFAULT(VERBOSE) << "Assigning inputs, and parameters from compiled model";
         param_shapes = prog.get_parameter_shapes();
         auto prog_output_shapes = prog.get_output_shapes();
 
@@ -1377,13 +1377,13 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       // re-compile the program
       if (!input_shape_match) {
         if (!load_precompiled_model(prog, load_compiled_model_, std::string{load_compiled_path_})) {
-          LOGS_DEFAULT(VERBOSE) << "No Input shapes mismatch detected. Recompiling" << std::endl;
+          LOGS_DEFAULT(VERBOSE) << "No Input shapes mismatch detected. Recompiling";
           cmp_options.set_external_data_path(model_path_.parent_path().string());
           prog = migraphx::parse_onnx_buffer(onnx_string, cmp_options);
 
           // Read in the calibration data and map it to an migraphx paramater map for the calibration ops
           if ((int8_enable xor fp8_enable) && int8_calibration_cache_available) {
-            LOGS_DEFAULT(INFO) << "Quantize Int8: Begin" << std::endl;
+            LOGS_DEFAULT(INFO) << "Quantize Int8: Begin";
             migraphx::program_parameters quant_params;
 
             auto param_shapes = prog.get_parameter_shapes();
@@ -1422,24 +1422,24 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
               quant_opts.add_op_name("convolution");
               quant_opts.add_op_name("dot");
               migraphx::quantize_int8(prog, t, quant_opts);
-              LOGS_DEFAULT(INFO) << "Quantizing input program to fp8: Complete" << std::endl;
+              LOGS_DEFAULT(INFO) << "Quantizing input program to fp8: Complete";
             }
             else if(fp8_enable)
             {
               migraphx::quantize_fp8_options quant_opts;
               quant_opts.add_calibration_data(quant_params);
               migraphx::quantize_fp8(prog, t, quant_opts);
-              LOGS_DEFAULT(INFO) << "Quantizing input program to fp8: Complete" << std::endl;
+              LOGS_DEFAULT(INFO) << "Quantizing input program to fp8: Complete";
             }
           }
 
           if (fp16_enable) {
-            LOGS_DEFAULT(INFO) << "Quantize fp16: Begin" << std::endl;
+            LOGS_DEFAULT(INFO) << "Quantize fp16: Begin";
             migraphx::quantize_fp16(prog);
-            LOGS_DEFAULT(INFO) << "Quantize fp16: Completed" << std::endl;
+            LOGS_DEFAULT(INFO) << "Quantize fp16: Completed";
           }
 
-          LOGS_DEFAULT(INFO) << "Model Compile: Begin" << std::endl;
+          LOGS_DEFAULT(INFO) << "Model Compile: Begin";
           migraphx::compile_options co;
           co.set_fast_math(false);
           co.set_exhaustive_tune_flag(exhaustive_tune_);
@@ -1459,7 +1459,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       if (param_shapes.size() > 0) {
         for (auto&& name : param_shapes.names()) {
           if (map_input_name_index.count(name) > 0) {
-            LOGS_DEFAULT(INFO) << "Setting parameters for:" << name << std::endl;
+            LOGS_DEFAULT(INFO) << "Setting parameters for:" << name;
             auto input_tensor = ctx.GetInput(map_input_name_index[name]);
             auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
             const auto tensor_shape = tensor_info.GetShape();
@@ -1473,7 +1473,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
               LOGS_DEFAULT(FATAL) << "MIGraphX: param type mismatch";
             }
 
-            LOGS_DEFAULT(INFO) << "Writing Raw tensor data " << std::endl;
+            LOGS_DEFAULT(INFO) << "Writing Raw tensor data ";
             m.add(name, migraphx::argument(param_shapes[name],
                                            const_cast<void*>(input_tensor.GetTensorRawData())));
           }
