@@ -1190,9 +1190,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         prog = migraphx::parse_onnx_buffer(onnx_string_buffer, options);
 
         // Read in the calibration data and map it to an migraphx paramater map for the calibration ops
-        if ((int8_enable_ || fp8_enable_) && int8_calibration_cache_available_) {
+        if ((int8_enable_ xor fp8_enable_) && int8_calibration_cache_available_) {
           LOGS_DEFAULT(INFO) << "Quantizing input program to int8" << std::endl;
-          migraphx::quantize_int8_options quant_opts;
           migraphx::program_parameters quant_params;
 
           auto param_shapes = prog.get_parameter_shapes();
@@ -1202,15 +1201,26 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             auto cal_val_shape = migraphx::shape(migraphx_shape_float_type);
             quant_params.add(cal_key.c_str(), migraphx::argument(cal_val_shape, static_cast<void*>(std::move(&cal_val))));
           }
-          quant_opts.add_calibration_data(quant_params);
-
-          // specify thing we want to int8 quantize
-          quant_opts.add_op_name("convolution");
-          quant_opts.add_op_name("dot");
 
           // perform static quantization on the programs
-          migraphx::quantize_int8(prog, t_, quant_opts);
-          LOGS_DEFAULT(INFO) << "Quantizing input program to int8: Complete" << std::endl;
+          if(int8_enable_)
+          {
+            migraphx::quantize_int8_options quant_opts;
+            quant_opts.add_calibration_data(quant_params);
+            // specify thing we want to int8 quantize
+            quant_opts.add_op_name("convolution");
+            quant_opts.add_op_name("dot");
+            migraphx::quantize_int8(prog, t_, quant_opts);
+            LOGS_DEFAULT(INFO) << "Quantizing input program to int8: Complete" << std::endl;
+          }
+          else if(fp8_enable_)
+          {
+            migraphx::quantize_fp8_options quant_opts;
+            quant_opts.add_calibration_data(quant_params);
+            migraphx::quantize_fp8(prog, t_, quant_opts);
+            LOGS_DEFAULT(INFO) << "Quantizing input program to fp8: Complete" << std::endl;
+          }
+
         }
 
         if (fp16_enable_) {
@@ -1333,9 +1343,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           prog = migraphx::parse_onnx_buffer(onnx_string, cmp_options);
 
           // Read in the calibration data and map it to an migraphx paramater map for the calibration ops
-          if (int8_enable && int8_calibration_cache_available) {
+          if ((int8_enable xor fp8_enable) && int8_calibration_cache_available) {
             LOGS_DEFAULT(INFO) << "Quantize Int8: Begin" << std::endl;
-            migraphx::quantize_int8_options quant_opts;
             migraphx::program_parameters quant_params;
 
             auto param_shapes = prog.get_parameter_shapes();
@@ -1364,14 +1373,25 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
               auto cal_val_shape = migraphx::shape(migraphx_shape_float_type);
               quant_params.add(cal_key.c_str(), migraphx::argument(cal_val_shape, static_cast<void*>(std::move(&cal_val))));
             }
-            quant_opts.add_calibration_data(quant_params);
-            // specify thing we want to int8 quantize
-            quant_opts.add_op_name("convolution");
-            quant_opts.add_op_name("dot");
 
             // perform static quantization on the programs
-            migraphx::quantize_int8(prog, t, quant_opts);
-            LOGS_DEFAULT(INFO) << "Quantize Int8: Completed" << std::endl;
+            if(int8_enable)
+            {
+              migraphx::quantize_int8_options quant_opts;
+              quant_opts.add_calibration_data(quant_params);
+              // specify thing we want to int8 quantize
+              quant_opts.add_op_name("convolution");
+              quant_opts.add_op_name("dot");
+              migraphx::quantize_int8(prog, t, quant_opts);
+              LOGS_DEFAULT(INFO) << "Quantizing input program to fp8: Complete" << std::endl;
+            }
+            else if(fp8_enable)
+            {
+              migraphx::quantize_fp8_options quant_opts;
+              quant_opts.add_calibration_data(quant_params);
+              migraphx::quantize_fp8(prog, t, quant_opts);
+              LOGS_DEFAULT(INFO) << "Quantizing input program to fp8: Complete" << std::endl;
+            }
           }
 
           if (fp16_enable) {
