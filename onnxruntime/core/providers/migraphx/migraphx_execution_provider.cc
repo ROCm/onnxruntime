@@ -114,6 +114,12 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
     fp16_enable_ = (std::stoi(fp16_enable_env) == 0 ? false : true);
   }
 
+  // whether fp8 quantization is enabled
+  const std::string fp8_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kFP8Enable);
+  if (!fp8_enable_env.empty()) {
+    fp8_enable_ = (std::stoi(fp8_enable_env) == 0 ? false : true);
+  }
+
   // whether int8 is enabled
   const std::string int8_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kINT8Enable);
   if (!int8_enable_env.empty()) {
@@ -192,6 +198,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   LOGS_DEFAULT(VERBOSE) << "[MIGraphX EP] MIGraphX provider options: "
                         << "device_id: " << info_.device_id
                         << ", migraphx_fp16_enable: " << fp16_enable_
+                        << ", migraphx_fp8_enable: " << fp8_enable_
                         << ", migraphx_int8_enable: " << int8_enable_
                         << ", migraphx_int8_enable: " << int8_enable_
                         << ", dump_model_ops: " << dump_model_ops_
@@ -232,11 +239,17 @@ static bool IsTypeSupported(const NodeArg* node_arg) {
   switch (type_proto->tensor_type().elem_type()) {
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT16:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT:
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT8E4M3FN:
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT8E4M3FNUZ:
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT8E5M2:
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT8E5M2FNUZ:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_DOUBLE:
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT4:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT8:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT16:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT64:
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT4:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT8:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT16:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT32:
@@ -261,6 +274,21 @@ static bool getMIGraphXType(ONNXTensorElementDataType type,
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE:
       mgx_type = migraphx_shape_double_type;
       break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E4M3FNUZ:
+      mgx_type = migraphx_shape_fp8e4m3fnuz_type;
+      break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E4M3FN:
+      mgx_type = migraphx_shape_fp8e4m3fn_type;
+      break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E5M2:
+      mgx_type = migraphx_shape_fp8e5m2_type;
+      break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E5M2FNUZ:
+      mgx_type = migraphx_shape_fp8e5m2fnuz_type;
+      break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT4:
+      mgx_type = migraphx_shape_int8_type;
+      break;
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:
       mgx_type = migraphx_shape_int8_type;
       break;
@@ -272,6 +300,9 @@ static bool getMIGraphXType(ONNXTensorElementDataType type,
       break;
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
       mgx_type = migraphx_shape_int64_type;
+      break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT4:
+      mgx_type = migraphx_shape_uint8_type;
       break;
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:
       mgx_type = migraphx_shape_uint8_type;
@@ -1159,9 +1190,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         prog = migraphx::parse_onnx_buffer(onnx_string_buffer, options);
 
         // Read in the calibration data and map it to an migraphx paramater map for the calibration ops
-        if (int8_enable_ && int8_calibration_cache_available_) {
+        if ((int8_enable_ xor fp8_enable_) && int8_calibration_cache_available_) {
           LOGS_DEFAULT(INFO) << "Quantizing input program to int8" << std::endl;
-          migraphx::quantize_int8_options quant_opts;
           migraphx::program_parameters quant_params;
 
           auto param_shapes = prog.get_parameter_shapes();
@@ -1171,15 +1201,26 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             auto cal_val_shape = migraphx::shape(migraphx_shape_float_type);
             quant_params.add(cal_key.c_str(), migraphx::argument(cal_val_shape, static_cast<void*>(std::move(&cal_val))));
           }
-          quant_opts.add_calibration_data(quant_params);
-
-          // specify thing we want to int8 quantize
-          quant_opts.add_op_name("convolution");
-          quant_opts.add_op_name("dot");
 
           // perform static quantization on the programs
-          migraphx::quantize_int8(prog, t_, quant_opts);
-          LOGS_DEFAULT(INFO) << "Quantizing input program to int8: Complete" << std::endl;
+          if(int8_enable_)
+          {
+            migraphx::quantize_int8_options quant_opts;
+            quant_opts.add_calibration_data(quant_params);
+            // specify thing we want to int8 quantize
+            quant_opts.add_op_name("convolution");
+            quant_opts.add_op_name("dot");
+            migraphx::quantize_int8(prog, t_, quant_opts);
+            LOGS_DEFAULT(INFO) << "Quantizing input program to int8: Complete" << std::endl;
+          }
+          else if(fp8_enable_)
+          {
+            migraphx::quantize_fp8_options quant_opts;
+            quant_opts.add_calibration_data(quant_params);
+            migraphx::quantize_fp8(prog, t_, quant_opts);
+            LOGS_DEFAULT(INFO) << "Quantizing input program to fp8: Complete" << std::endl;
+          }
+
         }
 
         if (fp16_enable_) {
@@ -1216,7 +1257,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       std::unique_ptr<MIGraphXFuncState> p = std::make_unique<MIGraphXFuncState>();
       *p = {context->allocate_func, context->release_func, context->allocator_handle, map_progs_[context->node_name],
             map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_mu_,
-            map_no_input_shape_[context->node_name], fp16_enable_, int8_enable_,
+            map_no_input_shape_[context->node_name], fp16_enable_, fp8_enable_, int8_enable_,
             int8_calibration_cache_available_, dynamic_range_map_,
             save_compiled_model_, save_compiled_path_,
             load_compiled_model_, load_compiled_path_, dump_model_ops_};
@@ -1241,6 +1282,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       migraphx::onnx_options& cmp_options = mgx_state->options;
       bool& no_input_shape = mgx_state->no_input_shape;
       bool fp16_enable = mgx_state->fp16_enable;
+      bool fp8_enable = mgx_state->fp8_enable;
       bool int8_enable = mgx_state->int8_enable;
       bool int8_calibration_cache_available = mgx_state->int8_calibration_cache_available;
 
@@ -1301,9 +1343,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           prog = migraphx::parse_onnx_buffer(onnx_string, cmp_options);
 
           // Read in the calibration data and map it to an migraphx paramater map for the calibration ops
-          if (int8_enable && int8_calibration_cache_available) {
+          if ((int8_enable xor fp8_enable) && int8_calibration_cache_available) {
             LOGS_DEFAULT(INFO) << "Quantize Int8: Begin" << std::endl;
-            migraphx::quantize_int8_options quant_opts;
             migraphx::program_parameters quant_params;
 
             auto param_shapes = prog.get_parameter_shapes();
@@ -1332,14 +1373,25 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
               auto cal_val_shape = migraphx::shape(migraphx_shape_float_type);
               quant_params.add(cal_key.c_str(), migraphx::argument(cal_val_shape, static_cast<void*>(std::move(&cal_val))));
             }
-            quant_opts.add_calibration_data(quant_params);
-            // specify thing we want to int8 quantize
-            quant_opts.add_op_name("convolution");
-            quant_opts.add_op_name("dot");
 
             // perform static quantization on the programs
-            migraphx::quantize_int8(prog, t, quant_opts);
-            LOGS_DEFAULT(INFO) << "Quantize Int8: Completed" << std::endl;
+            if(int8_enable)
+            {
+              migraphx::quantize_int8_options quant_opts;
+              quant_opts.add_calibration_data(quant_params);
+              // specify thing we want to int8 quantize
+              quant_opts.add_op_name("convolution");
+              quant_opts.add_op_name("dot");
+              migraphx::quantize_int8(prog, t, quant_opts);
+              LOGS_DEFAULT(INFO) << "Quantizing input program to fp8: Complete" << std::endl;
+            }
+            else if(fp8_enable)
+            {
+              migraphx::quantize_fp8_options quant_opts;
+              quant_opts.add_calibration_data(quant_params);
+              migraphx::quantize_fp8(prog, t, quant_opts);
+              LOGS_DEFAULT(INFO) << "Quantizing input program to fp8: Complete" << std::endl;
+            }
           }
 
           if (fp16_enable) {
