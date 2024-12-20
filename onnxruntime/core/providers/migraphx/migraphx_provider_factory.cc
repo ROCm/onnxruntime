@@ -99,7 +99,7 @@ struct MIGraphX_Provider : Provider {
     if (options.migraphx_load_model_path != nullptr) {
       info.load_model_file = options.migraphx_load_model_path;
     }
-    info.arena_extend_strategy = options.migraphx_arena_extend_strategy;
+    info.arena_extend_strategy = static_cast<onnxruntime::ArenaExtendStrategy>(options.migraphx_arena_extend_strategy);
     info.mem_limit = options.migraphx_mem_limit;
     return std::make_shared<MIGraphXProviderFactory>(info);
   }
@@ -133,7 +133,7 @@ struct MIGraphX_Provider : Provider {
     migx_options.migraphx_save_model_path = internal_options.save_model_file.c_str();
     migx_options.migraphx_load_compiled_model = internal_options.load_compiled_model;
     migx_options.migraphx_load_model_path = internal_options.load_model_file.c_str();
-    migx_options.migraphx_arena_extend_strategy = internal_options.arena_extend_strategy;
+    migx_options.migraphx_arena_extend_strategy = static_cast<int>(internal_options.arena_extend_strategy);
     migx_options.migraphx_mem_limit = internal_options.mem_limit;
   }
 
