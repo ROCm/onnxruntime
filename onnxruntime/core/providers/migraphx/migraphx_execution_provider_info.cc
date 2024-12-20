@@ -29,11 +29,11 @@ constexpr const char* kSaveModelPath = "migx_save_model_name";
 constexpr const char* kLoadCompiledModel = "migx_load_compiled_model";
 constexpr const char* kLoadModelPath = "migx_load_model_name";
 constexpr const char* kExhaustiveTune = "migx_exhaustive_tune";
-constexpr const char* kMemLimit = "gpu_mem_limit";
-constexpr const char* kArenaExtendStrategy = "arena_extend_strategy";
-constexpr const char* kGpuExternalAlloc = "gpu_external_alloc";
-constexpr const char* kGpuExternalFree = "gpu_external_free";
-constexpr const char* kGpuExternalEmptyCache = "gpu_external_empty_cache";
+constexpr const char* kMemLimit = "migx_mem_limit";
+constexpr const char* kArenaExtendStrategy = "migx_arena_extend_strategy";
+constexpr const char* kGpuExternalAlloc = "migx_external_alloc";
+constexpr const char* kGpuExternalFree = "migx_external_free";
+constexpr const char* kGpuExternalEmptyCache = "migx_external_empty_cache";
 
 }  // namespace provider_option_names
 }  // namespace migraphx
@@ -86,7 +86,7 @@ MIGraphXExecutionProviderInfo MIGraphXExecutionProviderInfo::FromProviderOptions
           .AddAssignmentToReference(migraphx::provider_option_names::kSaveCompiledModel, info.save_compiled_model)
           .AddAssignmentToReference(migraphx::provider_option_names::kLoadCompiledModel, info.load_compiled_model)
           .AddAssignmentToReference(migraphx::provider_option_names::kExhaustiveTune, info.exhaustive_tune)
-          .AddAssignmentToReference(migraphx_provider_option::kMemLimit, info.gpu_mem_limit)
+          .AddAssignmentToReference(migraphx_provider_option::kMemLimit, info.mem_limit)
           .AddAssignmentToEnumReference(migraphx_provider_option::kArenaExtendStrategy, arena_extend_strategy_mapping, info.arena_extend_strategy)
           .Parse(options));
 
@@ -103,7 +103,7 @@ ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions(const MIGraphXE
       {migraphx::provider_option_names::kInt8Enable, MakeStringWithClassicLocale(info.int8_enable)},
       {migraphx::provider_option_names::kSaveCompiledModel, MakeStringWithClassicLocale(info.save_compiled_model)},
       {migraphx::provider_option_names::kLoadCompiledModel, MakeStringWithClassicLocale(info.load_compiled_model)},
-      {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(info.gpu_mem_limit)},
+      {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(info.mem_limit)},
       {migraphx_provider_option::kGpuExternalAlloc, MakeStringWithClassicLocale(reinterpret_cast<size_t>(info.external_allocator_info.alloc))},
       {migraphx_provider_option::kGpuExternalFree, MakeStringWithClassicLocale(reinterpret_cast<size_t>(info.external_allocator_info.free))},
       {migraphx_provider_option::kGpuExternalEmptyCache, MakeStringWithClassicLocale(reinterpret_cast<size_t>(info.external_allocator_info.empty_cache))},
@@ -121,8 +121,8 @@ ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions(const OrtMIGrap
       {migraphx::provider_option_names::kInt8Enable, MakeStringWithClassicLocale(info.migraphx_int8_enable)},
       {migraphx::provider_option_names::kSaveCompiledModel, MakeStringWithClassicLocale(info.migraphx_save_compiled_model)},
       {migraphx::provider_option_names::kLoadCompiledModel, MakeStringWithClassicLocale(info.migraphx_load_compiled_model)},
-      {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(info.gpu_mem_limit)},
-      {migraphx_provider_option::kArenaExtendStrategy, EnumToName(arena_extend_strategy_mapping, static_cast<onnxruntime::ArenaExtendStrategy>(info.arena_extend_strategy))},
+      {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(info.migraphx_mem_limit)},
+      {migraphx_provider_option::kArenaExtendStrategy, EnumToName(arena_extend_strategy_mapping, static_cast<onnxruntime::ArenaExtendStrategy>(info.migraphx_arena_extend_strategy))},
       {migraphx::provider_option_names::kExhaustiveTune, MakeStringWithClassicLocale(info.migraphx_exhaustive_tune)},
   };
   return options;

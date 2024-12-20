@@ -627,7 +627,7 @@ typedef struct OrtMIGraphXProviderOptions {
    *   Defaults to SIZE_MAX.
    *   \note If a ::OrtArenaCfg has been applied, it will override this field
    */
-  size_t gpu_mem_limit;
+  size_t migraphx_mem_limit;
 
   /** \brief Strategy used to grow the memory arena
    *   0 = kNextPowerOfTwo<br>
@@ -635,7 +635,7 @@ typedef struct OrtMIGraphXProviderOptions {
    *   Defaults to 0.
    *   \note If a ::OrtArenaCfg has been applied, it will override this field
    */
-  int arena_extend_strategy;
+  int migraphx_arena_extend_strategy;
 
 } OrtMIGraphXProviderOptions;
 

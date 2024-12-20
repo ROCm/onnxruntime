@@ -51,7 +51,7 @@ struct MIGraphXExecutionProviderInfo {
   std::string load_model_file{"./compiled_model.mxr"};
   bool exhaustive_tune{false};
 
-  size_t gpu_mem_limit{std::numeric_limits<size_t>::max()};                         // Will be over-ridden by contents of `default_memory_arena_cfg` (if specified)
+  size_t mem_limit{std::numeric_limits<size_t>::max()};                         // Will be over-ridden by contents of `default_memory_arena_cfg` (if specified)
   ArenaExtendStrategy arena_extend_strategy{ArenaExtendStrategy::kNextPowerOfTwo};  // Will be over-ridden by contents of `default_memory_arena_cfg` (if specified)
 
   OrtArenaCfg* default_memory_arena_cfg{nullptr};
@@ -80,7 +80,7 @@ struct std::hash<::onnxruntime::MIGraphXExecutionProviderInfo> {
                   (static_cast<size_t>(info.exhaustive_tune) << 24);
     onnxruntime::HashCombine(data, value);
 
-    onnxruntime::HashCombine(info.gpu_mem_limit, value);
+    onnxruntime::HashCombine(info.mem_limit, value);
 
     // Memory pointers
     onnxruntime::HashCombine(reinterpret_cast<size_t>(info.external_allocator_info.alloc), value);
