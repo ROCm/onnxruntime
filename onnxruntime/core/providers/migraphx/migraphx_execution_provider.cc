@@ -210,7 +210,7 @@ MIGraphXExecutionProvider::~MIGraphXExecutionProvider() {
 }
 
 AllocatorPtr MIGraphXExecutionProvider::CreateMIGraphXAllocator(OrtDevice::DeviceId device_id,
-                                                        size_t gpu_mem_limit,
+                                                        size_t migx_mem_limit,
                                                         ArenaExtendStrategy arena_extend_strategy,
                                                         MIGraphXExecutionProviderExternalAllocatorInfo
                                                             external_allocator_info,
@@ -235,7 +235,7 @@ AllocatorPtr MIGraphXExecutionProvider::CreateMIGraphXAllocator(OrtDevice::Devic
         device_id,
         true,
         {default_memory_arena_cfg ? *default_memory_arena_cfg
-                                  : OrtArenaCfg(gpu_mem_limit, static_cast<int>(arena_extend_strategy),
+                                  : OrtArenaCfg(migx_mem_limit, static_cast<int>(arena_extend_strategy),
                                                 -1, -1, -1, -1L)},
         // make it stream aware
         true,

@@ -61,8 +61,8 @@ struct ProviderInfo_MIGraphX_Impl final : ProviderInfo_MIGraphX {
     HIP_CALL_THROW(hipMemcpy(dst, src, count, hipMemcpyDeviceToHost));
   }
 
- std::shared_ptr<IAllocator> CreateMIGraphXAllocator(int16_t device_id, size_t gpu_mem_limit, onnxruntime::ArenaExtendStrategy arena_extend_strategy, onnxruntime::MIGraphXExecutionProviderExternalAllocatorInfo& external_allocator_info, const OrtArenaCfg* default_memory_arena_cfg) override {
-    return MIGraphXExecutionProvider::CreateMIGraphXAllocator(device_id, gpu_mem_limit, arena_extend_strategy, external_allocator_info, default_memory_arena_cfg);
+ std::shared_ptr<IAllocator> CreateMIGraphXAllocator(int16_t device_id, size_t migx_mem_limit, onnxruntime::ArenaExtendStrategy arena_extend_strategy, onnxruntime::MIGraphXExecutionProviderExternalAllocatorInfo& external_allocator_info, const OrtArenaCfg* default_memory_arena_cfg) override {
+    return MIGraphXExecutionProvider::CreateMIGraphXAllocator(device_id, migx_mem_limit, arena_extend_strategy, external_allocator_info, default_memory_arena_cfg);
   }
 } g_info;
 
