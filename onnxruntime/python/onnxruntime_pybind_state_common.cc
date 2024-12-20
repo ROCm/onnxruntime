@@ -43,6 +43,12 @@ onnxruntime::ROCMExecutionProviderExternalAllocatorInfo external_allocator_info{
 onnxruntime::ArenaExtendStrategy arena_extend_strategy = onnxruntime::ArenaExtendStrategy::kNextPowerOfTwo;
 #endif
 
+#ifdef USE_MIGRAPHX
+onnxruntime::MIGraphXExecutionProviderExternalAllocatorInfo external_allocator_info{};
+// TODO remove deprecated global config
+onnxruntime::ArenaExtendStrategy arena_extend_strategy = onnxruntime::ArenaExtendStrategy::kNextPowerOfTwo;
+#endif
+
 #ifdef ENABLE_TRAINING
 
 void DlpackCapsuleDestructor(PyObject* data) {
