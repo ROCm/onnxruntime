@@ -123,6 +123,7 @@ struct OrtStatus {
 #endif
 #ifdef USE_MIGRAPHX
 #include "core/providers/migraphx/migraphx_provider_factory.h"
+#include "core/providers/migraphx/migraphx_execution_provider_info.h"
 #endif
 #ifdef USE_OPENVINO
 #include "core/providers/openvino/openvino_provider_factory.h"
@@ -179,6 +180,17 @@ ProviderInfo_TensorRT& GetProviderInfo_TensorRT();
 namespace onnxruntime {
 ProviderInfo_CANN* TryGetProviderInfo_CANN();
 ProviderInfo_CANN& GetProviderInfo_CANN();
+}  // namespace onnxruntime
+#endif
+
+#ifdef USE_MIGRAPHX
+namespace onnxruntime {
+ProviderInfo_MIGraphX* TryGetProviderInfo_MIGraphX();
+ProviderInfo_MIGraphX& GetProviderInfo_MIGraphX();
+namespace python {
+extern onnxruntime::MIGraphXExecutionProviderExternalAllocatorInfo external_allocator_info;
+extern onnxruntime::ArenaExtendStrategy arena_extend_strategy;
+}  // namespace python
 }  // namespace onnxruntime
 #endif
 

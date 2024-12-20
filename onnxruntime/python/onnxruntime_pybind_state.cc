@@ -836,7 +836,9 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
           "./compiled_model.mxr",
           1,
           "./compiled_model.mxr",
-          1};
+          1,
+          SIZE_MAX,
+          0};
       for (auto option : it->second) {
         if (option.first == "device_id") {
           if (!option.second.empty()) {
