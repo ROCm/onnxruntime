@@ -58,12 +58,12 @@ void addOrtValueMethods(pybind11::module& m) {
 
       // InputDeflist is null because OrtValue creation is not tied to a specific model
       // Likewise, there is no need to specify the name (as the name was previously used to lookup the def list)
-      // TODO: Add check to ensure that string arrays are not passed - we currently don't support string tensors in CUDA
+      // TODO: Add check to ensure that string arrays are not passed - we currently don't support string tensors in ROCm
       CreateGenericMLValue(nullptr, GetRocmAllocator(device.Id()), "", array_on_cpu, ml_value.get(), true, false, CpuToRocmMemCpy);
 #elif USE_MIGRAPHX
       // InputDeflist is null because OrtValue creation is not tied to a specific model
       // Likewise, there is no need to specify the name (as the name was previously used to lookup the def list)
-      // TODO: Add check to ensure that string arrays are not passed - we currently don't support string tensors in CUDA
+      // TODO: Add check to ensure that string arrays are not passed - we currently don't support string tensors in MIGraphX
       CreateGenericMLValue(nullptr, GetMIGraphXAllocator(device.Id()), "", array_on_cpu, ml_value.get(), true, false, CpuToMIGraphXMemCpy);
 #elif USE_DML
       // InputDeflist is null because OrtValue creation is not tied to a specific model
