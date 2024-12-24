@@ -127,8 +127,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
     int8_enable_ = (std::stoi(int8_enable_env) == 0 ? false : true);
   }
 
-  if(int8_enable_ and fp8_enable_)
-  {
+  if (int8_enable_ and fp8_enable_) {
     LOGS_DEFAULT(FATAL) << "MIGraphX: FP8 and INT8 Quantization Mutually exclusive. Ignoring both Quantization flags";
   }
 
@@ -1191,7 +1190,6 @@ void save_compiled_model(migraphx::program& prog, bool save_enable, std::string 
   }
 }
 
-
 // Order matters here especially if the program uses mixed quantization
 // Calibrate on full precision for int8/fp8 and then quantize down to fp16
 void calibrate_and_quantize(migraphx::program& prog,
@@ -1201,8 +1199,7 @@ void calibrate_and_quantize(migraphx::program& prog,
                             bool int8_enable,
                             bool fp8_enable,
                             bool int8_calibration_cache_available,
-                            std::unordered_map<std::string, float>& dynamic_range_map)
-{
+                            std::unordered_map<std::string, float>& dynamic_range_map) {
   // Read in the calibration data and map it to an migraphx paramater map for the calibration ops
   if ((int8_enable xor fp8_enable) && int8_calibration_cache_available) {
     LOGS_DEFAULT(INFO) << "Quantizing input program";
@@ -1216,8 +1213,7 @@ void calibrate_and_quantize(migraphx::program& prog,
     }
 
     // perform static quantization on the programs
-    if(int8_enable)
-    {
+    if (int8_enable) {
       migraphx::quantize_int8_options quant_opts;
       quant_opts.add_calibration_data(quant_params);
       // specify thing we want to int8 quantize
@@ -1225,15 +1221,12 @@ void calibrate_and_quantize(migraphx::program& prog,
       quant_opts.add_op_name("dot");
       migraphx::quantize_int8(prog, t, quant_opts);
       LOGS_DEFAULT(WARNING) << "Quantizing input program to int8: Complete";
-    }
-    else if(fp8_enable)
-    {
+    } else if (fp8_enable) {
       migraphx::quantize_fp8_options quant_opts;
       quant_opts.add_calibration_data(quant_params);
       migraphx::quantize_fp8(prog, t, quant_opts);
       LOGS_DEFAULT(WARNING) << "Quantizing input program to fp8: Complete";
     }
-
   }
 
   if (fp16_enable) {
@@ -1245,8 +1238,7 @@ void calibrate_and_quantize(migraphx::program& prog,
 
 void compile_program(migraphx::program& prog,
                      const migraphx::target& t,
-                     bool exhaustive_tune)
-{
+                     bool exhaustive_tune) {
   LOGS_DEFAULT(INFO) << "Model Compile: Begin";
   migraphx::compile_options co;
   co.set_fast_math(false);
@@ -1298,7 +1290,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         migraphx::program_parameters quant_params;
 
         calibrate_and_quantize(prog, t_, quant_params, fp16_enable_, int8_enable_,
-                              fp8_enable_, int8_calibration_cache_available_, dynamic_range_map_);
+                               fp8_enable_, int8_calibration_cache_available_, dynamic_range_map_);
         compile_program(prog, t_, exhaustive_tune_);
         save_compiled_model(prog, save_compiled_model_, save_compiled_path_);
       }
@@ -1355,7 +1347,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       bool input_shape_match = true;
       migraphx::program_parameter_shapes param_shapes;
       if (no_input_shape) {
-        LOGS_DEFAULT(VERBOSE) << "Missing input shape setting input parameters again";
+        LOGS_DEFAULT(INFO) << "Missing input shape setting input parameters again";
         for (auto& it : map_input_name_index) {
           auto& name = it.first;
           auto& index = it.second;
@@ -1367,7 +1359,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           input_shape_match = false;
         }
       } else {
-        LOGS_DEFAULT(VERBOSE) << "Assigning inputs, and parameters from compiled model";
+        LOGS_DEFAULT(INFO) << "Assigning inputs, and parameters from compiled model";
         param_shapes = prog.get_parameter_shapes();
         auto prog_output_shapes = prog.get_output_shapes();
 
@@ -1402,12 +1394,12 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       // re-compile the program
       if (!input_shape_match) {
         if (!load_precompiled_model(prog, load_compiled_model_, std::string{load_compiled_path_})) {
-          LOGS_DEFAULT(VERBOSE) << "No Input shapes mismatch detected. Recompiling";
+          LOGS_DEFAULT(INFO) << "No Input shapes mismatch detected. Recompiling";
           cmp_options.set_external_data_path(model_path_.parent_path().string());
           prog = migraphx::parse_onnx_buffer(onnx_string, cmp_options);
           migraphx::program_parameters quant_params;
 
-         if((int8_enable xor fp8_enable) and int8_calibration_cache_available) {
+          if ((int8_enable xor fp8_enable) and int8_calibration_cache_available) {
             auto param_shapes = prog.get_parameter_shapes();
             // Add input parameter data and the values they're set to
             for (auto&& name : param_shapes.names()) {
@@ -1429,7 +1421,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             }
           }
           calibrate_and_quantize(prog, t, quant_params, fp16_enable, int8_enable,
-                                fp8_enable, int8_calibration_cache_available, map_dynamic_range);
+                                 fp8_enable, int8_calibration_cache_available, map_dynamic_range);
           compile_program(prog, t, exhaustive_tune_);
           save_compiled_model(prog, mgx_state->save_compiled_mode, mgx_state->save_compiled_path);
         }

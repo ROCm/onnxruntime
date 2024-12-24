@@ -44,7 +44,7 @@ struct MIGraphXFuncState {
   OrtMutex* mgx_mu_ptr = nullptr;
   bool no_input_shape = false;
   bool fp16_enable = false;
-  bool fp8_enable  = false;
+  bool fp8_enable = false;
   bool int8_enable = false;
   bool int8_calibration_cache_available = false;
   std::unordered_map<std::string, float> dynamic_range_map;
@@ -94,7 +94,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
  private:
   MIGraphXExecutionProviderInfo info_;
   bool fp16_enable_ = false;
-  bool fp8_enable_  = false;
+  bool fp8_enable_ = false;
   bool int8_enable_ = false;
   std::string int8_calibration_cache_name_;
   bool int8_calibration_cache_available_ = false;
