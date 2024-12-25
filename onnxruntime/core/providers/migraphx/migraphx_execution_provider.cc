@@ -105,10 +105,59 @@ std::shared_ptr<KernelRegistry> MIGraphXExecutionProvider::GetKernelRegistry() c
 MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProviderInfo& info)
     : IExecutionProvider{onnxruntime::kMIGraphXExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, info.device_id)}, info_(info) {
   InitProviderOrtApi();
+  get_flags_from_session_info(info);
+  metadef_id_generator_ = ModelMetadefIdGenerator::Create();
+  get_flags_from_env();
+}
+
+MIGraphXExecutionProvider::~MIGraphXExecutionProvider() {
+}
+
+void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecutionProviderInfo& info) {
   // Set GPU device to be used
   HIP_CALL_THROW(hipSetDevice(info_.device_id));
   t_ = migraphx::target(info.target_device.c_str());
 
+  // Quantization
+  fp16_enable_ = info.fp16_enable;
+  fp8_enable_ = info.fp8_enable;
+  int8_enable_ = info.int8_enable;
+
+  if (int8_enable_ and fp8_enable_) {
+    LOGS_DEFAULT(FATAL) << "MIGraphX: FP8 and INT8 Quantization Mutually exclusive. Ignoring both Quantization flags";
+  }
+
+  if (int8_enable_ xor fp8_enable_) {
+    int8_calibration_cache_name_ = info.int8_calibration_table_name;
+    int8_use_native_migraphx_calibration_table_ = info.int8_use_native_calibration_table;
+  }
+
+  if (int8_enable_ or fp8_enable_) {
+    int8_calibration_cache_available_ = !info.int8_calibration_table_name.empty();
+  }
+
+  // Load INT8 calibration table
+  std::unordered_map<std::string, float> dynamic_range_map;
+  if ((int8_enable_ || fp8_enable_) && int8_calibration_cache_available_) {
+    const std::string calibration_cache_path = GetCachePath(calibration_cache_path_, int8_calibration_cache_name_);
+    if (!ReadDynamicRange(calibration_cache_path, int8_use_native_migraphx_calibration_table_, dynamic_range_map)) {
+      throw std::runtime_error("Session Failed to read INT8 calibration table " + calibration_cache_path);
+    }
+  }
+
+  // Save/load migraphx compiled models
+  save_compiled_model_ = info.save_compiled_model;
+  save_compiled_path_ = info.save_model_file;
+  load_compiled_model_ = info.load_compiled_model;
+  load_compiled_path_ = info.load_model_file;
+
+  exhaustive_tune_ = info.exhaustive_tune;
+
+  LOGS_DEFAULT(WARNING) << "[MIGraphX EP] MIGraphX provider Session Options:";
+  print_migraphx_ep_flags();
+}
+
+void MIGraphXExecutionProvider::get_flags_from_env() {
   // whether fp16 is enable
   const std::string fp16_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kFP16Enable);
   if (!fp16_enable_env.empty()) {
@@ -160,7 +209,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   if ((int8_enable_ || fp8_enable_) && int8_calibration_cache_available_) {
     const std::string calibration_cache_path = GetCachePath(calibration_cache_path_, int8_calibration_cache_name_);
     if (!ReadDynamicRange(calibration_cache_path, int8_use_native_migraphx_calibration_table_, dynamic_range_map)) {
-      throw std::runtime_error("Failed to read INT8 calibration table " + calibration_cache_path);
+      throw std::runtime_error("ENV Failed to read INT8 calibration table " + calibration_cache_path);
     }
   }
 
@@ -198,10 +247,12 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
     exhaustive_tune_ = (std::stoi(exhaustive_tune_env) == 0 ? false : true);
   }
 
-  metadef_id_generator_ = ModelMetadefIdGenerator::Create();
+  LOGS_DEFAULT(WARNING) << "[MIGraphX EP] MIGraphX provider ENV Variables:";
+  print_migraphx_ep_flags();
+}
 
-  LOGS_DEFAULT(WARNING) << "[MIGraphX EP] MIGraphX provider options:"
-                        << "\n device_id: " << info_.device_id
+void MIGraphXExecutionProvider::print_migraphx_ep_flags() {
+  LOGS_DEFAULT(WARNING) << "\n device_id: " << info_.device_id
                         << "\n migraphx_fp16_enable: " << fp16_enable_
                         << "\n migraphx_fp8_enable: " << fp8_enable_
                         << "\n migraphx_int8_enable: " << int8_enable_
@@ -1167,9 +1218,9 @@ bool get_input_output_names(const GraphViewer& graph,
 bool load_precompiled_model(migraphx::program& prog, bool load_enable, std::string path) {
   try {
     if (load_enable) {
-      LOGS_DEFAULT(INFO) << "Attempting to load model at:" << path;
+      LOGS_DEFAULT(WARNING) << "Attempting to load model at:" << path;
       prog = migraphx::load(path.c_str());
-      LOGS_DEFAULT(INFO) << "load model : Success";
+      LOGS_DEFAULT(WARNING) << "load model : Success";
       return true;
     } else {
       return false;
@@ -1182,11 +1233,11 @@ bool load_precompiled_model(migraphx::program& prog, bool load_enable, std::stri
 
 void save_compiled_model(migraphx::program& prog, bool save_enable, std::string out_path) {
   if (save_enable) {
-    LOGS_DEFAULT(INFO) << "Model Save at " << out_path << ": Begin";
+    LOGS_DEFAULT(WARNING) << "Model Save at " << out_path << ": Begin";
     migraphx::file_options fo;
     fo.set_file_format("msgpack");
     migraphx::save(prog, out_path.c_str(), fo);
-    LOGS_DEFAULT(INFO) << "Model Save: Complete";
+    LOGS_DEFAULT(WARNING) << "Model Save: Complete";
   }
 }
 
@@ -1202,7 +1253,7 @@ void calibrate_and_quantize(migraphx::program& prog,
                             std::unordered_map<std::string, float>& dynamic_range_map) {
   // Read in the calibration data and map it to an migraphx paramater map for the calibration ops
   if ((int8_enable xor fp8_enable) && int8_calibration_cache_available) {
-    LOGS_DEFAULT(INFO) << "Quantizing input program";
+    LOGS_DEFAULT(WARNING) << "Quantizing input program";
 
     auto param_shapes = prog.get_parameter_shapes();
 
@@ -1214,37 +1265,39 @@ void calibrate_and_quantize(migraphx::program& prog,
 
     // perform static quantization on the programs
     if (int8_enable) {
+      LOGS_DEFAULT(WARNING) << "Quantizing input program to int8";
       migraphx::quantize_int8_options quant_opts;
       quant_opts.add_calibration_data(quant_params);
       // specify thing we want to int8 quantize
       quant_opts.add_op_name("convolution");
       quant_opts.add_op_name("dot");
       migraphx::quantize_int8(prog, t, quant_opts);
-      LOGS_DEFAULT(WARNING) << "Quantizing input program to int8: Complete";
+      LOGS_DEFAULT(WARNING) << "Quantizing int8: Complete";
     } else if (fp8_enable) {
+      LOGS_DEFAULT(WARNING) << "Quantizing input program to fp8";
       migraphx::quantize_fp8_options quant_opts;
       quant_opts.add_calibration_data(quant_params);
       migraphx::quantize_fp8(prog, t, quant_opts);
-      LOGS_DEFAULT(WARNING) << "Quantizing input program to fp8: Complete";
+      LOGS_DEFAULT(WARNING) << "Quantizing fp8: Complete";
     }
   }
 
   if (fp16_enable) {
-    LOGS_DEFAULT(INFO) << "Quantizing input program to fp16";
+    LOGS_DEFAULT(WARNING) << "Quantizing input program to fp16";
     migraphx::quantize_fp16(prog);
-    LOGS_DEFAULT(INFO) << "Quantizing input program to fp16: Complete";
+    LOGS_DEFAULT(WARNING) << "Quantizing fp16: Complete";
   }
 }
 
 void compile_program(migraphx::program& prog,
                      const migraphx::target& t,
                      bool exhaustive_tune) {
-  LOGS_DEFAULT(INFO) << "Model Compile: Begin";
+  LOGS_DEFAULT(WARNING) << "Model Compile: Begin";
   migraphx::compile_options co;
   co.set_fast_math(false);
   co.set_exhaustive_tune_flag(exhaustive_tune);
   prog.compile(t, co);
-  LOGS_DEFAULT(INFO) << "Model Compile: Complete";
+  LOGS_DEFAULT(WARNING) << "Model Compile: Complete";
 }
 
 Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& fused_nodes,

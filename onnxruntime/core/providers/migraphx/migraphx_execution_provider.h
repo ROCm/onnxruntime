@@ -62,6 +62,10 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   explicit MIGraphXExecutionProvider(const MIGraphXExecutionProviderInfo& info);
   ~MIGraphXExecutionProvider();
 
+  void get_flags_from_session_info(const MIGraphXExecutionProviderInfo& info);
+  void get_flags_from_env();
+  void print_migraphx_ep_flags();
+
   Status Sync() const override;
 
   Status OnRunStart(const onnxruntime::RunOptions& run_options) override;
