@@ -24,9 +24,9 @@ static const char kINT8CalibrationTableName[] = "ORT_MIGRAPHX_INT8_CALIBRATION_T
 static const char kCachePath[] = "ORT_MIGRAPHX_CACHE_PATH";
 static const char kINT8UseNativeMIGraphXCalibrationTable[] = "ORT_MIGRAPHX_INT8_USE_NATIVE_CALIBRATION_TABLE";
 static const char kSaveCompiledModel[] = "ORT_MIGRAPHX_SAVE_COMPILED_MODEL";
-static const char kSavedModelPath[] = "ORT_MIGRAPHX_SAVE_COMPILE_PATH";
+static const char kSavedModelPath[] = "ORT_MIGRAPHX_SAVE_COMPILED_PATH";
 static const char kLoadCompiledModel[] = "ORT_MIGRAPHX_LOAD_COMPILED_MODEL";
-static const char kLoadModelPath[] = "ORT_MIGRAPHX_LOAD_COMPILE_PATH";
+static const char kLoadModelPath[] = "ORT_MIGRAPHX_LOAD_COMPILED_PATH";
 static const char kExhaustiveTune[] = "ORT_MIGRAPHX_EXHAUSTIVE_TUNE";
 
 };  // namespace migraphx_env_vars
