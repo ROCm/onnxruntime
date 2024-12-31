@@ -74,10 +74,9 @@ struct std::hash<::onnxruntime::MIGraphXExecutionProviderInfo> {
                   (static_cast<size_t>(info.fp16_enable) << 18) ^
                   (static_cast<size_t>(info.int8_enable) << 19) ^
                   (static_cast<size_t>(info.int8_use_native_calibration_table) << 20) ^
-                  (static_cast<size_t>(info.model_cache_enable) << 21) ^
-                  (static_cast<size_t>(info.save_compiled_model) << 22) ^
-                  (static_cast<size_t>(info.load_compiled_model) << 23) ^
-                  (static_cast<size_t>(info.exhaustive_tune) << 24);
+                  (static_cast<size_t>(info.save_compiled_model) << 21) ^
+                  (static_cast<size_t>(info.load_compiled_model) << 22) ^
+                  (static_cast<size_t>(info.exhaustive_tune) << 23);
     onnxruntime::HashCombine(data, value);
 
     onnxruntime::HashCombine(info.mem_limit, value);

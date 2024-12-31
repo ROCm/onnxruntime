@@ -183,17 +183,6 @@ ProviderInfo_CANN& GetProviderInfo_CANN();
 }  // namespace onnxruntime
 #endif
 
-#ifdef USE_MIGRAPHX
-namespace onnxruntime {
-ProviderInfo_MIGraphX* TryGetProviderInfo_MIGraphX();
-ProviderInfo_MIGraphX& GetProviderInfo_MIGraphX();
-namespace python {
-extern onnxruntime::MIGraphXExecutionProviderExternalAllocatorInfo external_allocator_info;
-extern onnxruntime::ArenaExtendStrategy arena_extend_strategy;
-}  // namespace python
-}  // namespace onnxruntime
-#endif
-
 #ifdef USE_ROCM
 namespace onnxruntime {
 ProviderInfo_ROCM* TryGetProviderInfo_ROCM();
@@ -206,9 +195,27 @@ extern bool do_copy_in_default_stream;
 // TODO remove deprecated global config
 extern onnxruntime::rocm::TunableOpInfo tunable_op;
 extern onnxruntime::ROCMExecutionProviderExternalAllocatorInfo external_allocator_info;
+}  // namespace python
+}  // namespace onnxruntime
+#endif
+
+#if defined(USE_ROCM) || defined(USE_MIGRAPHX)
+namespace onnxruntime {
+namespace python {
 extern onnxruntime::ArenaExtendStrategy arena_extend_strategy;
 }  // namespace python
 }  // namespace onnxruntime
+#endif
+
+#ifdef USE_MIGRAPHX
+namespace onnxruntime {
+ProviderInfo_MIGraphX* TryGetProviderInfo_MIGraphX();
+ProviderInfo_MIGraphX& GetProviderInfo_MIGraphX();
+namespace python {
+extern onnxruntime::MIGraphXExecutionProviderExternalAllocatorInfo migx_external_allocator_info;
+}  // namespace python
+}  // namespace onnxruntime
+
 #endif
 
 #include "core/providers/dnnl/dnnl_provider_factory.h"
