@@ -51,7 +51,7 @@ struct MIGraphXExecutionProviderInfo {
   std::string load_model_file{"./compiled_model.mxr"};
   bool exhaustive_tune{false};
 
-  size_t mem_limit{std::numeric_limits<size_t>::max()};                         // Will be over-ridden by contents of `default_memory_arena_cfg` (if specified)
+  size_t mem_limit{std::numeric_limits<size_t>::max()};                             // Will be over-ridden by contents of `default_memory_arena_cfg` (if specified)
   ArenaExtendStrategy arena_extend_strategy{ArenaExtendStrategy::kNextPowerOfTwo};  // Will be over-ridden by contents of `default_memory_arena_cfg` (if specified)
 
   OrtArenaCfg* default_memory_arena_cfg{nullptr};
