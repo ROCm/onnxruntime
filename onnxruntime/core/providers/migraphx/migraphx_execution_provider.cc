@@ -158,26 +158,30 @@ void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecut
 }
 
 void MIGraphXExecutionProvider::get_flags_from_env() {
+  LOGS_DEFAULT(WARNING) << "\n[MIGraphX EP] MIGraphX ENV Override Variables Set:";
   // whether fp16 is enable
   const std::string fp16_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kFP16Enable);
   if (!fp16_enable_env.empty()) {
     fp16_enable_ = (std::stoi(fp16_enable_env) == 0 ? false : true);
+    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_FP16_ENABLE: " << fp16_enable_;
   }
 
   // whether fp8 quantization is enabled
   const std::string fp8_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kFP8Enable);
   if (!fp8_enable_env.empty()) {
     fp8_enable_ = (std::stoi(fp8_enable_env) == 0 ? false : true);
+    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_FP8_ENABLE: " << fp8_enable_;
   }
 
   // whether int8 is enabled
   const std::string int8_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kINT8Enable);
   if (!int8_enable_env.empty()) {
     int8_enable_ = (std::stoi(int8_enable_env) == 0 ? false : true);
+    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_INT8_ENABLE: " << int8_enable_;
   }
 
   if (int8_enable_ and fp8_enable_) {
-    LOGS_DEFAULT(FATAL) << "MIGraphX: FP8 and INT8 Quantization Mutually exclusive. Ignoring both Quantization flags";
+    LOGS_DEFAULT(FATAL) << "\nMIGraphX: FP8 and INT8 Quantization Mutually exclusive. Ignoring both Quantization flags";
   }
 
   if (int8_enable_ || fp8_enable_) {
@@ -185,11 +189,13 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
         onnxruntime::GetEnvironmentVar(migraphx_env_vars::kINT8CalibrationTableName);
     if (!int8_calibration_cache_name_env.empty()) {
       int8_calibration_cache_name_ = int8_calibration_cache_name_env;
+      LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_CALIBRATION_TABLE_NAME: " << int8_calibration_cache_name_;
     }
 
     const std::string cache_path = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kCachePath);
     if (!cache_path.empty()) {
       calibration_cache_path_ = cache_path;
+      LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_CACHE_PATH: " << calibration_cache_path_;
     }
 
     const std::string int8_use_native_migraphx_calibration_table_env =
@@ -197,6 +203,8 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
     if (!int8_use_native_migraphx_calibration_table_env.empty()) {
       int8_use_native_migraphx_calibration_table_ =
           (std::stoi(int8_use_native_migraphx_calibration_table_env) == 0 ? false : true);
+      LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_INT8_USE_NATIVE_CALIBRATION_TABLE: "
+                            << int8_use_native_migraphx_calibration_table_;
     }
   }
 
@@ -209,7 +217,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
   if ((int8_enable_ || fp8_enable_) && int8_calibration_cache_available_) {
     const std::string calibration_cache_path = GetCachePath(calibration_cache_path_, int8_calibration_cache_name_);
     if (!ReadDynamicRange(calibration_cache_path, int8_use_native_migraphx_calibration_table_, dynamic_range_map)) {
-      throw std::runtime_error("ENV Failed to read INT8 calibration table " + calibration_cache_path);
+      throw std::runtime_error("ENV Failed to read calibration table " + calibration_cache_path);
     }
   }
 
@@ -217,38 +225,40 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
   const std::string save_comp_model_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kSaveCompiledModel);
   if (!save_comp_model_env.empty()) {
     save_compiled_model_ = (std::stoi(save_comp_model_env) == 0 ? false : true);
+    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_SAVE_COMPILED_MODEL: " << save_compiled_model_;
   }
 
   const std::string save_model_path_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kSavedModelPath);
-
   if (save_compiled_model_ && !save_model_path_env.empty()) {
     save_compiled_path_ = save_model_path_env;
+    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_SAVE_COMPILED_PATH: " << save_compiled_path_;
   }
 
   const std::string load_comp_model_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kLoadCompiledModel);
   if (!load_comp_model_env.empty()) {
     load_compiled_model_ = (std::stoi(load_comp_model_env) == 0 ? false : true);
+    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_LOAD_COMPILED_MODEL: " << load_compiled_model_;
   }
 
   const std::string load_model_path_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kLoadModelPath);
   if (load_compiled_model_ && !load_model_path_env.empty()) {
     load_compiled_path_ = load_model_path_env;
+    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_LOAD_COMPILED_PATH: " << load_compiled_path_;
   }
 
   // dump unsupported ops
   const std::string dump_model_ops_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::dumpModelOps);
   if (!dump_model_ops_env.empty()) {
     dump_model_ops_ = (std::stoi(dump_model_ops_env) == 0 ? false : true);
+    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_DUMP_MODEL_OPS: " << dump_model_ops_;
   }
 
   // Allow for exhaustive tune during compile
   const std::string exhaustive_tune_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kExhaustiveTune);
   if (!exhaustive_tune_env.empty()) {
     exhaustive_tune_ = (std::stoi(exhaustive_tune_env) == 0 ? false : true);
+    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_EXHAUSTIVE_TUNE_OPS: " << exhaustive_tune_;
   }
-
-  LOGS_DEFAULT(WARNING) << "[MIGraphX EP] MIGraphX provider ENV Variables:";
-  print_migraphx_ep_flags();
 }
 
 void MIGraphXExecutionProvider::print_migraphx_ep_flags() {
@@ -265,9 +275,6 @@ void MIGraphXExecutionProvider::print_migraphx_ep_flags() {
                         << "\n migraphx_save_compiled_model_path: " << save_compiled_path_
                         << "\n migraphx_load_compiled_model: " << load_compiled_model_
                         << "\n migraphx_load_compiled_model_path: " << load_compiled_path_;
-}
-
-MIGraphXExecutionProvider::~MIGraphXExecutionProvider() {
 }
 
 AllocatorPtr MIGraphXExecutionProvider::CreateMIGraphXAllocator(OrtDevice::DeviceId device_id,
