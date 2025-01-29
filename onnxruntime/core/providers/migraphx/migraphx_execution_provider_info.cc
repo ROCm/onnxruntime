@@ -73,14 +73,14 @@ MIGraphXExecutionProviderInfo MIGraphXExecutionProviderInfo::FromProviderOptions
           .AddAssignmentToEnumReference(migraphx_provider_option::kArenaExtendStrategy, arena_extend_strategy_mapping, info.arena_extend_strategy)
           .Parse(options));
 
-  MIGraphXExecutionProviderExternalAllocatorInfo alloc_info{alloc, free, empty_cache};
+  const MIGraphXExecutionProviderExternalAllocatorInfo alloc_info{alloc, free, empty_cache};
   info.external_allocator_info = alloc_info;
 
   return info;
 }
 
 ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions(const MIGraphXExecutionProviderInfo& info) {
-  const ProviderOptions options{
+  return {
       {migraphx_provider_option::kDeviceId, MakeStringWithClassicLocale(info.device_id)},
       {migraphx_provider_option::kFp16Enable, MakeStringWithClassicLocale(info.fp16_enable)},
       {migraphx_provider_option::kFp8Enable, MakeStringWithClassicLocale(info.fp8_enable)},
@@ -91,17 +91,16 @@ ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions(const MIGraphXE
       {migraphx_provider_option::kCacheDir, MakeStringWithClassicLocale(info.cache_dir)},
       {migraphx_provider_option::kDumpModelOps, MakeStringWithClassicLocale(info.dump_model_ops)},
       {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(info.mem_limit)},
-      {migraphx_provider_option::kGpuExternalAlloc, MakeStringWithClassicLocale(reinterpret_cast<size_t>(info.external_allocator_info.alloc))},
-      {migraphx_provider_option::kGpuExternalFree, MakeStringWithClassicLocale(reinterpret_cast<size_t>(info.external_allocator_info.free))},
-      {migraphx_provider_option::kGpuExternalEmptyCache, MakeStringWithClassicLocale(reinterpret_cast<size_t>(info.external_allocator_info.empty_cache))},
+      {migraphx_provider_option::kGpuExternalAlloc, MakeStringWithClassicLocale(info.external_allocator_info.alloc)},
+      {migraphx_provider_option::kGpuExternalFree, MakeStringWithClassicLocale(info.external_allocator_info.free)},
+      {migraphx_provider_option::kGpuExternalEmptyCache, MakeStringWithClassicLocale(info.external_allocator_info.empty_cache)},
       {migraphx_provider_option::kArenaExtendStrategy, EnumToName(arena_extend_strategy_mapping, info.arena_extend_strategy)},
       {migraphx_provider_option::kExhaustiveTune, MakeStringWithClassicLocale(info.exhaustive_tune)},
   };
-  return options;
 }
 
 ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions(const OrtMIGraphXProviderOptions& info) {
-  const ProviderOptions options{
+  return {
       {migraphx_provider_option::kDeviceId, MakeStringWithClassicLocale(info.device_id)},
       {migraphx_provider_option::kFp16Enable, MakeStringWithClassicLocale(info.migraphx_fp16_enable)},
       {migraphx_provider_option::kFp8Enable, MakeStringWithClassicLocale(info.migraphx_fp8_enable)},
@@ -112,12 +111,12 @@ ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions(const OrtMIGrap
       {migraphx_provider_option::kCacheDir, MakeStringWithClassicLocale(info.migraphx_cache_dir)},
       {migraphx_provider_option::kDumpModelOps, MakeStringWithClassicLocale(info.migraphx_dump_model_ops)},
       {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(info.migraphx_mem_limit)},
-      {migraphx_provider_option::kArenaExtendStrategy, EnumToName(arena_extend_strategy_mapping, static_cast<onnxruntime::ArenaExtendStrategy>(info.migraphx_arena_extend_strategy))},
+      {migraphx_provider_option::kArenaExtendStrategy, EnumToName(arena_extend_strategy_mapping, static_cast<ArenaExtendStrategy>(info.migraphx_arena_extend_strategy))},
       {migraphx_provider_option::kExhaustiveTune, MakeStringWithClassicLocale(info.migraphx_exhaustive_tune)},
       {migraphx_provider_option::kGpuExternalAlloc, MakeStringWithClassicLocale(info.migraphx_gpu_external_alloc)},
       {migraphx_provider_option::kGpuExternalFree, MakeStringWithClassicLocale(info.migraphx_gpu_external_free)},
       {migraphx_provider_option::kGpuExternalEmptyCache, MakeStringWithClassicLocale(info.migraphx_gpu_external_empty_cache)}
   };
-  return options;
 }
+
 }  // namespace onnxruntime

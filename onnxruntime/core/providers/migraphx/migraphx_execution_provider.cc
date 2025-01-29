@@ -115,141 +115,107 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
       metadef_id_generator_{ModelMetadefIdGenerator::Create()}
 {
   InitProviderOrtApi();
-  get_flags_from_session_info(info);
-  get_flags_from_env();
-}
 
-void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecutionProviderInfo& info) {
-  // Set GPU device to be used
-  HIP_CALL_THROW(hipSetDevice(device_id_));
-  t_ = migraphx::target(info.target_device.c_str());
+  auto int8_enable_env = GetEnvironmentVar(migraphx_env_vars::kINT8Enable);
+  if (!int8_enable_env.empty()) {
+    int8_enable_ = std::stoi(int8_enable_env) != 0;
+    LOGS_DEFAULT(VERBOSE) << migraphx_env_vars::kINT8Enable << ": " << int8_enable_env;
+  }
 
-#if HIP_VERSION_MAJOR < 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR < 4)
-  LOGS_DEFAULT(WARNING) << "MIGraphX: FP8 Quantization requires ROCm 6.4 or greater";
-  fp8_enable_ = false;
-#endif
+  auto fp8_enable_env = GetEnvironmentVar(migraphx_env_vars::kFP8Enable);
+  if (!fp8_enable_env.empty()) {
+    fp8_enable_ = std::stoi(fp8_enable_env) != 0;
+    LOGS_DEFAULT(VERBOSE) << migraphx_env_vars::kFP8Enable << ": " << fp8_enable_env;
+  }
+
+  auto fp16_enable_env = GetEnvironmentVar(migraphx_env_vars::kFP16Enable);
+  if (!fp16_enable_env.empty()) {
+    fp16_enable_ = std::stoi(fp16_enable_env) != 0;
+    LOGS_DEFAULT(WARNING) << migraphx_env_vars::kFP16Enable << ": " << fp16_enable_env;
+  }
 
   if (int8_enable_ and fp8_enable_) {
     LOGS_DEFAULT(FATAL) << "MIGraphX: FP8 and INT8 Quantization Mutually exclusive. Ignoring both Quantization flags";
   }
 
-  if (int8_enable_ xor fp8_enable_) {
-    int8_calibration_cache_name_ = info.int8_calibration_table_name;
-    int8_use_native_migraphx_calibration_table_ = info.int8_use_native_calibration_table;
+  auto int8_calibration_cache_name_env = GetEnvironmentVar(migraphx_env_vars::kINT8CalibrationTableName);
+  if (!int8_calibration_cache_name_env.empty()) {
+      LOGS_DEFAULT(VERBOSE) << migraphx_env_vars::kINT8CalibrationTableName << ": " << int8_calibration_cache_name_env;
   }
 
-  if (int8_enable_ or fp8_enable_) {
-    int8_calibration_cache_available_ = !info.int8_calibration_table_name.empty();
+  auto cache_path_env = GetEnvironmentVar(migraphx_env_vars::kINT8CachePath);
+  if (!cache_path_env.empty()) {
+      LOGS_DEFAULT(VERBOSE) << migraphx_env_vars::kINT8CachePath << ": " << cache_path_env;
   }
 
-  // Load INT8 calibration table
-  std::unordered_map<std::string, float> dynamic_range_map;
-  if ((int8_enable_ || fp8_enable_) && int8_calibration_cache_available_) {
-    auto calibration_cache_path = GetCachePath(int8_calibration_cache_path_, int8_calibration_cache_name_);
-    if (!ReadDynamicRange(calibration_cache_path, int8_use_native_migraphx_calibration_table_, dynamic_range_map)) {
-      throw std::runtime_error("Session Failed to read INT8 calibration table " + calibration_cache_path.string());
-    }
-  }
-
-  cache_dir_ = info.cache_dir;
-  exhaustive_tune_ = info.exhaustive_tune;
-
-  LOGS_DEFAULT(WARNING) << "[MIGraphX EP] MIGraphX provider Session Options:";
-  print_migraphx_ep_flags();
-}
-
-void MIGraphXExecutionProvider::get_flags_from_env() {
-  LOGS_DEFAULT(WARNING) << "\n[MIGraphX EP] MIGraphX ENV Override Variables Set:";
-  // whether fp16 is enabled
-  const std::string fp16_enable_env = GetEnvironmentVar(migraphx_env_vars::kFP16Enable);
-  if (!fp16_enable_env.empty()) {
-    fp16_enable_ = std::stoi(fp16_enable_env) != 0;
-    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_FP16_ENABLE: " << fp16_enable_;
-  }
-
-  // whether fp8 quantization is enabled
-  const std::string fp8_enable_env = GetEnvironmentVar(migraphx_env_vars::kFP8Enable);
-  if (!fp8_enable_env.empty()) {
+  auto int8_use_native_migraphx_calibration_table_env = GetEnvironmentVar(migraphx_env_vars::kINT8UseNativeMIGraphXCalibrationTable);
+  if (!int8_use_native_migraphx_calibration_table_env.empty()) {
 #if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR >= 4)
-    fp8_enable_ = (std::stoi(fp8_enable_env) == 0 ? false : true);
-    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_FP8_ENABLE: " << fp8_enable_;
+      LOGS_DEFAULT(WARNING) << migraphx_env_vars::kINT8UseNativeMIGraphXCalibrationTable << ": "
+                            << int8_use_native_migraphx_calibration_table_env;
 #else
     LOGS_DEFAULT(WARNING) << "MIGraphX: FP8 Quantization requires ROCm 6.4 or greater";
     fp8_enable_ = false;
 #endif
   }
 
-  // whether int8 is enabled
-  const std::string int8_enable_env = GetEnvironmentVar(migraphx_env_vars::kINT8Enable);
-  if (!int8_enable_env.empty()) {
-    int8_enable_ = std::stoi(int8_enable_env) != 0;
-    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_INT8_ENABLE: " << int8_enable_;
+  auto exhaustive_tune_env = GetEnvironmentVar(migraphx_env_vars::kExhaustiveTune);
+  if (!exhaustive_tune_env.empty()) {
+    exhaustive_tune_ = std::stoi(exhaustive_tune_env) != 0;
+    LOGS_DEFAULT(WARNING) << migraphx_env_vars::kExhaustiveTune << ": " << exhaustive_tune_env;
   }
 
-  if (int8_enable_ and fp8_enable_) {
-    LOGS_DEFAULT(FATAL) << "\nMIGraphX: FP8 and INT8 Quantization Mutually exclusive. Ignoring both Quantization flags";
-  }
-
-  if (int8_enable_ || fp8_enable_) {
-    const std::string int8_calibration_cache_name_env = GetEnvironmentVar(migraphx_env_vars::kINT8CalibrationTableName);
-    if (!int8_calibration_cache_name_env.empty()) {
+  // Quantization
+  if (int8_enable_ xor fp8_enable_) {
+    if (int8_calibration_cache_name_env.empty()) {
+      int8_calibration_cache_name_ = info.int8_calibration_table_name;
+    } else {
       int8_calibration_cache_name_ = int8_calibration_cache_name_env;
-      LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_CALIBRATION_TABLE_NAME: " << int8_calibration_cache_name_;
     }
-
-    auto cache_path = GetEnvironmentVar(migraphx_env_vars::kINT8CachePath);
-    if (!cache_path.empty()) {
-      int8_calibration_cache_path_ = cache_path;
-      LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_CACHE_PATH: " << int8_calibration_cache_path_;
+    if (int8_calibration_cache_name_.empty()) {
+      int8_use_native_migraphx_calibration_table_ = info.int8_use_native_calibration_table;
+    } else {
+      int8_use_native_migraphx_calibration_table_ = std::stoi(int8_use_native_migraphx_calibration_table_env) != 0;
     }
-
-    const std::string int8_use_native_migraphx_calibration_table_env =
-        GetEnvironmentVar(migraphx_env_vars::kINT8UseNativeMIGraphXCalibrationTable);
-    if (!int8_use_native_migraphx_calibration_table_env.empty()) {
-      int8_use_native_migraphx_calibration_table_ =
-          (std::stoi(int8_use_native_migraphx_calibration_table_env) != 0);
-      LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_INT8_USE_NATIVE_CALIBRATION_TABLE: "
-                            << int8_use_native_migraphx_calibration_table_;
+    if (!cache_path_env.empty()) {
+      int8_calibration_cache_path_ = cache_path_env;
+    } else {
+      int8_calibration_cache_path_ = info.int8_calibration_cache_dir;
     }
-  }
+    int8_calibration_cache_available_ = !int8_calibration_cache_name_.empty() and !int8_calibration_cache_path_.empty();
 
-  if (int8_enable_ or fp8_enable_) {
-    int8_calibration_cache_available_ = !int8_calibration_cache_name_.empty();
-  }
-
-  // Load INT8 calibration table
-  std::unordered_map<std::string, float> dynamic_range_map;
-  if ((int8_enable_ || fp8_enable_) && int8_calibration_cache_available_) {
-    auto calibration_cache_path = GetCachePath(int8_calibration_cache_path_, int8_calibration_cache_name_);
-    if (!ReadDynamicRange(calibration_cache_path, int8_use_native_migraphx_calibration_table_, dynamic_range_map)) {
-      throw std::runtime_error("ENV Failed to read calibration table " + calibration_cache_path.string());
+    // Load INT8 calibration table
+    if (int8_calibration_cache_available_) {
+      auto calibration_cache_path = GetCachePath(int8_calibration_cache_path_, int8_calibration_cache_name_);
+      std::unordered_map<std::string, float> dynamic_range_map;
+      if (!ReadDynamicRange(calibration_cache_path, int8_use_native_migraphx_calibration_table_, dynamic_range_map)) {
+        throw std::runtime_error("Failed to read INT8 calibration table: " + calibration_cache_path.string());
+      }
     }
   }
 
   // Save/load migraphx compiled models
-  const std::string cache_dir_env = GetEnvironmentVar(migraphx_env_vars::kCacheDir);
-  if (!cache_dir_env.empty()) {
-    cache_dir_ = cache_dir_env;
-    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_SAVE_COMPILED_MODEL: " << cache_dir_env;
+  if (cache_dir_.empty()) {
+    auto cache_dir_env = GetEnvironmentVar(migraphx_env_vars::kCacheDir);
+    if (!cache_dir_env.empty()) {
+      cache_dir_ = cache_dir_env;
+      LOGS_DEFAULT(WARNING) << migraphx_env_vars::kCacheDir << ": " << cache_dir_env;
+    }
   }
 
   // dump unsupported ops
-  const std::string dump_model_ops_env = GetEnvironmentVar(migraphx_env_vars::kDumpModelOps);
+  auto dump_model_ops_env = GetEnvironmentVar(migraphx_env_vars::kDumpModelOps);
   if (!dump_model_ops_env.empty()) {
     dump_model_ops_ = std::stoi(dump_model_ops_env) != 0;
-    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_DUMP_MODEL_OPS: " << dump_model_ops_;
+    LOGS_DEFAULT(WARNING) << migraphx_env_vars::kDumpModelOps << ": " << dump_model_ops_env;
   }
 
-  // Allow for exhaustive tune during compile
-  const std::string exhaustive_tune_env = GetEnvironmentVar(migraphx_env_vars::kExhaustiveTune);
-  if (!exhaustive_tune_env.empty()) {
-    exhaustive_tune_ = std::stoi(exhaustive_tune_env) != 0;
-    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_EXHAUSTIVE_TUNE_OPS: " << exhaustive_tune_;
-  }
-}
+  // Set GPU device to be used
+  HIP_CALL_THROW(hipSetDevice(device_id_));
+  t_ = migraphx::target(info.target_device.c_str());
 
-void MIGraphXExecutionProvider::print_migraphx_ep_flags() {
-  LOGS_DEFAULT(WARNING) << "\n " << migraphx_provider_option::kDeviceId << ": " << device_id_
+  LOGS_DEFAULT(VERBOSE) << "[MIGraphX EP] MIGraphX provider Session Options:"
+                        << "\n " << migraphx_provider_option::kDeviceId << ": " << device_id_
                         << "\n " << migraphx_provider_option::kFp16Enable << ": " << fp16_enable_
                         << "\n " << migraphx_provider_option::kFp8Enable << ": " << fp8_enable_
                         << "\n " << migraphx_provider_option::kInt8Enable << ": " << int8_enable_
@@ -301,14 +267,14 @@ AllocatorPtr MIGraphXExecutionProvider::CreateMIGraphXAllocator(OrtDevice::Devic
 }
 
 std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators() {
-  AllocatorCreationInfo default_memory_info(
+  const AllocatorCreationInfo default_memory_info(
       [](OrtDevice::DeviceId device_id) { return std::make_unique<MIGraphXAllocator>(device_id, CUDA); }, device_id_);
-  AllocatorCreationInfo pinned_allocator_info(
+  const AllocatorCreationInfo pinned_allocator_info(
       [](OrtDevice::DeviceId device_id) {
-        return std::make_unique<MIGraphXPinnedAllocator>(device_id, onnxruntime::CUDA_PINNED);
+        return std::make_unique<MIGraphXPinnedAllocator>(device_id, CUDA_PINNED);
       },
       0);
-  return std::vector{CreateAllocator(default_memory_info), CreateAllocator(pinned_allocator_info)};
+  return {CreateAllocator(default_memory_info), CreateAllocator(pinned_allocator_info)};
 }
 
 std::unique_ptr<IDataTransfer> MIGraphXExecutionProvider::GetDataTransfer() const {
@@ -464,8 +430,7 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
     auto dila_attr = attributes.find("dilations");
     if (dila_attr != attributes.end()) {
       auto dilas = toVector((*dila_attr).second.ints());
-      bool ret = std::all_of(dilas.begin(), dilas.end(), [](auto i) { return i == 1; });
-      if (ret == false) {
+      if (bool ret = std::all_of(dilas.begin(), dilas.end(), [](auto i) { return i == 1; }); ret == false) {
         return true;
       }
     }
@@ -506,10 +471,9 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
       return true;
     }
   } else if (optype == "Pad") {
-    const auto& args = node->InputDefs();
     // if pad size is not constant, migraphx cannot support
-    if (args.size() >= 2) {
-      if (!canEvalNodeArgument(graph_viewer, node, {1}, input_nodes)) {
+    if (const auto& args = node->InputDefs(); args.size() >= 2) {
+      if (!canEvalNodeArgument(graph_viewer, node, {1}, input_nodes))
         return true;
       }
     }
@@ -528,11 +492,9 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
 
     // input value only applied to constant mode
     if (mode == "constant") {
-      if (args.size() == 3) {
-        if (!canEvalNodeArgument(graph_viewer, node, {2}, input_nodes)) {
+    if (const auto& args = node->InputDefs(); args.size() == 3) {
+        if (!canEvalNodeArgument(graph_viewer, node, {2}, input_nodes))
           return true;
-        }
-      }
     }
   } else if (optype == "Range") {
     auto arg_num = node->InputDefs().size();
@@ -542,33 +504,27 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
       return true;
     }
   } else if (optype == "Reshape") {
-    const auto& args = node->InputDefs();
-    if (args.size() == 2) {
+    if (const auto& args = node->InputDefs(); args.size() == 2) {
       if (canEvalNodeArgument(graph_viewer, node, {1}, input_nodes)) {
         return false;
       }
       return true;
     }
   } else if (optype == "Resize" or optype == "Upsample") {
-    const auto& attributes = node->GetAttributes();
-    auto ct_attr = attributes.find("coordinate_transformation_mode");
-    if (ct_attr != attributes.end()) {
-      auto ct = (*ct_attr).second.s();
-      if (ct == "tf_crop_and_resize") {
+    const auto& attrs = node->GetAttributes();
+    if (auto ct_attr = attrs.find("coordinate_transformation_mode"); ct_attr != attrs.end()) {
+      if (auto ct = (*ct_attr).second.s(); ct == "tf_crop_and_resize") {
         return true;
       }
     }
 
-    auto mode_attr = attributes.find("mode");
-    if (mode_attr != attributes.end()) {
-      auto mode = (*mode_attr).second.s();
-      if (mode == "cubic") {
+    if (auto local_mode_attr = attrs.find("mode"); local_mode_attr != attrs.end()) {
+      if (auto local_mode = (*local_mode_attr).second.s(); local_mode == "cubic") {
         return true;
       }
     }
   } else if (optype == "ReduceSum") {
-    const auto& args = node->InputDefs();
-    if (args.size() == 2) {
+    if (const auto& args = node->InputDefs(); args.size() == 2) {
       if (canEvalNodeArgument(graph_viewer, node, {1}, input_nodes)) {
         return false;
       }
@@ -586,10 +542,10 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
       return true;
     }
 
-    const auto& attributes = node->GetAttributes();
-    if (attributes.count("starts") > 0 and attributes.count("ends") > 0) {
-      auto starts = toVector((*attributes.find("starts")).second.ints());
-      auto ends = toVector((*attributes.find("ends")).second.ints());
+    const auto& local_attributes = node->GetAttributes();
+    if (local_attributes.count("starts") > 0 and local_attributes.count("ends") > 0) {
+      auto starts = toVector((*local_attributes.find("starts")).second.ints());
+      auto ends = toVector((*local_attributes.find("ends")).second.ints());
       for (std::size_t i = 0; i < starts.size(); ++i) {
         if (starts.at(i) > ends.at(i)) {
           return true;
@@ -598,8 +554,7 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
     }
   } else if (optype == "Split") {
     // cannot process input dim of 0 size
-    const auto arg_s = node->InputDefs()[0]->Shape();
-    if (arg_s != nullptr) {
+    if (const auto arg_s = node->InputDefs()[0]->Shape(); arg_s != nullptr) {
       const auto& tensor_dims = arg_s->dim();
       std::vector<std::size_t> dims;
       for (auto&& dim : tensor_dims) {
@@ -610,8 +565,7 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
       }
     }
 
-    const auto& args = node->InputDefs();
-    if (args.size() == 2) {
+    if (const auto& args = node->InputDefs(); args.size() == 2) {
       if (canEvalNodeArgument(graph_viewer, node, {1}, input_nodes)) {
         return false;
       }
@@ -626,8 +580,7 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
       return true;
     }
   } else if (optype == "Unsqueeze" or optype == "Squeeze") {
-    const auto& args = node->InputDefs();
-    if (args.size() == 2) {
+    if (const auto& args = node->InputDefs(); args.size() == 2) {
       if (canEvalNodeArgument(graph_viewer, node, {1}, input_nodes)) {
         return false;
       }
@@ -1210,9 +1163,9 @@ bool get_input_output_names(const GraphViewer& graph,
 bool load_precompiled_model(migraphx::program& prog, const std::filesystem::path& path)
   try {
     if (!path.empty() && exists(path)) {
-      LOGS_DEFAULT(WARNING) << "Attempting to load model at:" << path;
+      LOGS_DEFAULT(VERBOSE) << "Attempting to load model at:" << path;
       prog = migraphx::load(path.string().c_str());
-      LOGS_DEFAULT(WARNING) << "load model : Success";
+      LOGS_DEFAULT(VERBOSE) << "load model : Success";
       return true;
     }
     return false;
@@ -1222,11 +1175,11 @@ bool load_precompiled_model(migraphx::program& prog, const std::filesystem::path
 
 void save_compiled_model(const migraphx::program& prog, const std::filesystem::path& path) {
   if (!path.empty() && exists(path.parent_path())) {
-    LOGS_DEFAULT(WARNING) << "Model Save at " << path << ": Begin";
+    LOGS_DEFAULT(VERBOSE) << "Model Save at " << path << ": Begin";
     migraphx::file_options fo;
     fo.set_file_format("msgpack");
-    migraphx::save(prog, path.string().c_str(), fo);
-    LOGS_DEFAULT(WARNING) << "Model Save: Complete";
+    save(prog, path.string().c_str(), fo);
+    LOGS_DEFAULT(VERBOSE) << "Model Save: Complete";
   }
 }
 
@@ -1404,11 +1357,11 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     map_no_input_shape_[fused_node.Name()] = no_input_shape;
     NodeComputeInfo compute_info;
     compute_info.create_state_func = [=](ComputeContext* context, FunctionState* state) {
-      std::unique_ptr<MIGraphXFuncState> p = std::make_unique<MIGraphXFuncState>();
+      auto p = std::make_unique<MIGraphXFuncState>();
       *p = {context->allocate_func, context->release_func, context->allocator_handle, map_progs_[context->node_name],
             map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_mu_,
             map_no_input_shape_[context->node_name], fp16_enable_, fp8_enable_, int8_enable_,
-            int8_calibration_cache_available_, int8_calibration_cache_path_, cache_dir_, dynamic_range_map_, dump_model_ops_};
+            int8_calibration_cache_available_, int8_calibration_cache_path_, cache_dir_, dynamic_range_map_, dump_model_ops_, exhaustive_tune_};
       *state = p.release();
       return 0;
     };
@@ -1420,7 +1373,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
     compute_info.compute_func = [this, model_cache_file](FunctionState state, const OrtApi* api, OrtKernelContext* context) {
       Ort::KernelContext ctx(context);
-      MIGraphXFuncState* mgx_state = reinterpret_cast<MIGraphXFuncState*>(state);
+      auto* mgx_state = static_cast<MIGraphXFuncState*>(state);
 
       std::unordered_map<std::string, std::size_t>& map_input_name_index = mgx_state->input_name_indexes;
       std::unordered_map<std::string, float>& map_dynamic_range = mgx_state->dynamic_range_map;
@@ -1439,7 +1392,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       bool input_shape_match = true;
       migraphx::program_parameter_shapes param_shapes;
       if (no_input_shape) {
-        LOGS_DEFAULT(INFO) << "Missing input shape setting input parameters again";
+        LOGS_DEFAULT(VERBOSE) << "Missing input shape setting input parameters again";
         for (auto& it : map_input_name_index) {
           auto& name = it.first;
           auto& index = it.second;
@@ -1451,7 +1404,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           input_shape_match = false;
         }
       } else {
-        LOGS_DEFAULT(INFO) << "Assigning inputs, and parameters from compiled model";
+        LOGS_DEFAULT(VERBOSE) << "Assigning inputs, and parameters from compiled model";
         param_shapes = prog.get_parameter_shapes();
         auto prog_output_shapes = prog.get_output_shapes();
 
@@ -1482,11 +1435,11 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         }
       }
 
-      // input shapes are different, needs to re-parse onnx and
+      // input shapes are different, needs to reparse onnx and
       // re-compile the program
       if (!input_shape_match) {
         if (!load_precompiled_model(prog, model_cache_file)) {
-          LOGS_DEFAULT(VERBOSE) << "Input shape mismatch detected. Recompiling" << std::endl;
+          LOGS_DEFAULT(VERBOSE) << "Input shape mismatch detected. Recompiling";
 #ifndef ENABLE_TRAINING_CORE
 #ifdef HAVE_MIGRAPHX_API_ONNX_OPTIONS_SET_EXTERNAL_DATA_PATH
           cmp_options.set_external_data_path(model_path_.parent_path().string());
@@ -1608,7 +1561,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
                                                static_cast<hipStream_t>(rocm_stream)));
           }
         }
-      };
+      }
 
       return Status::OK();
     };
