@@ -23,10 +23,7 @@ constexpr auto kDumpModelOps = "ORT_MIGRAPHX_DUMP_MODEL_OPS";
 constexpr auto kINT8CalibrationTableName = "ORT_MIGRAPHX_INT8_CALIBRATION_TABLE_NAME";
 constexpr auto kCachePath = "ORT_MIGRAPHX_CACHE_PATH";
 constexpr auto kINT8UseNativeMIGraphXCalibrationTable = "ORT_MIGRAPHX_INT8_USE_NATIVE_CALIBRATION_TABLE";
-constexpr auto kSaveCompiledModel = "ORT_MIGRAPHX_SAVE_COMPILED_MODEL";
-constexpr auto kSavedModelPath = "ORT_MIGRAPHX_SAVE_COMPILED_PATH";
-constexpr auto kLoadCompiledModel = "ORT_MIGRAPHX_LOAD_COMPILED_MODEL";
-constexpr auto kLoadModelPath = "ORT_MIGRAPHX_LOAD_COMPILED_PATH";
+constexpr auto kCacheDir = "ORT_MIGRAPHX_MODEL_CACHE_PATH";
 constexpr auto kExhaustiveTune = "ORT_MIGRAPHX_EXHAUSTIVE_TUNE";
 
 }  // namespace migraphx_env_vars
@@ -47,11 +44,8 @@ struct MIGraphXFuncState {
   bool fp8_enable = false;
   bool int8_enable = false;
   bool int8_calibration_cache_available = false;
+  std::filesystem::path cache_dir;
   std::unordered_map<std::string, float> dynamic_range_map;
-  bool save_compiled_mode = false;
-  std::string save_compiled_path;
-  bool load_compiled_mode = false;
-  std::string load_compiled_path;
   bool dump_model_ops = false;
   bool exhaustive_tune = false;
 };
@@ -113,10 +107,8 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   bool int8_use_native_migraphx_calibration_table_ = false;
   std::string calibration_cache_path_;
   std::unordered_map<std::string, float> dynamic_range_map_;
-  bool save_compiled_model_ = false;
-  std::string save_compiled_path_;
-  bool load_compiled_model_ = false;
-  std::string load_compiled_path_;
+  std::filesystem::path cache_dir_{};
+  std::set<std::string> session_input_names{};
   bool dump_model_ops_ = false;
   migraphx::target t_;
   std::mutex mgx_mu_;
