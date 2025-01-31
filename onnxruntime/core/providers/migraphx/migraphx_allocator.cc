@@ -4,15 +4,13 @@
 #include "core/providers/shared_library/provider_api.h"
 #include "migraphx_call.h"
 #include "migraphx_allocator.h"
-#include "core/common/status.h"
 #include "core/framework/float16.h"
-#include "core/common/status.h"
 #include "gpu_data_transfer.h"
 
 namespace onnxruntime {
 
+#ifdef _DEBUG
 void MIGraphXAllocator::CheckDevice() const {
-#ifndef NDEBUG
   // check device to match at debug build
   // if it's expected to change, call hipSetDevice instead of the check
   int current_device;
@@ -20,11 +18,13 @@ void MIGraphXAllocator::CheckDevice() const {
   if (hip_err == hipSuccess) {
     ORT_ENFORCE(current_device == Info().id);
   }
-#endif
 }
+#endif
 
 void* MIGraphXAllocator::Alloc(size_t size) {
+#ifdef _DEBUG
   CheckDevice();
+#endif
   void* p = nullptr;
   if (size > 0) {
     HIP_CALL_THROW(hipMalloc((void**)&p, size));
@@ -33,7 +33,9 @@ void* MIGraphXAllocator::Alloc(size_t size) {
 }
 
 void MIGraphXAllocator::Free(void* p) {
+#ifdef _DEBUG
   CheckDevice();
+#endif
   (void)hipFree(p);  // do not throw error since it's OK for hipFree to fail during shutdown
 }
 
