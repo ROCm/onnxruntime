@@ -857,6 +857,10 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
           nullptr,
           nullptr,
           1,
+          0,
+          nullptr,
+          nullptr,
+          nullptr,
           SIZE_MAX,
           0};
       for (auto option : it->second) {

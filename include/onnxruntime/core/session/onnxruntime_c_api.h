@@ -622,6 +622,10 @@ typedef struct OrtMIGraphXProviderOptions {
   const char* migraphx_int8_calibration_cache_dir;   // MIGraphX INT8 calibration cache directory 
   const char* migraphx_cache_dir;                    // MIGraphX model cache directory
   int migraphx_exhaustive_tune;                      // MIGraphX tuned compile  Default = false
+  int migraphx_dump_model_ops;
+  void* migraphx_gpu_external_alloc;
+  void* migraphx_gpu_external_free;
+  void* migraphx_gpu_external_empty_cache;
 
   /** \brief MIGraphX memory limit (To use all possible memory pass in maximum size_t)
    *   Defaults to SIZE_MAX.

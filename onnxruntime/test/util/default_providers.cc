@@ -82,6 +82,10 @@ std::unique_ptr<IExecutionProvider> DefaultMIGraphXExecutionProvider() {
       nullptr,
       nullptr,
       1,
+      0,
+      nullptr,
+      nullptr,
+      nullptr,
       SIZE_MAX,
       0};
   return MIGraphXProviderFactoryCreator::Create(&params)->CreateProvider();

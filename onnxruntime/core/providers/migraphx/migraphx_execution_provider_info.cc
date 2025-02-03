@@ -111,6 +111,9 @@ ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions(const OrtMIGrap
       {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(info.migraphx_mem_limit)},
       {migraphx_provider_option::kArenaExtendStrategy, EnumToName(arena_extend_strategy_mapping, static_cast<onnxruntime::ArenaExtendStrategy>(info.migraphx_arena_extend_strategy))},
       {migraphx_provider_option::kExhaustiveTune, MakeStringWithClassicLocale(info.migraphx_exhaustive_tune)},
+      {migraphx_provider_option::kGpuExternalAlloc, MakeStringWithClassicLocale(info.migraphx_gpu_external_alloc)},
+      {migraphx_provider_option::kGpuExternalFree, MakeStringWithClassicLocale(info.migraphx_gpu_external_free)},
+      {migraphx_provider_option::kGpuExternalEmptyCache, MakeStringWithClassicLocale(info.migraphx_gpu_external_empty_cache)}
   };
   return options;
 }
