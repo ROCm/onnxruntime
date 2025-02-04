@@ -944,6 +944,16 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
                 "[ERROR] [MIGraphX] The value for the key 'migraphx_exhaustive_tune' should be"
                 " 'True' or 'False'. Default value is 'False'.\n");
           }
+        } else if (option.first == migraphx_provider_option::kDumpModelOps) {
+          if (option.second == "True" || option.second == "true") {
+            params.migraphx_dump_model_ops = true;
+          } else if (option.second == "False" || option.second == "false") {
+            params.migraphx_dump_model_ops = false;
+          } else {
+            ORT_THROW(
+                "[ERROR] [MIGraphX] The value for the key 'migraphx_dump_model_ops' should be"
+                " 'True' or 'False'. Default value is 'False'.\n");
+          }
         } else {
           ORT_THROW("Invalid MIGraphX EP option: ", option.first);
         }

@@ -257,7 +257,7 @@ void MIGraphXExecutionProvider::print_migraphx_ep_flags() {
                         << "\n " << migraphx_provider_option::kFp16Enable << ": " << fp16_enable_
                         << "\n " << migraphx_provider_option::kFp8Enable << ": " << fp8_enable_
                         << "\n " << migraphx_provider_option::kInt8Enable << ": " << int8_enable_
-                        << "\n dump_model_ops: " << dump_model_ops_
+                        << "\n " << migraphx_provider_option::kDumpModelOps << ": " << dump_model_ops_
                         << "\n " << migraphx_provider_option::kExhaustiveTune << ": " << exhaustive_tune_
                         << "\n " << migraphx_provider_option::kInt8CalibTable << ": " << int8_calibration_cache_name_
                         << "\n " << migraphx_provider_option::kInt8CalibrationCacheDir << ": " << int8_calibration_cache_path_

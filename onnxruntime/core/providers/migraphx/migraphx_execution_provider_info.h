@@ -23,6 +23,7 @@ constexpr auto kInt8CalibTable = "migraphx_int8_calibration_table_name";
 constexpr auto kInt8UseNativeCalibTable = "migraphx_int8_use_native_calibration_table";
 constexpr auto kInt8CalibrationCacheDir = "migraphx_int8_calibration_cache_dir";
 constexpr auto kCacheDir = "migraphx_cache_dir";
+constexpr auto kDumpModelOps = "migraphx_dump_model_ops";
 constexpr auto kExhaustiveTune = "migraphx_exhaustive_tune";
 constexpr auto kMemLimit = "migraphx_mem_limit";
 constexpr auto kArenaExtendStrategy = "migraphx_arena_extend_strategy";
@@ -66,6 +67,7 @@ struct MIGraphXExecutionProviderInfo {
   std::filesystem::path int8_calibration_cache_dir{};
   std::filesystem::path cache_dir{};
   bool exhaustive_tune{false};
+  bool dump_model_ops{false};
 
   size_t mem_limit{std::numeric_limits<size_t>::max()};                             // Will be over-ridden by contents of `default_memory_arena_cfg` (if specified)
   ArenaExtendStrategy arena_extend_strategy{ArenaExtendStrategy::kNextPowerOfTwo};  // Will be over-ridden by contents of `default_memory_arena_cfg` (if specified)
@@ -91,7 +93,8 @@ struct std::hash<::onnxruntime::MIGraphXExecutionProviderInfo> {
                   (static_cast<size_t>(info.fp8_enable) << 19) ^
                   (static_cast<size_t>(info.int8_enable) << 20) ^
                   (static_cast<size_t>(info.int8_use_native_calibration_table) << 21) ^
-                  (static_cast<size_t>(info.exhaustive_tune) << 22);
+                  (static_cast<size_t>(info.exhaustive_tune) << 22) ^
+                  (static_cast<size_t>(info.dump_model_ops) << 23);
 
     onnxruntime::HashCombine(info.target_device, value);
     onnxruntime::HashCombine(data, value);

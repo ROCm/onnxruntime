@@ -94,6 +94,9 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
       {migraphx_provider_option::kFp8Enable, MakeStringWithClassicLocale(fp8_enable_)},
       {migraphx_provider_option::kInt8CalibTable, MakeStringWithClassicLocale(int8_calibration_cache_name_)},
       {migraphx_provider_option::kInt8UseNativeCalibTable, MakeStringWithClassicLocale(int8_use_native_migraphx_calibration_table_)},
+      {migraphx_provider_option::kInt8CalibrationCacheDir, MakeStringWithClassicLocale(int8_calibration_cache_path_)},
+      {migraphx_provider_option::kCacheDir, MakeStringWithClassicLocale(cache_dir_)},
+      {migraphx_provider_option::kDumpModelOps, MakeStringWithClassicLocale(dump_model_ops_)},
       {migraphx_provider_option::kExhaustiveTune, MakeStringWithClassicLocale(exhaustive_tune_)}
     };
   }
