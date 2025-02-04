@@ -106,10 +106,16 @@ std::shared_ptr<KernelRegistry> MIGraphXExecutionProvider::GetKernelRegistry() c
 }
 
 MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProviderInfo& info)
-    : IExecutionProvider{onnxruntime::kMIGraphXExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, info.device_id)}, info_(info) {
+    : IExecutionProvider{kMIGraphXExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, info.device_id)},
+      device_id_{info.device_id},
+      fp16_enable_{info.fp16_enable},
+      fp8_enable_{info.fp8_enable},
+      int8_enable_{info.int8_enable},
+      exhaustive_tune_{info.exhaustive_tune},
+      metadef_id_generator_{ModelMetadefIdGenerator::Create()}
+{
   InitProviderOrtApi();
   get_flags_from_session_info(info);
-  metadef_id_generator_ = ModelMetadefIdGenerator::Create();
   get_flags_from_env();
 }
 
@@ -118,19 +124,13 @@ MIGraphXExecutionProvider::~MIGraphXExecutionProvider() {
 
 void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecutionProviderInfo& info) {
   // Set GPU device to be used
-  HIP_CALL_THROW(hipSetDevice(info_.device_id));
+  HIP_CALL_THROW(hipSetDevice(device_id_));
   t_ = migraphx::target(info.target_device.c_str());
 
-  // Quantization
-  fp16_enable_ = info.fp16_enable;
-
-#if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR >= 4)
-  fp8_enable_ = info.fp8_enable;
-#else
+#if HIP_VERSION_MAJOR < 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR < 4)
   LOGS_DEFAULT(WARNING) << "MIGraphX: FP8 Quantization requires ROCm 6.4 or greater";
   fp8_enable_ = false;
 #endif
-  int8_enable_ = info.int8_enable;
 
   if (int8_enable_ and fp8_enable_) {
     LOGS_DEFAULT(FATAL) << "MIGraphX: FP8 and INT8 Quantization Mutually exclusive. Ignoring both Quantization flags";
@@ -168,7 +168,7 @@ void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecut
 
 void MIGraphXExecutionProvider::get_flags_from_env() {
   LOGS_DEFAULT(WARNING) << "\n[MIGraphX EP] MIGraphX ENV Override Variables Set:";
-  // whether fp16 is enable
+  // whether fp16 is enabled
   const std::string fp16_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kFP16Enable);
   if (!fp16_enable_env.empty()) {
     fp16_enable_ = (std::stoi(fp16_enable_env) == 0 ? false : true);
@@ -276,7 +276,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
 }
 
 void MIGraphXExecutionProvider::print_migraphx_ep_flags() {
-  LOGS_DEFAULT(WARNING) << "\n " << migraphx_provider_option::kDeviceId << ": " << info_.device_id
+  LOGS_DEFAULT(WARNING) << "\n " << migraphx_provider_option::kDeviceId << ": " << device_id_
                         << "\n " << migraphx_provider_option::kFp16Enable << ": " << fp16_enable_
                         << "\n " << migraphx_provider_option::kFp8Enable << ": " << fp8_enable_
                         << "\n " << migraphx_provider_option::kInt8Enable << ": " << int8_enable_
@@ -331,7 +331,7 @@ AllocatorPtr MIGraphXExecutionProvider::CreateMIGraphXAllocator(OrtDevice::Devic
 
 std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators() {
   AllocatorCreationInfo default_memory_info(
-      [](OrtDevice::DeviceId device_id) { return std::make_unique<MIGraphXAllocator>(device_id, onnxruntime::CUDA); }, info_.device_id);
+      [](OrtDevice::DeviceId device_id) { return std::make_unique<MIGraphXAllocator>(device_id, onnxruntime::CUDA); }, device_id_);
   AllocatorCreationInfo pinned_allocator_info(
       [](OrtDevice::DeviceId device_id) {
         return std::make_unique<MIGraphXPinnedAllocator>(device_id, onnxruntime::CUDA_PINNED);
