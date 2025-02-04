@@ -79,16 +79,8 @@
     endif()
   endif()
 
-  if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    install(TARGETS onnxruntime_providers_migraphx
-            ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            LIBRARY  DESTINATION ${CMAKE_INSTALL_BINDIR}
-            RUNTIME  DESTINATION ${CMAKE_INSTALL_BINDIR}
-    )
-  else()
-    install(TARGETS onnxruntime_providers_migraphx
-            ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            RUNTIME  DESTINATION ${CMAKE_INSTALL_BINDIR}
-    )
-  endif()
+  install(TARGETS onnxruntime_providers_migraphx
+          ARCHIVE   DESTINATION ${CMAKE_INSTALL_LIBDIR}
+          LIBRARY   DESTINATION ${CMAKE_INSTALL_LIBDIR}
+          RUNTIME   DESTINATION ${CMAKE_INSTALL_BINDIR}
+          FRAMEWORK DESTINATION ${CMAKE_INSTALL_BINDIR})
