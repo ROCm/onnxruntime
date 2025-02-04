@@ -276,7 +276,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
 }
 
 void MIGraphXExecutionProvider::print_migraphx_ep_flags() {
-  LOGS_DEFAULT(WARNING) << "\n device_id: " << info_.device_id
+  LOGS_DEFAULT(WARNING) << "\n " << migraphx_provider_option::kDeviceId << ": " << info_.device_id
                         << "\n " << migraphx_provider_option::kFp16Enable << ": " << fp16_enable_
                         << "\n " << migraphx_provider_option::kFp8Enable << ": " << fp8_enable_
                         << "\n " << migraphx_provider_option::kInt8Enable << ": " << int8_enable_
