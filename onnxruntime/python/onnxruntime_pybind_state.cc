@@ -916,7 +916,7 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
                 "[ERROR] [MIGraphX] The value for the key 'migraphx_use_native_calibration_table' should be"
                 " 'True' or 'False'. Default value is 'False'.\n");
           }
-        } else if (option.first == migraphx_provider_option::kSaveCompiledModel ) {
+        } else if (option.first == migraphx_provider_option::kSaveCompiledModel) {
           if (option.second == "True" || option.second == "true") {
             params.migraphx_save_compiled_model = true;
           } else if (option.second == "False" || option.second == "false") {
