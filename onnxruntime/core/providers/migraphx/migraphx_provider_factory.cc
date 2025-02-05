@@ -20,9 +20,9 @@ namespace onnxruntime {
 void InitializeRegistry();
 void DeleteRegistry();
 
-struct MIGraphXProviderFactory : IExecutionProviderFactory {
-  MIGraphXProviderFactory(const MIGraphXExecutionProviderInfo& info) : info_{info} {}
-  ~MIGraphXProviderFactory() override {}
+struct MIGraphXProviderFactory final : IExecutionProviderFactory {
+  explicit MIGraphXProviderFactory(const MIGraphXExecutionProviderInfo& info) : info_{info} {}
+  ~MIGraphXProviderFactory() override = default;
 
   std::unique_ptr<IExecutionProvider> CreateProvider() override;
 
@@ -66,10 +66,11 @@ struct ProviderInfo_MIGraphX_Impl final : ProviderInfo_MIGraphX {
   }
 } g_info;
 
-struct MIGraphX_Provider : Provider {
+struct MIGraphX_Provider final : Provider {
+  virtual ~MIGraphX_Provider() = default;
   void* GetInfo() override { return &g_info; }
 
-  std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory(int device_id) override {
+  std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory(const int device_id) override {
     MIGraphXExecutionProviderInfo info;
     info.device_id = static_cast<OrtDevice::DeviceId>(device_id);
     info.target_device = "gpu";
@@ -77,7 +78,7 @@ struct MIGraphX_Provider : Provider {
   }
 
   std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory(const void* provider_options) override {
-    auto& options = *reinterpret_cast<const OrtMIGraphXProviderOptions*>(provider_options);
+    auto& options = *static_cast<const OrtMIGraphXProviderOptions*>(provider_options);
     MIGraphXExecutionProviderInfo info;
     info.device_id = static_cast<OrtDevice::DeviceId>(options.device_id);
     info.target_device = "gpu";
@@ -90,49 +91,41 @@ struct MIGraphX_Provider : Provider {
       info.int8_calibration_table_name = options.migraphx_int8_calibration_table_name;
     }
     info.int8_use_native_calibration_table = options.migraphx_use_native_calibration_table != 0;
+    info.int8_calibration_cache_dir = "";
+    if (options.migraphx_int8_calibration_cache_dir != nullptr) {
+      info.int8_calibration_cache_dir = options.migraphx_int8_calibration_cache_dir;
+    }
     info.cache_dir = "";
     if (options.migraphx_cache_dir != nullptr) {
       info.cache_dir = options.migraphx_cache_dir;
     }
-    info.arena_extend_strategy = static_cast<onnxruntime::ArenaExtendStrategy>(options.migraphx_arena_extend_strategy);
+    info.arena_extend_strategy = static_cast<ArenaExtendStrategy>(options.migraphx_arena_extend_strategy);
     info.mem_limit = options.migraphx_mem_limit;
     return std::make_shared<MIGraphXProviderFactory>(info);
   }
 
   void UpdateProviderOptions(void* provider_options, const ProviderOptions& options) override {
-    auto internal_options = onnxruntime::MIGraphXExecutionProviderInfo::FromProviderOptions(options);
-    auto& migx_options = *reinterpret_cast<OrtMIGraphXProviderOptions*>(provider_options);
+    auto internal_options = MIGraphXExecutionProviderInfo::FromProviderOptions(options);
+    auto& migx_options = *static_cast<OrtMIGraphXProviderOptions*>(provider_options);
     migx_options.device_id = internal_options.device_id;
     migx_options.migraphx_fp16_enable = internal_options.fp16_enable;
     migx_options.migraphx_fp8_enable = internal_options.fp8_enable;
     migx_options.migraphx_int8_enable = internal_options.int8_enable;
     migx_options.migraphx_exhaustive_tune = internal_options.exhaustive_tune;
-
-    char* dest = nullptr;
-    auto str_size = internal_options.int8_calibration_table_name.size();
-    if (str_size == 0) {
-      migx_options.migraphx_int8_calibration_table_name = nullptr;
-    } else {
-      dest = new char[str_size + 1];
-#ifdef _MSC_VER
-      strncpy_s(dest, str_size + 1, internal_options.int8_calibration_table_name.c_str(), str_size);
-#else
-      strncpy(dest, internal_options.int8_calibration_table_name.c_str(), str_size);
-#endif
-      dest[str_size] = '\0';
-      migx_options.migraphx_int8_calibration_table_name = (const char*)dest;
-    }
-
+    static auto calibration_table_name = internal_options.int8_calibration_table_name;
+    migx_options.migraphx_int8_calibration_table_name = calibration_table_name.empty() ? nullptr : calibration_table_name.c_str();
+    static auto calibration_cache_path = internal_options.int8_calibration_cache_dir.string();
+    migx_options.migraphx_int8_calibration_cache_dir = calibration_cache_path.c_str();
     migx_options.migraphx_use_native_calibration_table = internal_options.int8_use_native_calibration_table;
-
-    migx_options.migraphx_cache_dir = internal_options.cache_dir.string().c_str();
+    static auto cache_dir = internal_options.cache_dir.string();
+    migx_options.migraphx_cache_dir = cache_dir.c_str();
     migx_options.migraphx_arena_extend_strategy = static_cast<int>(internal_options.arena_extend_strategy);
     migx_options.migraphx_mem_limit = internal_options.mem_limit;
   }
 
   ProviderOptions GetProviderOptions(const void* provider_options) override {
-    auto& options = *reinterpret_cast<const OrtMIGraphXProviderOptions*>(provider_options);
-    return onnxruntime::MIGraphXExecutionProviderInfo::ToProviderOptions(options);
+    auto& options = *static_cast<const OrtMIGraphXProviderOptions*>(provider_options);
+    return MIGraphXExecutionProviderInfo::ToProviderOptions(options);
   }
 
   void Initialize() override {
@@ -150,6 +143,7 @@ struct MIGraphX_Provider : Provider {
 extern "C" {
 
 ORT_API(onnxruntime::Provider*, GetProvider) {
-  return &onnxruntime::g_provider;
+  return &g_provider;
 }
-}
+
+}  // extern "C"
