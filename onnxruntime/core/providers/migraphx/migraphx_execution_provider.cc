@@ -163,7 +163,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
   // whether fp16 is enabled
   const std::string fp16_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kFP16Enable);
   if (!fp16_enable_env.empty()) {
-    fp16_enable_ = (std::stoi(fp16_enable_env) == 0 ? false : true);
+    fp16_enable_ = std::stoi(fp16_enable_env) != 0;
     LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_FP16_ENABLE: " << fp16_enable_;
   }
 
@@ -182,7 +182,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
   // whether int8 is enabled
   const std::string int8_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kINT8Enable);
   if (!int8_enable_env.empty()) {
-    int8_enable_ = (std::stoi(int8_enable_env) == 0 ? false : true);
+    int8_enable_ = std::stoi(int8_enable_env) != 0;
     LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_INT8_ENABLE: " << int8_enable_;
   }
 
@@ -208,7 +208,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
         onnxruntime::GetEnvironmentVar(migraphx_env_vars::kINT8UseNativeMIGraphXCalibrationTable);
     if (!int8_use_native_migraphx_calibration_table_env.empty()) {
       int8_use_native_migraphx_calibration_table_ =
-          (std::stoi(int8_use_native_migraphx_calibration_table_env) == 0 ? false : true);
+          (std::stoi(int8_use_native_migraphx_calibration_table_env) != 0);
       LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_INT8_USE_NATIVE_CALIBRATION_TABLE: "
                             << int8_use_native_migraphx_calibration_table_;
     }
@@ -237,14 +237,14 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
   // dump unsupported ops
   const std::string dump_model_ops_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kDumpModelOps);
   if (!dump_model_ops_env.empty()) {
-    dump_model_ops_ = (std::stoi(dump_model_ops_env) == 0 ? false : true);
+    dump_model_ops_ = std::stoi(dump_model_ops_env) != 0;
     LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_DUMP_MODEL_OPS: " << dump_model_ops_;
   }
 
   // Allow for exhaustive tune during compile
   const std::string exhaustive_tune_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kExhaustiveTune);
   if (!exhaustive_tune_env.empty()) {
-    exhaustive_tune_ = (std::stoi(exhaustive_tune_env) == 0 ? false : true);
+    exhaustive_tune_ = std::stoi(exhaustive_tune_env) != 0;
     LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_EXHAUSTIVE_TUNE_OPS: " << exhaustive_tune_;
   }
 }
