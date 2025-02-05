@@ -161,14 +161,14 @@ void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecut
 void MIGraphXExecutionProvider::get_flags_from_env() {
   LOGS_DEFAULT(WARNING) << "\n[MIGraphX EP] MIGraphX ENV Override Variables Set:";
   // whether fp16 is enabled
-  const std::string fp16_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kFP16Enable);
+  const std::string fp16_enable_env = GetEnvironmentVar(migraphx_env_vars::kFP16Enable);
   if (!fp16_enable_env.empty()) {
     fp16_enable_ = std::stoi(fp16_enable_env) != 0;
     LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_FP16_ENABLE: " << fp16_enable_;
   }
 
   // whether fp8 quantization is enabled
-  const std::string fp8_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kFP8Enable);
+  const std::string fp8_enable_env = GetEnvironmentVar(migraphx_env_vars::kFP8Enable);
   if (!fp8_enable_env.empty()) {
 #if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR >= 4)
     fp8_enable_ = (std::stoi(fp8_enable_env) == 0 ? false : true);
@@ -180,7 +180,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
   }
 
   // whether int8 is enabled
-  const std::string int8_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kINT8Enable);
+  const std::string int8_enable_env = GetEnvironmentVar(migraphx_env_vars::kINT8Enable);
   if (!int8_enable_env.empty()) {
     int8_enable_ = std::stoi(int8_enable_env) != 0;
     LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_INT8_ENABLE: " << int8_enable_;
@@ -191,8 +191,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
   }
 
   if (int8_enable_ || fp8_enable_) {
-    const std::string int8_calibration_cache_name_env =
-        onnxruntime::GetEnvironmentVar(migraphx_env_vars::kINT8CalibrationTableName);
+    const std::string int8_calibration_cache_name_env = GetEnvironmentVar(migraphx_env_vars::kINT8CalibrationTableName);
     if (!int8_calibration_cache_name_env.empty()) {
       int8_calibration_cache_name_ = int8_calibration_cache_name_env;
       LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_CALIBRATION_TABLE_NAME: " << int8_calibration_cache_name_;
@@ -205,7 +204,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
     }
 
     const std::string int8_use_native_migraphx_calibration_table_env =
-        onnxruntime::GetEnvironmentVar(migraphx_env_vars::kINT8UseNativeMIGraphXCalibrationTable);
+        GetEnvironmentVar(migraphx_env_vars::kINT8UseNativeMIGraphXCalibrationTable);
     if (!int8_use_native_migraphx_calibration_table_env.empty()) {
       int8_use_native_migraphx_calibration_table_ =
           (std::stoi(int8_use_native_migraphx_calibration_table_env) != 0);
@@ -228,21 +227,21 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
   }
 
   // Save/load migraphx compiled models
-  const std::string cache_dir_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kCacheDir);
+  const std::string cache_dir_env = GetEnvironmentVar(migraphx_env_vars::kCacheDir);
   if (!cache_dir_env.empty()) {
     cache_dir_ = cache_dir_env;
     LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_SAVE_COMPILED_MODEL: " << cache_dir_env;
   }
 
   // dump unsupported ops
-  const std::string dump_model_ops_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kDumpModelOps);
+  const std::string dump_model_ops_env = GetEnvironmentVar(migraphx_env_vars::kDumpModelOps);
   if (!dump_model_ops_env.empty()) {
     dump_model_ops_ = std::stoi(dump_model_ops_env) != 0;
     LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_DUMP_MODEL_OPS: " << dump_model_ops_;
   }
 
   // Allow for exhaustive tune during compile
-  const std::string exhaustive_tune_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kExhaustiveTune);
+  const std::string exhaustive_tune_env = GetEnvironmentVar(migraphx_env_vars::kExhaustiveTune);
   if (!exhaustive_tune_env.empty()) {
     exhaustive_tune_ = std::stoi(exhaustive_tune_env) != 0;
     LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_EXHAUSTIVE_TUNE_OPS: " << exhaustive_tune_;
@@ -303,17 +302,17 @@ AllocatorPtr MIGraphXExecutionProvider::CreateMIGraphXAllocator(OrtDevice::Devic
 
 std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators() {
   AllocatorCreationInfo default_memory_info(
-      [](OrtDevice::DeviceId device_id) { return std::make_unique<MIGraphXAllocator>(device_id, onnxruntime::CUDA); }, device_id_);
+      [](OrtDevice::DeviceId device_id) { return std::make_unique<MIGraphXAllocator>(device_id, CUDA); }, device_id_);
   AllocatorCreationInfo pinned_allocator_info(
       [](OrtDevice::DeviceId device_id) {
         return std::make_unique<MIGraphXPinnedAllocator>(device_id, onnxruntime::CUDA_PINNED);
       },
       0);
-  return std::vector<AllocatorPtr>{CreateAllocator(default_memory_info), CreateAllocator(pinned_allocator_info)};
+  return std::vector{CreateAllocator(default_memory_info), CreateAllocator(pinned_allocator_info)};
 }
 
-std::unique_ptr<onnxruntime::IDataTransfer> MIGraphXExecutionProvider::GetDataTransfer() const {
-  return std::make_unique<onnxruntime::GPUDataTransfer>();
+std::unique_ptr<IDataTransfer> MIGraphXExecutionProvider::GetDataTransfer() const {
+  return std::make_unique<GPUDataTransfer>();
 }
 
 static bool IsTypeSupported(const NodeArg* node_arg) {
@@ -424,7 +423,7 @@ std::vector<int> toVector(const ONNX_NAMESPACE::int64s& nums) {
   return result;
 }
 
-static bool IsUnsupportedOpMode(const onnxruntime::GraphViewer& graph_viewer, const Node* node) {
+static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* node) {
   std::vector<NodeIndex> input_nodes;
   const auto& optype = node->OpType();
   if (optype == "ArgMax" or optype == "ArgMin") {
@@ -640,7 +639,7 @@ static bool IsUnsupportedOpMode(const onnxruntime::GraphViewer& graph_viewer, co
   return false;
 }
 
-void SubgraphPostProcessing(const onnxruntime::GraphViewer& graph_viewer, std::vector<std::vector<NodeIndex>>& clusters,
+void SubgraphPostProcessing(const GraphViewer& graph_viewer, std::vector<std::vector<NodeIndex>>& clusters,
                             [[maybe_unused]] const logging::Logger& logger) {
   // Then check whether a subgraph should fall back to CPU
   // 1. Check whether a subgraph contains a RNN operator
@@ -709,7 +708,7 @@ void SubgraphPostProcessing(const onnxruntime::GraphViewer& graph_viewer, std::v
 }
 
 static bool IsNodeSupported(const std::set<std::string>& op_set,
-                            const onnxruntime::GraphViewer& graph_viewer,
+                            const GraphViewer& graph_viewer,
                             const NodeIndex node_idx,
                             [[maybe_unused]] const logging::Logger& logger) {
   const auto& node = graph_viewer.GetNode(node_idx);
@@ -762,7 +761,7 @@ std::unique_ptr<IndexedSubGraph> MIGraphXExecutionProvider::GetSubGraph(const st
   }
 
   // Find inputs and outputs of the subgraph
-  std::unique_ptr<IndexedSubGraph> sub_graph = onnxruntime::IndexedSubGraph::Create();
+  std::unique_ptr<IndexedSubGraph> sub_graph = IndexedSubGraph::Create();
   std::unordered_map<const NodeArg*, int> fused_inputs, fused_outputs, fused_outputs_to_add, graph_outputs_to_add;
   std::unordered_set<const NodeArg*> erased;
   int input_order = 0;
@@ -844,11 +843,11 @@ std::unique_ptr<IndexedSubGraph> MIGraphXExecutionProvider::GetSubGraph(const st
   // Sort inputs and outputs by the order they were added
   std::multimap<int, const NodeArg*> inputs, outputs;
   for (auto it = fused_inputs.begin(), end = fused_inputs.end(); it != end; ++it) {
-    inputs.insert(std::pair<int, const NodeArg*>(it->second, it->first));
+    inputs.insert(std::pair(it->second, it->first));
   }
 
   for (auto it = fused_outputs.begin(), end = fused_outputs.end(); it != end; ++it) {
-    outputs.insert(std::pair<int, const NodeArg*>(it->second, it->first));
+    outputs.insert(std::pair(it->second, it->first));
   }
 
   // It is possible that an output of an node is put bebind the output of an later
