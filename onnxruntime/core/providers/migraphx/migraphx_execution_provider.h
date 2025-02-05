@@ -52,10 +52,10 @@ struct MIGraphXFuncState {
 };
 
 // Logical device representation.
-class MIGraphXExecutionProvider : public IExecutionProvider {
+class MIGraphXExecutionProvider final : public IExecutionProvider {
  public:
   explicit MIGraphXExecutionProvider(const MIGraphXExecutionProviderInfo& info);
-  ~MIGraphXExecutionProvider();
+  ~MIGraphXExecutionProvider() override = default;
 
   void get_flags_from_session_info(const MIGraphXExecutionProviderInfo& info);
   void get_flags_from_env();
@@ -63,19 +63,19 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
 
   Status Sync() const override;
 
-  Status OnRunStart(const onnxruntime::RunOptions& run_options) override;
+  Status OnRunStart(const RunOptions& run_options) override;
 
-  Status OnRunEnd(bool sync_stream, const onnxruntime::RunOptions& run_options) override;
+  Status OnRunEnd(bool sync_stream, const RunOptions& run_options) override;
 
   std::vector<std::unique_ptr<ComputeCapability>>
-  GetCapability(const onnxruntime::GraphViewer& graph_viewer,
+  GetCapability(const GraphViewer& graph_viewer,
                 const IKernelLookup& /*kernel_lookup*/) const override;
 
-  common::Status Compile(const std::vector<FusedNodeAndGraph>& fused_nodes,
-                         std::vector<NodeComputeInfo>& node_compute_funcs) override;
+  Status Compile(const std::vector<FusedNodeAndGraph>& fused_nodes,
+                 std::vector<NodeComputeInfo>& node_compute_funcs) override;
 
-  virtual std::shared_ptr<KernelRegistry> GetKernelRegistry() const override;
-  std::unique_ptr<onnxruntime::IDataTransfer> GetDataTransfer() const override;
+  std::shared_ptr<KernelRegistry> GetKernelRegistry() const override;
+  std::unique_ptr<IDataTransfer> GetDataTransfer() const override;
 
   static AllocatorPtr CreateMIGraphXAllocator(OrtDevice::DeviceId device_id, size_t migx_mem_limit, ArenaExtendStrategy arena_extend_strategy,
                                               MIGraphXExecutionProviderExternalAllocatorInfo external_alloc_info, const OrtArenaCfg* arena_cfg);
