@@ -65,6 +65,7 @@ MIGraphXExecutionProviderInfo MIGraphXExecutionProviderInfo::FromProviderOptions
           .AddAssignmentToReference(migraphx_provider_option::kInt8Enable, info.int8_enable)
           .AddAssignmentToReference(migraphx_provider_option::kInt8CalibTable, info.int8_calibration_table_name)
           .AddAssignmentToReference(migraphx_provider_option::kInt8UseNativeCalibTable, info.int8_use_native_calibration_table)
+          .AddAssignmentToReference(migraphx_provider_option::kInt8CalibrationCacheDir, info.int8_calibration_cache_dir)          
           .AddAssignmentToReference(migraphx_provider_option::kCacheDir, info.cache_dir)
           .AddAssignmentToReference(migraphx_provider_option::kExhaustiveTune, info.exhaustive_tune)
           .AddAssignmentToReference(migraphx_provider_option::kMemLimit, info.mem_limit)
@@ -85,6 +86,7 @@ ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions(const MIGraphXE
       {migraphx_provider_option::kInt8Enable, MakeStringWithClassicLocale(info.int8_enable)},
       {migraphx_provider_option::kInt8CalibTable, MakeStringWithClassicLocale(info.int8_calibration_table_name)},
       {migraphx_provider_option::kInt8UseNativeCalibTable, MakeStringWithClassicLocale(info.int8_use_native_calibration_table)},
+      {migraphx_provider_option::kInt8CalibrationCacheDir, MakeStringWithClassicLocale(info.int8_calibration_cache_dir)},      
       {migraphx_provider_option::kCacheDir, MakeStringWithClassicLocale(info.cache_dir)},
       {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(info.mem_limit)},
       {migraphx_provider_option::kGpuExternalAlloc, MakeStringWithClassicLocale(reinterpret_cast<size_t>(info.external_allocator_info.alloc))},
@@ -104,6 +106,7 @@ ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions(const OrtMIGrap
       {migraphx_provider_option::kInt8Enable, MakeStringWithClassicLocale(info.migraphx_int8_enable)},
       {migraphx_provider_option::kInt8CalibTable, MakeStringWithClassicLocale(info.migraphx_int8_calibration_table_name)},
       {migraphx_provider_option::kInt8UseNativeCalibTable, MakeStringWithClassicLocale(info.migraphx_use_native_calibration_table)},
+      {migraphx_provider_option::kInt8CalibrationCacheDir, MakeStringWithClassicLocale(info.migraphx_int8_calibration_cache_dir)},      
       {migraphx_provider_option::kCacheDir, MakeStringWithClassicLocale(info.migraphx_cache_dir)},
       {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(info.migraphx_mem_limit)},
       {migraphx_provider_option::kArenaExtendStrategy, EnumToName(arena_extend_strategy_mapping, static_cast<onnxruntime::ArenaExtendStrategy>(info.migraphx_arena_extend_strategy))},

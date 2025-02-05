@@ -21,7 +21,7 @@ constexpr auto kFP8Enable = "ORT_MIGRAPHX_FP8_ENABLE";
 constexpr auto kINT8Enable = "ORT_MIGRAPHX_INT8_ENABLE";
 constexpr auto kDumpModelOps = "ORT_MIGRAPHX_DUMP_MODEL_OPS";
 constexpr auto kINT8CalibrationTableName = "ORT_MIGRAPHX_INT8_CALIBRATION_TABLE_NAME";
-constexpr auto kCachePath = "ORT_MIGRAPHX_CACHE_PATH";
+constexpr auto kINT8CachePath = "ORT_MIGRAPHX_CACHE_PATH";
 constexpr auto kINT8UseNativeMIGraphXCalibrationTable = "ORT_MIGRAPHX_INT8_USE_NATIVE_CALIBRATION_TABLE";
 constexpr auto kCacheDir = "ORT_MIGRAPHX_MODEL_CACHE_PATH";
 constexpr auto kExhaustiveTune = "ORT_MIGRAPHX_EXHAUSTIVE_TUNE";
@@ -44,6 +44,7 @@ struct MIGraphXFuncState {
   bool fp8_enable = false;
   bool int8_enable = false;
   bool int8_calibration_cache_available = false;
+  std::filesystem::path int8_calibration_cache_dir{};
   std::filesystem::path cache_dir;
   std::unordered_map<std::string, float> dynamic_range_map;
   bool dump_model_ops = false;
@@ -105,7 +106,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   std::string int8_calibration_cache_name_;
   bool int8_calibration_cache_available_ = false;
   bool int8_use_native_migraphx_calibration_table_ = false;
-  std::string calibration_cache_path_;
+  std::filesystem::path int8_calibration_cache_path_{};
   std::unordered_map<std::string, float> dynamic_range_map_;
   std::filesystem::path cache_dir_{};
   std::set<std::string> session_input_names{};

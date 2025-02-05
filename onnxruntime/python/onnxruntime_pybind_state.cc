@@ -855,6 +855,7 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
           0,
           nullptr,
           nullptr,
+          nullptr,
           1,
           SIZE_MAX,
           0};
@@ -912,6 +913,14 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
             ORT_THROW(
                 "[ERROR] [MIGraphX] The value for the key 'migraphx_use_native_calibration_table' should be"
                 " 'True' or 'False'. Default value is 'False'.\n");
+          }
+        } else if (option.first ==migraphx_provider_option::kInt8CalibrationCacheDir) {
+          if (!option.second.empty()) {
+            params.migraphx_int8_calibration_cache_dir = option.second.c_str();
+          } else {
+            ORT_THROW(
+                "[ERROR] [MIGraphX] The value for the key 'migraphx_int8_calibration_cache_dir' should be a "
+                "path to a directory were to store calibration tables. Write access to the directory is required.\n");
           }
         } else if (option.first == migraphx_provider_option::kCacheDir) {
           if (!option.second.empty()) {

@@ -21,6 +21,7 @@ constexpr auto kFp8Enable = "migraphx_fp8_enable";
 constexpr auto kInt8Enable = "migraphx_int8_enable";
 constexpr auto kInt8CalibTable = "migraphx_int8_calibration_table_name";
 constexpr auto kInt8UseNativeCalibTable = "migraphx_int8_use_native_calibration_table";
+constexpr auto kInt8CalibrationCacheDir = "migraphx_int8_calibration_cache_dir";
 constexpr auto kCacheDir = "migraphx_cache_dir";
 constexpr auto kExhaustiveTune = "migraphx_exhaustive_tune";
 constexpr auto kMemLimit = "migraphx_mem_limit";
@@ -62,6 +63,7 @@ struct MIGraphXExecutionProviderInfo {
   bool int8_enable{false};
   std::string int8_calibration_table_name{""};
   bool int8_use_native_calibration_table{false};
+  std::filesystem::path int8_calibration_cache_dir{};
   std::filesystem::path cache_dir{};
   bool exhaustive_tune{false};
 
@@ -93,6 +95,7 @@ struct std::hash<::onnxruntime::MIGraphXExecutionProviderInfo> {
 
     onnxruntime::HashCombine(info.target_device, value);
     onnxruntime::HashCombine(data, value);
+    onnxruntime::HashCombine(info.int8_calibration_cache_dir, value);
     onnxruntime::HashCombine(info.cache_dir, value);
     onnxruntime::HashCombine(info.mem_limit, value);
     onnxruntime::HashCombine(info.int8_calibration_table_name, value);

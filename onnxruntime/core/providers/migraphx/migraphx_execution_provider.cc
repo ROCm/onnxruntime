@@ -148,9 +148,9 @@ void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecut
   // Load INT8 calibration table
   std::unordered_map<std::string, float> dynamic_range_map;
   if ((int8_enable_ || fp8_enable_) && int8_calibration_cache_available_) {
-    const std::string calibration_cache_path = GetCachePath(calibration_cache_path_, int8_calibration_cache_name_);
+    auto calibration_cache_path = GetCachePath(int8_calibration_cache_path_, int8_calibration_cache_name_);
     if (!ReadDynamicRange(calibration_cache_path, int8_use_native_migraphx_calibration_table_, dynamic_range_map)) {
-      throw std::runtime_error("Session Failed to read INT8 calibration table " + calibration_cache_path);
+      throw std::runtime_error("Session Failed to read INT8 calibration table " + calibration_cache_path.string());
     }
   }
 
@@ -201,10 +201,10 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
       LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_CALIBRATION_TABLE_NAME: " << int8_calibration_cache_name_;
     }
 
-    const std::string cache_path = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kCachePath);
+    auto cache_path = GetEnvironmentVar(migraphx_env_vars::kINT8CachePath);
     if (!cache_path.empty()) {
-      calibration_cache_path_ = cache_path;
-      LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_CACHE_PATH: " << calibration_cache_path_;
+      int8_calibration_cache_path_ = cache_path;
+      LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_CACHE_PATH: " << int8_calibration_cache_path_;
     }
 
     const std::string int8_use_native_migraphx_calibration_table_env =
@@ -224,9 +224,9 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
   // Load INT8 calibration table
   std::unordered_map<std::string, float> dynamic_range_map;
   if ((int8_enable_ || fp8_enable_) && int8_calibration_cache_available_) {
-    const std::string calibration_cache_path = GetCachePath(calibration_cache_path_, int8_calibration_cache_name_);
+    auto calibration_cache_path = GetCachePath(int8_calibration_cache_path_, int8_calibration_cache_name_);
     if (!ReadDynamicRange(calibration_cache_path, int8_use_native_migraphx_calibration_table_, dynamic_range_map)) {
-      throw std::runtime_error("ENV Failed to read calibration table " + calibration_cache_path);
+      throw std::runtime_error("ENV Failed to read calibration table " + calibration_cache_path.string());
     }
   }
 
@@ -260,6 +260,7 @@ void MIGraphXExecutionProvider::print_migraphx_ep_flags() {
                         << "\n dump_model_ops: " << dump_model_ops_
                         << "\n " << migraphx_provider_option::kExhaustiveTune << ": " << exhaustive_tune_
                         << "\n " << migraphx_provider_option::kInt8CalibTable << ": " << int8_calibration_cache_name_
+                        << "\n " << migraphx_provider_option::kInt8CalibrationCacheDir << ": " << int8_calibration_cache_path_
                         << "\n int8_calibration_cache_available: " << int8_calibration_cache_available_
                         << "\n " << migraphx_provider_option::kInt8UseNativeCalibTable << ": " << int8_use_native_migraphx_calibration_table_
                         << "\n " << migraphx_provider_option::kCacheDir << ": " << cache_dir_;
@@ -1411,7 +1412,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       *p = {context->allocate_func, context->release_func, context->allocator_handle, map_progs_[context->node_name],
             map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_mu_,
             map_no_input_shape_[context->node_name], fp16_enable_, fp8_enable_, int8_enable_,
-            int8_calibration_cache_available_, cache_dir_, dynamic_range_map_, dump_model_ops_};
+            int8_calibration_cache_available_, int8_calibration_cache_path_, cache_dir_, dynamic_range_map_, dump_model_ops_};
       *state = p.release();
       return 0;
     };

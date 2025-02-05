@@ -80,6 +80,7 @@ std::unique_ptr<IExecutionProvider> DefaultMIGraphXExecutionProvider() {
       0,
       nullptr,
       nullptr,
+      nullptr,
       1,
       SIZE_MAX,
       0};

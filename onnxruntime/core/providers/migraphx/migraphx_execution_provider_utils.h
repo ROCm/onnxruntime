@@ -17,8 +17,6 @@
 #include <core/framework/murmurhash3.h>
 #include "core/common/path_string.h"
 
-namespace fs = std::filesystem;
-
 namespace onnxruntime {
 
 inline bool IsGraphInput(const GraphViewer& graph, const std::string& name) {
@@ -186,7 +184,7 @@ inline float ConvertSinglePrecisionIEEE754ToFloat(uint32_t input) {
  * Taken from the tensorRT EP to allow MIGraphX EP to reuse calibration tables for existing models
  *
  */
-inline bool ReadDynamicRange(const std::string file_name,
+inline bool ReadDynamicRange(const std::filesystem::path& file_name,
                              const bool is_calibration_table,
                              std::unordered_map<std::string,
                                                 float>& dynamic_range_map) {
@@ -217,7 +215,7 @@ inline bool ReadDynamicRange(const std::string file_name,
           dynamic_range_map[tensor_name] = dynamic_range;
         }
       } else {
-        throw std::runtime_error("This is not a TensorRT generated calibration table " + file_name);
+        throw std::runtime_error("This is not a TensorRT generated calibration table " + file_name.string());
       }
     }
   } else {
@@ -242,14 +240,8 @@ inline bool ReadDynamicRange(const std::string file_name,
  * Get cache by name
  *
  */
-inline std::string GetCachePath(const std::string& root, const std::string& name) {
-  if (root.empty()) {
-    return name;
-  } else {
-    fs::path path = root;
-    path.append(name);
-    return path.string();
-  }
+inline std::filesystem::path GetCachePath(const std::filesystem::path& root, std::string_view name) {
+  return root.empty() ? name : root / name;
 }
 
 inline std::string GenerateGraphId(const GraphViewer& graph_viewer) {
@@ -269,7 +261,7 @@ inline std::string GenerateGraphId(const GraphViewer& graph_viewer) {
   };
 
   // Use the model's file name instead of the entire path to avoid cache regeneration if a path changes
-  const fs::path path{main_graph.ModelPath()};
+  const std::filesystem::path path{main_graph.ModelPath()};
 
   if (path.has_filename()) {
     const auto model_name = path.filename().string();
