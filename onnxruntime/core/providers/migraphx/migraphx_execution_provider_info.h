@@ -83,7 +83,7 @@ struct MIGraphXExecutionProviderInfo {
 
 template <>
 struct std::hash<::onnxruntime::MIGraphXExecutionProviderInfo> {
-  size_t operator()(const ::onnxruntime::MIGraphXExecutionProviderInfo& info) const {
+  size_t operator()(const ::onnxruntime::MIGraphXExecutionProviderInfo& info) const noexcept {
     size_t value{0xbc9f1d34};  // seed
 
     // Bits: device_id (16), arena_extend_strategy (reserved 2), boolean options (1 each)
