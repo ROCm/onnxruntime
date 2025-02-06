@@ -3,8 +3,6 @@
 
   add_definitions(-DUSE_MIGRAPHX=1)
   set(BUILD_LIBRARY_ONLY 1)
-  add_definitions("-DONNX_ML=1")
-  add_definitions("-DONNX_NAMESPACE=onnx")
   include_directories(${protobuf_SOURCE_DIR} ${eigen_SOURCE_DIR})
   set(MIGRAPHX_ROOT ${onnxruntime_MIGRAPHX_HOME})
   include_directories(${onnx_SOURCE_DIR})
@@ -49,7 +47,7 @@
   target_include_directories(onnxruntime_providers_migraphx PRIVATE ${ONNXRUNTIME_ROOT} ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}/amdgpu/onnxruntime)
   set_target_properties(onnxruntime_providers_migraphx PROPERTIES LINKER_LANGUAGE CXX)
   set_target_properties(onnxruntime_providers_migraphx PROPERTIES FOLDER "ONNXRuntime")
-  target_compile_definitions(onnxruntime_providers_migraphx PRIVATE ONNXIFI_BUILD_LIBRARY=1)
+  target_compile_definitions(onnxruntime_providers_migraphx PRIVATE ONNXIFI_BUILD_LIBRARY=1 ONNX_ML=1 ONNX_NAMESPACE=onnx)
   if(MSVC)
     set_property(TARGET onnxruntime_providers_migraphx APPEND_STRING PROPERTY LINK_FLAGS /DEF:${ONNXRUNTIME_ROOT}/core/providers/migraphx/symbols.def)
     target_link_libraries(onnxruntime_providers_migraphx PRIVATE ws2_32)
