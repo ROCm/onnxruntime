@@ -92,14 +92,18 @@ struct std::hash<::onnxruntime::MIGraphXExecutionProviderInfo> {
     size_t data = static_cast<size_t>(info.device_id) ^
                   (static_cast<size_t>(info.arena_extend_strategy) << 16) ^
                   (static_cast<size_t>(info.fp16_enable) << 18) ^
-                  (static_cast<size_t>(info.int8_enable) << 19) ^
-                  (static_cast<size_t>(info.int8_use_native_calibration_table) << 20) ^
-                  (static_cast<size_t>(info.save_compiled_model) << 21) ^
-                  (static_cast<size_t>(info.load_compiled_model) << 22) ^
-                  (static_cast<size_t>(info.exhaustive_tune) << 23);
-    onnxruntime::HashCombine(data, value);
+                  (static_cast<size_t>(info.fp8_enable) << 19) ^
+                  (static_cast<size_t>(info.int8_enable) << 20) ^
+                  (static_cast<size_t>(info.int8_use_native_calibration_table) << 21) ^
+                  (static_cast<size_t>(info.exhaustive_tune) << 22) ^
+                  (static_cast<size_t>(info.save_compiled_model) << 23) ^
+                  (static_cast<size_t>(info.load_compiled_model) << 24);
 
+    onnxruntime::HashCombine(info.target_device, value);
+    onnxruntime::HashCombine(data, value);
     onnxruntime::HashCombine(info.mem_limit, value);
+    onnxruntime::HashCombine(info.int8_calibration_table_name, value);
+    onnxruntime::HashCombine(info.default_memory_arena_cfg, value);
 
     // Memory pointers
     onnxruntime::HashCombine(reinterpret_cast<size_t>(info.external_allocator_info.alloc), value);

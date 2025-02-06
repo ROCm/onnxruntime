@@ -63,6 +63,8 @@ MIGraphXExecutionProviderInfo MIGraphXExecutionProviderInfo::FromProviderOptions
           .AddAssignmentToReference(migraphx_provider_option::kFp16Enable, info.fp16_enable)
           .AddAssignmentToReference(migraphx_provider_option::kFp8Enable, info.fp8_enable)
           .AddAssignmentToReference(migraphx_provider_option::kInt8Enable, info.int8_enable)
+          .AddAssignmentToReference(migraphx_provider_option::kInt8CalibTable, info.int8_calibration_table_name)
+          .AddAssignmentToReference(migraphx_provider_option::kInt8UseNativeCalibTable, info.int8_use_native_calibration_table)
           .AddAssignmentToReference(migraphx_provider_option::kSaveCompiledModel, info.save_compiled_model)
           .AddAssignmentToReference(migraphx_provider_option::kLoadCompiledModel, info.load_compiled_model)
           .AddAssignmentToReference(migraphx_provider_option::kExhaustiveTune, info.exhaustive_tune)
@@ -82,6 +84,8 @@ ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions(const MIGraphXE
       {migraphx_provider_option::kFp16Enable, MakeStringWithClassicLocale(info.fp16_enable)},
       {migraphx_provider_option::kFp8Enable, MakeStringWithClassicLocale(info.fp8_enable)},
       {migraphx_provider_option::kInt8Enable, MakeStringWithClassicLocale(info.int8_enable)},
+      {migraphx_provider_option::kInt8CalibTable, MakeStringWithClassicLocale(info.int8_calibration_table_name)},
+      {migraphx_provider_option::kInt8UseNativeCalibTable, MakeStringWithClassicLocale(info.int8_use_native_calibration_table)},
       {migraphx_provider_option::kSaveCompiledModel, MakeStringWithClassicLocale(info.save_compiled_model)},
       {migraphx_provider_option::kLoadCompiledModel, MakeStringWithClassicLocale(info.load_compiled_model)},
       {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(info.mem_limit)},
@@ -100,6 +104,8 @@ ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions(const OrtMIGrap
       {migraphx_provider_option::kFp16Enable, MakeStringWithClassicLocale(info.migraphx_fp16_enable)},
       {migraphx_provider_option::kFp8Enable, MakeStringWithClassicLocale(info.migraphx_fp8_enable)},
       {migraphx_provider_option::kInt8Enable, MakeStringWithClassicLocale(info.migraphx_int8_enable)},
+      {migraphx_provider_option::kInt8CalibTable, MakeStringWithClassicLocale(info.migraphx_int8_calibration_table_name)},
+      {migraphx_provider_option::kInt8UseNativeCalibTable, MakeStringWithClassicLocale(info.migraphx_use_native_calibration_table)},
       {migraphx_provider_option::kSaveCompiledModel, MakeStringWithClassicLocale(info.migraphx_save_compiled_model)},
       {migraphx_provider_option::kLoadCompiledModel, MakeStringWithClassicLocale(info.migraphx_load_compiled_model)},
       {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(info.migraphx_mem_limit)},
