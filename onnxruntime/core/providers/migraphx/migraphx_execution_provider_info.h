@@ -38,16 +38,9 @@ struct MIGraphXExecutionProviderExternalAllocatorInfo {
   void* free{nullptr};
   void* empty_cache{nullptr};
 
-  MIGraphXExecutionProviderExternalAllocatorInfo() {
-    alloc = nullptr;
-    free = nullptr;
-    empty_cache = nullptr;
-  }
-
-  MIGraphXExecutionProviderExternalAllocatorInfo(void* a, void* f, void* e) {
-    alloc = a;
-    free = f;
-    empty_cache = e;
+  MIGraphXExecutionProviderExternalAllocatorInfo() = default;
+  MIGraphXExecutionProviderExternalAllocatorInfo(void* a, void* f, void* e)
+    : alloc{a}, free{f}, empty_cache{e} {
   }
 
   bool UseExternalAllocator() const {
