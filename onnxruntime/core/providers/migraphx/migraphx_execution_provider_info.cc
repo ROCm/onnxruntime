@@ -61,7 +61,7 @@ MIGraphXExecutionProviderInfo MIGraphXExecutionProviderInfo::FromProviderOptions
           .AddValueParser(
               migraphx::provider_option_names::kGpuExternalAlloc,
               [&alloc](const std::string& value_str) -> Status {
-                size_t address;
+                std::uintptr_t address;
                 ORT_RETURN_IF_ERROR(ParseStringWithClassicLocale(value_str, address));
                 alloc = reinterpret_cast<void*>(address);
                 return Status::OK();
@@ -69,7 +69,7 @@ MIGraphXExecutionProviderInfo MIGraphXExecutionProviderInfo::FromProviderOptions
           .AddValueParser(
               migraphx::provider_option_names::kGpuExternalFree,
               [&free](const std::string& value_str) -> Status {
-                size_t address;
+                std::uintptr_t address;
                 ORT_RETURN_IF_ERROR(ParseStringWithClassicLocale(value_str, address));
                 free = reinterpret_cast<void*>(address);
                 return Status::OK();
@@ -77,7 +77,7 @@ MIGraphXExecutionProviderInfo MIGraphXExecutionProviderInfo::FromProviderOptions
           .AddValueParser(
               migraphx::provider_option_names::kGpuExternalEmptyCache,
               [&empty_cache](const std::string& value_str) -> Status {
-                size_t address;
+                std::uintptr_t address;
                 ORT_RETURN_IF_ERROR(ParseStringWithClassicLocale(value_str, address));
                 empty_cache = reinterpret_cast<void*>(address);
                 return Status::OK();
