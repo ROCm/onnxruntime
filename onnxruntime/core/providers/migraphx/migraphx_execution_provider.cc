@@ -124,7 +124,6 @@ void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecut
 #if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR >= 4)
   fp8_enable_ = info.fp8_enable;
 #else
-  LOGS_DEFAULT(WARNING) << "MIGraphX: FP8 Quantization requires ROCm 6.4 or greater";
   fp8_enable_ = false;
 #endif
   int8_enable_ = info.int8_enable;
@@ -179,7 +178,6 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
     fp8_enable_ = (std::stoi(fp8_enable_env) == 0 ? false : true);
     LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_FP8_ENABLE: " << fp8_enable_;
 #else
-    LOGS_DEFAULT(WARNING) << "MIGraphX: FP8 Quantization requires ROCm 6.4 or greater";
     fp8_enable_ = false;
 #endif
   }
