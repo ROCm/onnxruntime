@@ -65,10 +65,10 @@ struct MIGraphXExecutionProviderInfo {
   bool int8_enable{false};
   std::string int8_calibration_table_name{""};
   bool int8_use_native_calibration_table{false};
-  bool save_compiled_model{true};
-  std::string save_model_file{"./compiled_model.mxr"};
-  bool load_compiled_model{true};
-  std::string load_model_file{"./compiled_model.mxr"};
+  bool save_compiled_model{false};
+  std::string save_model_file{""};
+  bool load_compiled_model{false};
+  std::string load_model_file{""};
   bool exhaustive_tune{false};
 
   size_t mem_limit{std::numeric_limits<size_t>::max()};                             // Will be over-ridden by contents of `default_memory_arena_cfg` (if specified)
