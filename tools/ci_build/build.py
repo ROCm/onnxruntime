@@ -717,7 +717,9 @@ def parse_arguments():
     parser.add_argument("--rocm_version", help="The version of ROCM stack to use. ")
     parser.add_argument("--use_rocm", action="store_true", help="Build with ROCm")
     parser.add_argument("--rocm_home", help="Path to ROCm installation dir")
-
+    parser.add_argument("--rocm_gfx_arch",
+        help='Provide gfx arch. Example --rocm_gfx_arch gfx942'
+        ' or --rocm_gfx_arch "gfx90a;gfx942" ')
     # Code coverage
     parser.add_argument(
         "--code_coverage", action="store_true", help="Generate code coverage when targeting Android (only)."
@@ -1155,6 +1157,8 @@ def generate_build_tree(
     if args.use_rocm:
         cmake_args.append("-Donnxruntime_ROCM_HOME=" + rocm_home)
         cmake_args.append("-Donnxruntime_ROCM_VERSION=" + args.rocm_version)
+        if args.rocm_gfx_arch:
+            cmake_args.append("-DCMAKE_HIP_ARCHITECTURES=" + args.rocm_gfx_arch)
     if args.use_tensorrt:
         cmake_args.append("-Donnxruntime_TENSORRT_HOME=" + tensorrt_home)
 
