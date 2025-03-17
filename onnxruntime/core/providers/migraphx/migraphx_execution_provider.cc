@@ -162,12 +162,12 @@ void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecut
 
   exhaustive_tune_ = info.exhaustive_tune;
 
-  LOGS_DEFAULT(WARNING) << "[MIGraphX EP] MIGraphX provider Session Options:";
+  LOGS_DEFAULT(VERBOSE) << "[MIGraphX EP] MIGraphX provider Session Options:";
   print_migraphx_ep_flags();
 }
 
 void MIGraphXExecutionProvider::get_flags_from_env() {
-  LOGS_DEFAULT(WARNING) << "\n[MIGraphX EP] MIGraphX ENV Override Variables Set:";
+  LOGS_DEFAULT(WARNING) << "[MIGraphX EP] MIGraphX ENV Override Variables Set:";
   // whether fp16 is enable
   const std::string fp16_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kFP16Enable);
   if (!fp16_enable_env.empty()) {
@@ -276,7 +276,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
 }
 
 void MIGraphXExecutionProvider::print_migraphx_ep_flags() {
-  LOGS_DEFAULT(WARNING) << "\n " << migraphx_provider_option::kDeviceId << ": " << info_.device_id
+  LOGS_DEFAULT(VERBOSE) << "\n " << migraphx_provider_option::kDeviceId << ": " << info_.device_id
                         << "\n " << migraphx_provider_option::kFp16Enable << ": " << fp16_enable_
                         << "\n " << migraphx_provider_option::kFp8Enable << ": " << fp8_enable_
                         << "\n " << migraphx_provider_option::kInt8Enable << ": " << int8_enable_
