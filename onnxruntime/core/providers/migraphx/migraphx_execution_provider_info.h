@@ -21,6 +21,7 @@ constexpr auto kFp8Enable = "migraphx_fp8_enable";
 constexpr auto kInt8Enable = "migraphx_int8_enable";
 constexpr auto kInt8CalibTable = "migraphx_int8_calibration_table_name";
 constexpr auto kInt8UseNativeCalibTable = "migraphx_int8_use_native_calibration_table";
+constexpr auto kModelCacheDir = "migraphx_model_cache_dir";
 constexpr auto kSaveCompiledModel = "migraphx_save_compiled_model";
 constexpr auto kSaveModelPath = "migraphx_save_model_name";
 constexpr auto kLoadCompiledModel = "migraphx_load_compiled_model";
@@ -68,6 +69,7 @@ struct MIGraphXExecutionProviderInfo {
   bool save_compiled_model{false};
   std::string save_model_file{""};
   bool load_compiled_model{false};
+  std::filesystem::path model_cache_dir{};
   std::string load_model_file{""};
   bool exhaustive_tune{false};
 
@@ -99,6 +101,10 @@ struct std::hash<::onnxruntime::MIGraphXExecutionProviderInfo> {
                   (static_cast<size_t>(info.exhaustive_tune) << 23);
     onnxruntime::HashCombine(data, value);
 
+    onnxruntime::HashCombine(info.target_device, value);
+    onnxruntime::HashCombine(info.default_memory_arena_cfg, value);
+    onnxruntime::HashCombine(info.int8_calibration_table_name, value);
+    onnxruntime::HashCombine(info.model_cache_dir, value);
     onnxruntime::HashCombine(info.mem_limit, value);
 
     // Memory pointers

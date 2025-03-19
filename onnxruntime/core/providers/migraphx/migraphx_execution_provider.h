@@ -27,6 +27,7 @@ constexpr auto kSaveCompiledModel = "ORT_MIGRAPHX_SAVE_COMPILED_MODEL";
 constexpr auto kSavedModelPath = "ORT_MIGRAPHX_SAVE_COMPILED_PATH";
 constexpr auto kLoadCompiledModel = "ORT_MIGRAPHX_LOAD_COMPILED_MODEL";
 constexpr auto kLoadModelPath = "ORT_MIGRAPHX_LOAD_COMPILED_PATH";
+constexpr auto kModelCachePath = "ORT_MIGRAPHX_MODEL_CACHE_PATH";
 constexpr auto kExhaustiveTune = "ORT_MIGRAPHX_EXHAUSTIVE_TUNE";
 
 }  // namespace migraphx_env_vars
@@ -52,6 +53,7 @@ struct MIGraphXFuncState {
   std::string save_compiled_path;
   bool load_compiled_mode = false;
   std::string load_compiled_path;
+  std::filesystem::path model_cache_dir;
   bool dump_model_ops = false;
   bool exhaustive_tune = false;
 };
@@ -109,6 +111,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   std::string save_compiled_path_;
   bool load_compiled_model_ = false;
   std::string load_compiled_path_;
+  std::filesystem::path model_cache_path_{};
   bool dump_model_ops_ = false;
   migraphx::target t_;
   std::mutex mgx_mu_;
