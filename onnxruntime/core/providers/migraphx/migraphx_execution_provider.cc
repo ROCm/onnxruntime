@@ -295,7 +295,7 @@ void MIGraphXExecutionProvider::print_migraphx_ep_flags() {
                         << "\n " << migraphx_provider_option::kSaveCompiledModel << ": " << save_compiled_model_
                         << "\n " << migraphx_provider_option::kSaveModelPath << ": " << save_compiled_path_
                         << "\n " << migraphx_provider_option::kLoadCompiledModel << ": " << load_compiled_model_
-                        << "\n " << migraphx_provider_option::kLoadModelPath << ": " << load_compiled_path_;
+                        << "\n " << migraphx_provider_option::kLoadModelPath << ": " << load_compiled_path_
                         << "\n " << migraphx_provider_option::kModelCacheDir << ": " << model_cache_path_;
 }
 
@@ -1368,6 +1368,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     }
     const Graph& main_graph = *cur_graph;
     const auto& input_tensor = main_graph.GetInputs();
+    std::set<std::string> session_input_names;
     for (auto i : input_tensor) {
       session_input_names.insert(i->Name());
     }
@@ -1451,7 +1452,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             map_no_input_shape_[context->node_name], fp16_enable_, fp8_enable_, int8_enable_,
             int8_calibration_cache_available_, dynamic_range_map_,
             save_compiled_model_, save_compiled_path_,
-            load_compiled_model_, load_compiled_path_, dump_model_ops_};
+            load_compiled_model_, load_compiled_path_, model_cache_path_.string(), dump_model_ops_};
       *state = p.release();
       return 0;
     };
