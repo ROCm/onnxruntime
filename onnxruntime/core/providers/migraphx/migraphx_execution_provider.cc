@@ -1368,7 +1368,6 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     }
     const Graph& main_graph = *cur_graph;
     const auto& input_tensor = main_graph.GetInputs();
-    std::set<std::string> session_input_names;
     for (auto i : input_tensor) {
       session_input_names.insert(i->Name());
     }

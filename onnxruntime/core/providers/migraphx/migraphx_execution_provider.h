@@ -112,6 +112,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   bool load_compiled_model_ = false;
   std::string load_compiled_path_;
   std::filesystem::path model_cache_path_{};
+  std::set<std::string> session_input_names;
   bool dump_model_ops_ = false;
   migraphx::target t_;
   std::mutex mgx_mu_;
