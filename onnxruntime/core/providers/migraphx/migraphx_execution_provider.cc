@@ -159,6 +159,7 @@ void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecut
   save_compiled_path_ = info.save_model_file;
   load_compiled_model_ = info.load_compiled_model;
   load_compiled_path_ = info.load_model_file;
+  model_cache_path_ = info.model_cache_dir;
 
   exhaustive_tune_ = info.exhaustive_tune;
 
@@ -185,13 +186,6 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
     LOGS_DEFAULT(WARNING) << "MIGraphX: FP8 Quantization requires ROCm 6.4 or greater";
     fp8_enable_ = false;
 #endif
-  }
-
-  // Save/load migraphx compiled models
-  const auto model_cache_path_env = GetEnvironmentVar(migraphx_env_vars::kModelCachePath);
-  if (!model_cache_path_env.empty()) {
-    model_cache_path_ = GetEnvironmentVar(migraphx_env_vars::kModelCachePath);
-    LOGS_DEFAULT(INFO) << "\n" << migraphx_env_vars::kModelCachePath << ": " << model_cache_path_;
   }
 
   // whether int8 is enabled

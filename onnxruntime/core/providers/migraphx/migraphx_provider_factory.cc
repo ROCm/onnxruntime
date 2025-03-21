@@ -100,6 +100,7 @@ struct MIGraphX_Provider : Provider {
     if (options.migraphx_load_model_path != nullptr) {
       info.load_model_file = options.migraphx_load_model_path;
     }
+    info.model_cache_dir = "";
     if (options.migraphx_cache_dir != nullptr) {
       info.model_cache_dir = options.migraphx_cache_dir;
     }
