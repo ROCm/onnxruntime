@@ -63,8 +63,6 @@ MIGraphXExecutionProviderInfo MIGraphXExecutionProviderInfo::FromProviderOptions
           .AddAssignmentToReference(migraphx_provider_option::kFp16Enable, info.fp16_enable)
           .AddAssignmentToReference(migraphx_provider_option::kFp8Enable, info.fp8_enable)
           .AddAssignmentToReference(migraphx_provider_option::kInt8Enable, info.int8_enable)
-          .AddAssignmentToReference(migraphx_provider_option::kSaveCompiledModel, info.save_compiled_model)
-          .AddAssignmentToReference(migraphx_provider_option::kLoadCompiledModel, info.load_compiled_model)
           .AddAssignmentToReference(migraphx_provider_option::kModelCacheDir, info.model_cache_dir)
           .AddAssignmentToReference(migraphx_provider_option::kExhaustiveTune, info.exhaustive_tune)
           .AddAssignmentToReference(migraphx_provider_option::kMemLimit, info.mem_limit)
@@ -84,8 +82,6 @@ ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions(const MIGraphXE
       {migraphx_provider_option::kFp8Enable, MakeStringWithClassicLocale(info.fp8_enable)},
       {migraphx_provider_option::kInt8Enable, MakeStringWithClassicLocale(info.int8_enable)},
       {migraphx_provider_option::kModelCacheDir, MakeStringWithClassicLocale(info.model_cache_dir)},
-      {migraphx_provider_option::kSaveCompiledModel, MakeStringWithClassicLocale(info.save_compiled_model)},
-      {migraphx_provider_option::kLoadCompiledModel, MakeStringWithClassicLocale(info.load_compiled_model)},
       {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(info.mem_limit)},
       {migraphx_provider_option::kGpuExternalAlloc, MakeStringWithClassicLocale(reinterpret_cast<size_t>(info.external_allocator_info.alloc))},
       {migraphx_provider_option::kGpuExternalFree, MakeStringWithClassicLocale(reinterpret_cast<size_t>(info.external_allocator_info.free))},
@@ -102,8 +98,6 @@ ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions(const OrtMIGrap
       {migraphx_provider_option::kFp16Enable, MakeStringWithClassicLocale(info.migraphx_fp16_enable)},
       {migraphx_provider_option::kFp8Enable, MakeStringWithClassicLocale(info.migraphx_fp8_enable)},
       {migraphx_provider_option::kInt8Enable, MakeStringWithClassicLocale(info.migraphx_int8_enable)},
-      {migraphx_provider_option::kSaveCompiledModel, MakeStringWithClassicLocale(info.migraphx_save_compiled_model)},
-      {migraphx_provider_option::kLoadCompiledModel, MakeStringWithClassicLocale(info.migraphx_load_compiled_model)},
       {migraphx_provider_option::kModelCacheDir, MakeStringWithClassicLocale(info.migraphx_cache_dir)},
       {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(info.migraphx_mem_limit)},
       {migraphx_provider_option::kArenaExtendStrategy, EnumToName(arena_extend_strategy_mapping, static_cast<onnxruntime::ArenaExtendStrategy>(info.migraphx_arena_extend_strategy))},

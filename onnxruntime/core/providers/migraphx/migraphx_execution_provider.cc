@@ -155,10 +155,6 @@ void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecut
   }
 
   // Save/load migraphx compiled models
-  save_compiled_model_ = info.save_compiled_model;
-  save_compiled_path_ = info.save_model_file;
-  load_compiled_model_ = info.load_compiled_model;
-  load_compiled_path_ = info.load_model_file;
   model_cache_path_ = info.model_cache_dir;
 
   exhaustive_tune_ = info.exhaustive_tune;
@@ -237,28 +233,10 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
   }
 
   // Save/load migraphx compiled models
-  const std::string save_comp_model_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kSaveCompiledModel);
-  if (!save_comp_model_env.empty()) {
-    save_compiled_model_ = (std::stoi(save_comp_model_env) == 0 ? false : true);
-    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_SAVE_COMPILED_MODEL: " << save_compiled_model_;
-  }
-
-  const std::string save_model_path_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kSavedModelPath);
-  if (save_compiled_model_ && !save_model_path_env.empty()) {
-    save_compiled_path_ = save_model_path_env;
-    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_SAVE_COMPILED_PATH: " << save_compiled_path_;
-  }
-
-  const std::string load_comp_model_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kLoadCompiledModel);
-  if (!load_comp_model_env.empty()) {
-    load_compiled_model_ = (std::stoi(load_comp_model_env) == 0 ? false : true);
-    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_LOAD_COMPILED_MODEL: " << load_compiled_model_;
-  }
-
-  const std::string load_model_path_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kLoadModelPath);
-  if (load_compiled_model_ && !load_model_path_env.empty()) {
-    load_compiled_path_ = load_model_path_env;
-    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_LOAD_COMPILED_PATH: " << load_compiled_path_;
+  const auto model_cache_path_env = GetEnvironmentVar(migraphx_env_vars::kModelCachePath);
+  if (!model_cache_path_env.empty()) {
+    model_cache_path_ = GetEnvironmentVar(migraphx_env_vars::kModelCachePath);
+    LOGS_DEFAULT(INFO) << "\n" << migraphx_env_vars::kModelCachePath << ": " << model_cache_path_;
   }
 
   // dump unsupported ops
@@ -286,10 +264,6 @@ void MIGraphXExecutionProvider::print_migraphx_ep_flags() {
                         << "\n " << migraphx_provider_option::kInt8CalibTable << ": " << int8_calibration_cache_name_
                         << "\n int8_calibration_cache_available: " << int8_calibration_cache_available_
                         << "\n " << migraphx_provider_option::kInt8UseNativeCalibTable << ": " << int8_use_native_migraphx_calibration_table_
-                        << "\n " << migraphx_provider_option::kSaveCompiledModel << ": " << save_compiled_model_
-                        << "\n " << migraphx_provider_option::kSaveModelPath << ": " << save_compiled_path_
-                        << "\n " << migraphx_provider_option::kLoadCompiledModel << ": " << load_compiled_model_
-                        << "\n " << migraphx_provider_option::kLoadModelPath << ": " << load_compiled_path_
                         << "\n " << migraphx_provider_option::kModelCacheDir << ": " << model_cache_path_;
 }
 
@@ -1444,8 +1418,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_mu_,
             map_no_input_shape_[context->node_name], fp16_enable_, fp8_enable_, int8_enable_,
             int8_calibration_cache_available_, dynamic_range_map_,
-            save_compiled_model_, save_compiled_path_,
-            load_compiled_model_, load_compiled_path_, model_cache_path_.string(), dump_model_ops_};
+            model_cache_path_.string(), dump_model_ops_};
       *state = p.release();
       return 0;
     };
