@@ -3,10 +3,10 @@
 
 #pragma once
 
+#include <set>
 #include "core/framework/arena_extend_strategy.h"
 #include "core/framework/execution_provider.h"
 #include <mutex>
-#include <set>
 #include "core/providers/migraphx/migraphx_execution_provider_info.h"
 #include "core/providers/migraphx/migraphx_call.h"
 
