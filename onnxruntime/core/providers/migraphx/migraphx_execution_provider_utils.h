@@ -7,6 +7,7 @@
 #include <fstream>
 #include <unordered_map>
 #include <string>
+#include <vector>
 #include <iostream>
 #include <filesystem>
 #include <memory>
@@ -14,8 +15,8 @@
 #include "core/providers/migraphx/ort_trt_int8_cal_table.fbs.h"
 #include "core/session/onnxruntime_cxx_api.h"
 #include "core/framework/execution_provider.h"
-#include <core/framework/murmurhash3.h>
 #include "core/common/path_string.h"
+#include "core/framework/murmurhash3.h"
 
 namespace fs = std::filesystem;
 
