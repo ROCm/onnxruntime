@@ -119,6 +119,7 @@ MIGraphXExecutionProvider::~MIGraphXExecutionProvider() {
 void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecutionProviderInfo& info) {
   // Set GPU device to be used
   HIP_CALL_THROW(hipSetDevice(info_.device_id));
+  HIP_CALL_THROW(hipGetDeviceProperties(&device_prop_, info.device_id));
   t_ = migraphx::target(info.target_device.c_str());
 
   // Quantization
@@ -1327,7 +1328,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     const Node& fused_node = fused_node_graph.fused_node;
 
     std::filesystem::path model_cache_file;
-    auto mxr_filename_prefix = to_hex(MIGraphX_Version) + "-" + GenerateGraphId(graph_body_viewer) + "-";
+    auto mxr_filename_prefix = to_hex(MIGraphX_Version) + "-" + GenerateGraphId(graph_body_viewer) + "-" + make_hash(std::string_view(device_prop_.gcnArchName)) + "-";
 
     // Get model input names (only first layer)
     const Graph* cur_graph = &graph_body_viewer.GetGraph();

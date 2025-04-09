@@ -106,6 +106,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   migraphx::target t_;
   std::mutex mgx_mu_;
   hipStream_t stream_ = nullptr;
+  hipDeviceProp_t device_prop_;
   bool exhaustive_tune_ = false;
   mutable std::filesystem::path model_path_;
 
