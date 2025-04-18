@@ -848,6 +848,7 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
 #endif
   } else if (type == kMIGraphXExecutionProvider) {
 #ifdef USE_MIGRAPHX
+    std::string model_cache_path, cal_table_name;
     auto it = provider_options_map.find(type);
     if (it != provider_options_map.end()) {
       OrtMIGraphXProviderOptions params{
@@ -857,10 +858,7 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
           0,
           0,
           nullptr,
-          0,
-          "./compiled_model.mxr",
-          0,
-          "./compiled_model.mxr",
+          nullptr,
           false,
           SIZE_MAX,
           0};
@@ -903,7 +901,8 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
           }
         } else if (option.first == migraphx_provider_option::kInt8CalibTable) {
           if (!option.second.empty()) {
-            params.migraphx_int8_calibration_table_name = option.second.c_str();
+            cal_table_name = option.second;
+            params.migraphx_int8_calibration_table_name = cal_table_name.c_str();
           } else {
             ORT_THROW(
                 "[ERROR] [MIGraphX] The value for the key 'migraphx_int8_calibration_table_name' should be a "
@@ -919,37 +918,10 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
                 "[ERROR] [MIGraphX] The value for the key 'migraphx_use_native_calibration_table' should be"
                 " 'True' or 'False'. Default value is 'False'.\n");
           }
-        } else if (option.first == migraphx_provider_option::kSaveCompiledModel) {
-          if (option.second == "True" || option.second == "true") {
-            params.migraphx_save_compiled_model = true;
-          } else if (option.second == "False" || option.second == "false") {
-            params.migraphx_save_compiled_model = false;
-          } else {
-            ORT_THROW(
-                "[ERROR] [MIGraphX] The value for the key 'migraphx_save_compiled_model' should be"
-                " 'True' or 'False'. Default value is 'False'.\n");
-          }
-        } else if (option.first == migraphx_provider_option::kSaveModelPath) {
+        } else if (option.first == migraphx_provider_option::kModelCacheDir) {
           if (!option.second.empty()) {
-            params.migraphx_save_model_path = option.second.c_str();
-          } else {
-            ORT_THROW(
-                "[ERROR] [MIGraphX] The value for the key 'migraphx_save_model_name' should be a "
-                "file name i.e. 'compiled_model.mxr'.\n");
-          }
-        } else if (option.first == migraphx_provider_option::kLoadCompiledModel) {
-          if (option.second == "True" || option.second == "true") {
-            params.migraphx_load_compiled_model = true;
-          } else if (option.second == "False" || option.second == "false") {
-            params.migraphx_load_compiled_model = false;
-          } else {
-            ORT_THROW(
-                "[ERROR] [MIGraphX] The value for the key 'migraphx_load_compiled_model' should be"
-                " 'True' or 'False'. Default value is 'False'.\n");
-          }
-        } else if (option.first == migraphx_provider_option::kLoadModelPath) {
-          if (!option.second.empty()) {
-            params.migraphx_load_model_path = option.second.c_str();
+            model_cache_path = option.second;
+            params.migraphx_cache_dir = model_cache_path.c_str();
           } else {
             ORT_THROW(
                 "[ERROR] [MIGraphX] The value for the key 'migraphx_load_model_name' should be a "
