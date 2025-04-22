@@ -12,15 +12,15 @@
 #include "core/session/onnxruntime_cxx_api.h"
 #include "core/common/safeint.h"
 #include "core/common/logging/severity.h"
-#include "migraphx_execution_provider.h"
-#include "migraphx_execution_provider_info.h"
-#include "migraphx_execution_provider_utils.h"
-#include "migraphx_allocator.h"
-#include "gpu_data_transfer.h"
+#include "core/providers/migraphx/migraphx_execution_provider.h"
+#include "core/providers/migraphx/migraphx_execution_provider_info.h"
+#include "core/providers/migraphx/migraphx_execution_provider_utils.h"
+#include "core/providers/migraphx/migraphx_allocator.h"
+#include "core/providers/migraphx/migraphx_inc.h"
+#include "core/providers/migraphx/gpu_data_transfer.h"
 #include <hip/hip_version.h>
-#include "migraphx_call.h"
 
-#include "migraphx_stream_handle.h"
+#include "core/providers/migraphx/migraphx_stream_handle.h"
 
 #if defined(_MSC_VER)
 #pragma warning(disable : 4244 4245)
@@ -106,195 +106,126 @@ std::shared_ptr<KernelRegistry> MIGraphXExecutionProvider::GetKernelRegistry() c
 }
 
 MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProviderInfo& info)
-    : IExecutionProvider{onnxruntime::kMIGraphXExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, info.device_id)}, info_(info) {
+    : IExecutionProvider{kMIGraphXExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, info.device_id)},
+      device_id_{info.device_id},
+      fp16_enable_{info.fp16_enable},
+      fp8_enable_{info.fp8_enable},
+      int8_enable_{info.int8_enable},
+      model_cache_path_{info.model_cache_dir},
+      exhaustive_tune_{info.exhaustive_tune},
+      metadef_id_generator_{ModelMetadefIdGenerator::Create()}
+{
   InitProviderOrtApi();
-  get_flags_from_session_info(info);
-  metadef_id_generator_ = ModelMetadefIdGenerator::Create();
-  get_flags_from_env();
-}
 
-MIGraphXExecutionProvider::~MIGraphXExecutionProvider() {
-}
-
-void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecutionProviderInfo& info) {
   // Set GPU device to be used
-  HIP_CALL_THROW(hipSetDevice(info_.device_id));
-  HIP_CALL_THROW(hipGetDeviceProperties(&device_prop_, info.device_id));
+  HIP_CALL_THROW(hipSetDevice(device_id_));
+  HIP_CALL_THROW(hipGetDeviceProperties(&device_prop_, device_id_));
   t_ = migraphx::target(info.target_device.c_str());
 
-  // Quantization
-  fp16_enable_ = info.fp16_enable;
-
-#if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR >= 4 && HIP_VERSION_PATCH >= 2)
-  bf16_enable_ = info.bf16_enable;
-#endif
-
-  if (bf16_enable_ and fp16_enable_) {
-    bf16_enable_ = false;
-    fp16_enable_ = false;
-    LOGS_DEFAULT(FATAL) << "MIGraphX: BF16 and FP16 Quantization Mutually exclusive. Ignoring both Quantization flags";
-  }
-
-#if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR >= 4)
-  fp8_enable_ = info.fp8_enable;
-#else
-  LOGS_DEFAULT(WARNING) << "MIGraphX: FP8 Quantization requires ROCm 6.4 or greater";
+#if HIP_VERSION_MAJOR < 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR < 4)
+  if (fp8_enable_) 
+      LOGS_DEFAULT(info) << "MIGraphX: FP8 Quantization requires ROCm 6.4 or greater";
   fp8_enable_ = false;
 #endif
-  int8_enable_ = info.int8_enable;
 
-  if (int8_enable_ and fp8_enable_) {
-    int8_enable_ = false;
-    fp8_enable_ = false;
-    LOGS_DEFAULT(FATAL) << "MIGraphX: FP8 and INT8 Quantization Mutually exclusive. Ignoring both Quantization flags";
-  }
-
-  if (int8_enable_ xor fp8_enable_) {
-    int8_calibration_cache_name_ = info.int8_calibration_table_name;
-    int8_use_native_migraphx_calibration_table_ = info.int8_use_native_calibration_table;
-  }
-
-  if (int8_enable_ or fp8_enable_) {
-    int8_calibration_cache_available_ = !info.int8_calibration_table_name.empty();
-  }
-
-  // Load INT8 calibration table
-  std::unordered_map<std::string, float> dynamic_range_map;
-  if ((int8_enable_ || fp8_enable_) && int8_calibration_cache_available_) {
-    const std::string calibration_cache_path = GetCachePath(calibration_cache_path_, int8_calibration_cache_name_);
-    if (!ReadDynamicRange(calibration_cache_path, int8_use_native_migraphx_calibration_table_, dynamic_range_map)) {
-      throw std::runtime_error("Session Failed to read INT8 calibration table " + calibration_cache_path);
-    }
-  }
-
-  // Save/load migraphx compiled models
-  model_cache_path_ = info.model_cache_dir;
-
-  exhaustive_tune_ = info.exhaustive_tune;
-
-  LOGS_DEFAULT(VERBOSE) << "[MIGraphX EP] MIGraphX provider Session Options:";
-  print_migraphx_ep_flags();
-}
-
-void MIGraphXExecutionProvider::get_flags_from_env() {
-  LOGS_DEFAULT(WARNING) << "[MIGraphX EP] MIGraphX ENV Override Variables Set:";
-  // whether fp16 is enable
-  const std::string fp16_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kFP16Enable);
+  // whether fp16 is enabled
+  const auto fp16_enable_env = GetEnvironmentVar(migraphx_env_vars::kFP16Enable);
   if (!fp16_enable_env.empty()) {
-    fp16_enable_ = (std::stoi(fp16_enable_env) == 0 ? false : true);
-    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_FP16_ENABLE: " << fp16_enable_;
+    fp16_enable_ = std::stoi(fp16_enable_env) != 0;
+    LOGS_DEFAULT(INFO) << "\n" << migraphx_env_vars::kFP16Enable << ": " << fp16_enable_;
   }
 
-  const std::string bf16_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kBF16Enable);
-  if (!bf16_enable_env.empty()) {
-#if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR >= 4 && HIP_VERSION_PATCH >= 2)
-    bf16_enable_ = (std::stoi(bf16_enable_env) == 0 ? false : true);
-    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_BF16_ENABLE: " << fp16_enable_;
-#else
-    LOGS_DEFAULT(WARNING) << "MIGraphX: BF16 Quantization requires ROCm 6.4.2 or greater";
-    bf16_enable_ = false;
-#endif
-  }
-
-  if (bf16_enable_ and fp16_enable_) {
-    LOGS_DEFAULT(FATAL) << "\nMIGraphX: FP16 and BF16 Quantization Mutually exclusive. Ignoring both flags";
-  }
-
-  // whether fp8 quantization is enabled
-  const std::string fp8_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kFP8Enable);
-  if (!fp8_enable_env.empty()) {
 #if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR >= 4)
-    fp8_enable_ = (std::stoi(fp8_enable_env) == 0 ? false : true);
-    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_FP8_ENABLE: " << fp8_enable_;
-#else
-    LOGS_DEFAULT(WARNING) << "MIGraphX: FP8 Quantization requires ROCm 6.4 or greater";
-    fp8_enable_ = false;
+  // whether fp8 quantization is enabled
+  const auto fp8_enable_env = GetEnvironmentVar(migraphx_env_vars::kFP8Enable);
+  if (!fp8_enable_env.empty()) {
+    fp8_enable_ = std::stoi(fp8_enable_env) != 0;
+    LOGS_DEFAULT(INFO) << "\n" << migraphx_env_vars::kFP8Enable << ": " << fp8_enable_;
 #endif
   }
 
   // whether int8 is enabled
-  const std::string int8_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kINT8Enable);
+  const auto int8_enable_env = GetEnvironmentVar(migraphx_env_vars::kINT8Enable);
   if (!int8_enable_env.empty()) {
-    int8_enable_ = (std::stoi(int8_enable_env) == 0 ? false : true);
-    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_INT8_ENABLE: " << int8_enable_;
-  }
-
-  if (int8_enable_ and fp8_enable_) {
-    LOGS_DEFAULT(FATAL) << "\nMIGraphX: FP8 and INT8 Quantization Mutually exclusive. Ignoring both Quantization flags";
-  }
-
-  if (int8_enable_ || fp8_enable_) {
-    const std::string int8_calibration_cache_name_env =
-        onnxruntime::GetEnvironmentVar(migraphx_env_vars::kINT8CalibrationTableName);
-    if (!int8_calibration_cache_name_env.empty()) {
-      int8_calibration_cache_name_ = int8_calibration_cache_name_env;
-      LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_CALIBRATION_TABLE_NAME: " << int8_calibration_cache_name_;
-    }
-
-    const std::string cache_path = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kCachePath);
-    if (!cache_path.empty()) {
-      calibration_cache_path_ = cache_path;
-      LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_CACHE_PATH: " << calibration_cache_path_;
-    }
-
-    const std::string int8_use_native_migraphx_calibration_table_env =
-        onnxruntime::GetEnvironmentVar(migraphx_env_vars::kINT8UseNativeMIGraphXCalibrationTable);
-    if (!int8_use_native_migraphx_calibration_table_env.empty()) {
-      int8_use_native_migraphx_calibration_table_ =
-          (std::stoi(int8_use_native_migraphx_calibration_table_env) == 0 ? false : true);
-      LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_INT8_USE_NATIVE_CALIBRATION_TABLE: "
-                            << int8_use_native_migraphx_calibration_table_;
-    }
-  }
-
-  if (int8_enable_ or fp8_enable_) {
-    int8_calibration_cache_available_ = !int8_calibration_cache_name_.empty();
-  }
-
-  // Load INT8 calibration table
-  std::unordered_map<std::string, float> dynamic_range_map;
-  if ((int8_enable_ || fp8_enable_) && int8_calibration_cache_available_) {
-    const std::string calibration_cache_path = GetCachePath(calibration_cache_path_, int8_calibration_cache_name_);
-    if (!ReadDynamicRange(calibration_cache_path, int8_use_native_migraphx_calibration_table_, dynamic_range_map)) {
-      throw std::runtime_error("ENV Failed to read calibration table " + calibration_cache_path);
-    }
+    int8_enable_ = std::stoi(int8_enable_env) != 0;
+    LOGS_DEFAULT(INFO) << "\n" << migraphx_env_vars::kINT8Enable << ": " << int8_enable_;
   }
 
   // Save/load migraphx compiled models
   const auto model_cache_path_env = GetEnvironmentVar(migraphx_env_vars::kModelCachePath);
   if (!model_cache_path_env.empty()) {
     model_cache_path_ = GetEnvironmentVar(migraphx_env_vars::kModelCachePath);
-    LOGS_DEFAULT(INFO) << "\n"
-                       << migraphx_env_vars::kModelCachePath << ": " << model_cache_path_;
+    LOGS_DEFAULT(INFO) << "\n" << migraphx_env_vars::kModelCachePath << ": " << model_cache_path_;
   }
 
   // dump unsupported ops
-  const std::string dump_model_ops_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kDumpModelOps);
+  const auto dump_model_ops_env = GetEnvironmentVar(migraphx_env_vars::kDumpModelOps);
   if (!dump_model_ops_env.empty()) {
-    dump_model_ops_ = (std::stoi(dump_model_ops_env) == 0 ? false : true);
-    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_DUMP_MODEL_OPS: " << dump_model_ops_;
+    dump_model_ops_ = std::stoi(dump_model_ops_env) != 0;
+    LOGS_DEFAULT(INFO) << "\n" << migraphx_env_vars::kDumpModelOps << ": " << dump_model_ops_;
   }
 
   // Allow for exhaustive tune during compile
-  const std::string exhaustive_tune_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kExhaustiveTune);
+  const auto exhaustive_tune_env = GetEnvironmentVar(migraphx_env_vars::kExhaustiveTune);
   if (!exhaustive_tune_env.empty()) {
-    exhaustive_tune_ = (std::stoi(exhaustive_tune_env) == 0 ? false : true);
-    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_EXHAUSTIVE_TUNE_OPS: " << exhaustive_tune_;
+    exhaustive_tune_ = std::stoi(exhaustive_tune_env) != 0;
+    LOGS_DEFAULT(INFO) << "\n" << migraphx_env_vars::kExhaustiveTune << ": " << exhaustive_tune_;
   }
-}
 
-void MIGraphXExecutionProvider::print_migraphx_ep_flags() {
-  LOGS_DEFAULT(VERBOSE) << "\n " << migraphx_provider_option::kDeviceId << ": " << info_.device_id
-                        << "\n " << migraphx_provider_option::kFp16Enable << ": " << fp16_enable_
-                        << "\n " << migraphx_provider_option::kBf16Enable << ": " << bf16_enable_
-                        << "\n " << migraphx_provider_option::kFp8Enable << ": " << fp8_enable_
-                        << "\n " << migraphx_provider_option::kInt8Enable << ": " << int8_enable_
-                        << "\n dump_model_ops: " << dump_model_ops_
-                        << "\n " << migraphx_provider_option::kExhaustiveTune << ": " << exhaustive_tune_
-                        << "\n " << migraphx_provider_option::kInt8CalibTable << ": " << int8_calibration_cache_name_
-                        << "\n int8_calibration_cache_available: " << int8_calibration_cache_available_
-                        << "\n " << migraphx_provider_option::kInt8UseNativeCalibTable << ": " << int8_use_native_migraphx_calibration_table_
-                        << "\n " << migraphx_provider_option::kModelCacheDir << ": " << model_cache_path_;
+  if (int8_enable_ and fp8_enable_) {
+    LOGS_DEFAULT(ERROR) << "MIGraphX: FP8 and INT8 Quantization Mutually exclusive. Ignoring both Quantization flags";
+  } else {
+    const auto int8_calibration_cache_name_env
+      = GetEnvironmentVar(migraphx_env_vars::kINT8CalibrationTableName);
+    if (!int8_calibration_cache_name_env.empty()) {
+      int8_calibration_cache_name_ = int8_calibration_cache_name_env;
+      LOGS_DEFAULT(INFO) << "\n" << migraphx_env_vars::kINT8CalibrationTableName << ": " << int8_calibration_cache_name_env;
+    } else {
+      int8_calibration_cache_name_ = info.int8_calibration_table_name;
+    }
+
+    const auto cache_path_env = GetEnvironmentVar(migraphx_env_vars::kCachePath);
+    if (!cache_path_env.empty()) {
+      calibration_cache_path_ = cache_path_env;
+      LOGS_DEFAULT(INFO) << "\n" << migraphx_env_vars::kCachePath << ": " << cache_path_env;
+    } else {
+      calibration_cache_path_ = info.int8_calibration_cache_path;
+    }
+
+    const auto int8_use_native_migraphx_calibration_table_env
+      = GetEnvironmentVar(migraphx_env_vars::kINT8UseNativeMIGraphXCalibrationTable);
+    if (!int8_use_native_migraphx_calibration_table_env.empty()) {
+      int8_use_native_migraphx_calibration_table_ =
+          std::stoi(int8_use_native_migraphx_calibration_table_env) != 0;
+      LOGS_DEFAULT(INFO) << "\n" << migraphx_env_vars::kINT8UseNativeMIGraphXCalibrationTable << ": "
+                         << int8_use_native_migraphx_calibration_table_env;
+    } else {
+      int8_use_native_migraphx_calibration_table_ = info.int8_use_native_calibration_table;
+    }
+
+    int8_calibration_cache_available_ = !int8_calibration_cache_name_.empty();
+
+    // Load INT8 calibration table
+    std::unordered_map<std::string, float> dynamic_range_map;
+    if (int8_calibration_cache_available_) {
+      const auto calibration_cache_path = GetCachePath(calibration_cache_path_, int8_calibration_cache_name_);
+      if (!ReadDynamicRange(calibration_cache_path, int8_use_native_migraphx_calibration_table_, dynamic_range_map)) {
+        throw std::runtime_error("Session Failed to read INT8 calibration table " + calibration_cache_path.string());
+      }
+    }
+  }
+
+  LOGS_DEFAULT(INFO) << "[MIGraphX EP] MIGraphX provider options: "
+                     << "\n " << migraphx_provider_option::kDeviceId << ": " << device_id_
+                     << "\n " << migraphx_provider_option::kFp16Enable << ": " << fp16_enable_
+                     << "\n " << migraphx_provider_option::kFp8Enable << ": " << fp8_enable_
+                     << "\n " << migraphx_provider_option::kInt8Enable << ": " << int8_enable_
+                     << "\n dump_model_ops: " << dump_model_ops_
+                     << "\n " << migraphx_provider_option::kExhaustiveTune << ": " << exhaustive_tune_
+                     << "\n " << migraphx_provider_option::kInt8CalibTable << ": " << int8_calibration_cache_name_
+                     << "\n int8_calibration_cache_available: " << int8_calibration_cache_available_
+                     << "\n " << migraphx_provider_option::kInt8UseNativeCalibTable << ": " << int8_use_native_migraphx_calibration_table_
+                     << "\n " << migraphx_provider_option::kModelCacheDir << ": " << model_cache_path_;
 }
 
 AllocatorPtr MIGraphXExecutionProvider::CreateMIGraphXAllocator(OrtDevice::DeviceId device_id,
@@ -336,14 +267,15 @@ AllocatorPtr MIGraphXExecutionProvider::CreateMIGraphXAllocator(OrtDevice::Devic
 }
 
 std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators() {
-  AllocatorCreationInfo default_memory_info(
-      [](OrtDevice::DeviceId device_id) { return std::make_unique<MIGraphXAllocator>(device_id, onnxruntime::CUDA); }, info_.device_id);
-  AllocatorCreationInfo pinned_allocator_info(
+  const AllocatorCreationInfo default_memory_info(
       [](OrtDevice::DeviceId device_id) {
-        return std::make_unique<MIGraphXPinnedAllocator>(device_id, onnxruntime::CUDA_PINNED);
-      },
-      0);
-  return std::vector<AllocatorPtr>{CreateAllocator(default_memory_info), CreateAllocator(pinned_allocator_info)};
+         return std::make_unique<MIGraphXAllocator>(device_id, CUDA);
+      }, device_id_);
+  const AllocatorCreationInfo pinned_allocator_info(
+      [](OrtDevice::DeviceId device_id) {
+        return std::make_unique<MIGraphXPinnedAllocator>(device_id, CUDA_PINNED);
+      }, device_id_);
+  return {CreateAllocator(default_memory_info), CreateAllocator(pinned_allocator_info)};
 }
 
 std::unique_ptr<onnxruntime::IDataTransfer> MIGraphXExecutionProvider::GetDataTransfer() const {
@@ -1254,17 +1186,18 @@ bool get_input_output_names(const GraphViewer& graph,
 
 // Attempt to load a model and catch any exceptions on load fail.
 // Useful to default to EP to trigger the compile if file doesn't exist or loading fails.
-bool load_precompiled_model(migraphx::program& prog, const std::filesystem::path& path) try {
-  if (!path.empty() && exists(path)) {
-    LOGS_DEFAULT(INFO) << "Attempting to load model at:" << path.string();
-    prog = migraphx::load(path.string().c_str());
-    LOGS_DEFAULT(INFO) << "load model : Success";
-    return true;
+bool load_precompiled_model(migraphx::program& prog, const std::filesystem::path& path)
+  try {
+    if (!path.empty() && exists(path)) {
+      LOGS_DEFAULT(INFO) << "Attempting to load model at:" << path.string();
+      prog = migraphx::load(path.string().c_str());
+      LOGS_DEFAULT(INFO) << "load model : Success";
+      return true;
+    }
+    return false;
+  } catch (...) {
+    return false;
   }
-  return false;
-} catch (...) {
-  return false;
-}
 
 void save_compiled_model(const migraphx::program& prog, const std::filesystem::path& path) {
   if (!path.empty()) {
@@ -1352,20 +1285,18 @@ std::string to_hex(const uint64_t v) {
   return std::string{s.data(), ptr};
 }
 
-template <typename T>
-std::string make_hash(T v) {
+template <typename T> std::string make_hash(T v) {
   std::array<std::uint32_t, 4> temp{};
   MurmurHash3::x86_128(v.data(), gsl::narrow_cast<int32_t>(v.size()), temp[0], temp.data());
   return to_hex(temp[0] | static_cast<uint64_t>(temp[1]) << 32);
 }
 
-template <>
-std::string make_hash(const char* v) {
+template <> std::string make_hash(const char* v) {
   return make_hash(std::string_view{v});
 }
 
 constexpr std::uint64_t MIGraphX_Version =
-    ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
+  ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
 
 Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& fused_nodes,
                                           std::vector<NodeComputeInfo>& node_compute_funcs) {
@@ -1376,7 +1307,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     const Node& fused_node = fused_node_graph.fused_node;
 
     std::filesystem::path model_cache_file;
-    auto mxr_filename_prefix = to_hex(MIGraphX_Version) + "-" + GenerateGraphId(graph_body_viewer) + "-" + make_hash(std::string_view(device_prop_.gcnArchName)) + "-";
+    auto mxr_filename_prefix = to_hex(MIGraphX_Version) + "-" + GenerateGraphId(graph_body_viewer) + "-" + make_hash(std::string_view{device_prop_.gcnArchName}) + "-";
 
     // Get model input names (only first layer)
     const Graph* cur_graph = &graph_body_viewer.GetGraph();
@@ -1462,12 +1393,11 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     map_no_input_shape_[fused_node.Name()] = no_input_shape;
     NodeComputeInfo compute_info;
     compute_info.create_state_func = [=](ComputeContext* context, FunctionState* state) {
-      std::unique_ptr<MIGraphXFuncState> p = std::make_unique<MIGraphXFuncState>();
+      auto p = std::make_unique<MIGraphXFuncState>();
       *p = {context->allocate_func, context->release_func, context->allocator_handle, map_progs_[context->node_name],
             map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_mu_,
-            map_no_input_shape_[context->node_name], fp16_enable_, bf16_enable_, fp8_enable_, int8_enable_,
-            int8_calibration_cache_available_, dynamic_range_map_,
-            model_cache_path_.string(), dump_model_ops_};
+            map_no_input_shape_[context->node_name], fp16_enable_, fp8_enable_, int8_enable_,
+            int8_calibration_cache_available_, dynamic_range_map_, model_cache_path_.string(), dump_model_ops_};
       *state = p.release();
       return 0;
     };
@@ -1479,7 +1409,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
     compute_info.compute_func = [this, mxr_filename_prefix](FunctionState state, const OrtApi* api, OrtKernelContext* context) {
       Ort::KernelContext ctx(context);
-      MIGraphXFuncState* mgx_state = reinterpret_cast<MIGraphXFuncState*>(state);
+      auto* mgx_state = static_cast<MIGraphXFuncState*>(state);
 
       std::unordered_map<std::string, std::size_t>& map_input_name_index = mgx_state->input_name_indexes;
       std::unordered_map<std::string, float>& map_dynamic_range = mgx_state->dynamic_range_map;
@@ -1501,7 +1431,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       std::vector<std::int64_t> input_shapes;
 
       if (no_input_shape) {
-        LOGS_DEFAULT(INFO) << "Missing input shape setting input parameters again";
+        LOGS_DEFAULT(VERBOSE) << "Missing input shape setting input parameters again";
         for (auto& it : map_input_name_index) {
           auto& name = it.first;
           auto& index = it.second;
@@ -1513,7 +1443,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           input_shape_match = false;
         }
       } else {
-        LOGS_DEFAULT(INFO) << "Assigning inputs, and parameters from compiled model";
+        LOGS_DEFAULT(VERBOSE) << "Assigning inputs, and parameters from compiled model";
         param_shapes = prog.get_parameter_shapes();
         auto prog_output_shapes = prog.get_output_shapes();
 
@@ -1545,7 +1475,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         }
       }
 
-      // input shapes are different, needs to re-parse onnx and
+      // input shapes are different, needs to reparse onnx and
       // re-compile the program
       if (!input_shape_match) {
         std::filesystem::path model_cache_file;
@@ -1676,7 +1606,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
                                                static_cast<hipStream_t>(rocm_stream)));
           }
         }
-      };
+      }
 
       return Status::OK();
     };

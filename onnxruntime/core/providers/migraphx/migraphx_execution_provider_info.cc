@@ -7,8 +7,8 @@
 #include "core/common/make_string.h"
 #include "core/common/parse_string.h"
 #include "core/framework/provider_options_utils.h"
-#include "migraphx_inc.h"
-#include "migraphx_call.h"
+#include "core/providers/migraphx/migraphx_inc.h"
+#include "core/providers/migraphx/migraphx_call.h"
 
 namespace onnxruntime {
 
@@ -16,7 +16,6 @@ const EnumNameMapping<ArenaExtendStrategy> arena_extend_strategy_mapping{
     {ArenaExtendStrategy::kNextPowerOfTwo, "kNextPowerOfTwo"},
     {ArenaExtendStrategy::kSameAsRequested, "kSameAsRequested"},
 };
-
 MIGraphXExecutionProviderInfo MIGraphXExecutionProviderInfo::FromProviderOptions(const ProviderOptions& options) {
   MIGraphXExecutionProviderInfo info{};
   void* alloc = nullptr;
@@ -77,35 +76,32 @@ MIGraphXExecutionProviderInfo MIGraphXExecutionProviderInfo::FromProviderOptions
 }
 
 ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions(const MIGraphXExecutionProviderInfo& info) {
-  const ProviderOptions options{
+  return {
       {migraphx_provider_option::kDeviceId, MakeStringWithClassicLocale(info.device_id)},
       {migraphx_provider_option::kFp16Enable, MakeStringWithClassicLocale(info.fp16_enable)},
-      {migraphx_provider_option::kBf16Enable, MakeStringWithClassicLocale(info.bf16_enable)},
       {migraphx_provider_option::kFp8Enable, MakeStringWithClassicLocale(info.fp8_enable)},
       {migraphx_provider_option::kInt8Enable, MakeStringWithClassicLocale(info.int8_enable)},
       {migraphx_provider_option::kModelCacheDir, MakeStringWithClassicLocale(info.model_cache_dir)},
       {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(info.mem_limit)},
-      {migraphx_provider_option::kGpuExternalAlloc, MakeStringWithClassicLocale(reinterpret_cast<size_t>(info.external_allocator_info.alloc))},
-      {migraphx_provider_option::kGpuExternalFree, MakeStringWithClassicLocale(reinterpret_cast<size_t>(info.external_allocator_info.free))},
-      {migraphx_provider_option::kGpuExternalEmptyCache, MakeStringWithClassicLocale(reinterpret_cast<size_t>(info.external_allocator_info.empty_cache))},
+      {migraphx_provider_option::kGpuExternalAlloc, MakeStringWithClassicLocale(info.external_allocator_info.alloc)},
+      {migraphx_provider_option::kGpuExternalFree, MakeStringWithClassicLocale(info.external_allocator_info.free)},
+      {migraphx_provider_option::kGpuExternalEmptyCache, MakeStringWithClassicLocale(info.external_allocator_info.empty_cache)},
       {migraphx_provider_option::kArenaExtendStrategy, EnumToName(arena_extend_strategy_mapping, info.arena_extend_strategy)},
-      {migraphx_provider_option::kExhaustiveTune, MakeStringWithClassicLocale(info.exhaustive_tune)},
+      {migraphx_provider_option::kExhaustiveTune, MakeStringWithClassicLocale(info.exhaustive_tune)}
   };
-  return options;
 }
 
 ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions(const OrtMIGraphXProviderOptions& info) {
-  const ProviderOptions options{
+  return {
       {migraphx_provider_option::kDeviceId, MakeStringWithClassicLocale(info.device_id)},
       {migraphx_provider_option::kFp16Enable, MakeStringWithClassicLocale(info.migraphx_fp16_enable)},
-      {migraphx_provider_option::kBf16Enable, MakeStringWithClassicLocale(info.migraphx_bf16_enable)},
       {migraphx_provider_option::kFp8Enable, MakeStringWithClassicLocale(info.migraphx_fp8_enable)},
       {migraphx_provider_option::kInt8Enable, MakeStringWithClassicLocale(info.migraphx_int8_enable)},
       {migraphx_provider_option::kModelCacheDir, MakeStringWithClassicLocale(info.migraphx_cache_dir)},
       {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(info.migraphx_mem_limit)},
       {migraphx_provider_option::kArenaExtendStrategy, EnumToName(arena_extend_strategy_mapping, static_cast<onnxruntime::ArenaExtendStrategy>(info.migraphx_arena_extend_strategy))},
-      {migraphx_provider_option::kExhaustiveTune, MakeStringWithClassicLocale(info.migraphx_exhaustive_tune)},
+      {migraphx_provider_option::kExhaustiveTune, MakeStringWithClassicLocale(info.migraphx_exhaustive_tune)}
   };
-  return options;
 }
+
 }  // namespace onnxruntime

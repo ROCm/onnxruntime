@@ -206,7 +206,8 @@ std::unique_ptr<IDataTransfer> GetGPUDataTransfer() {
 
 #endif
 
-#ifdef USE_MIGRAPHX
+#if defined(USE_MIGRAPHX)
+
 void CpuToMIGraphXMemCpy(void* dst, const void* src, size_t num_bytes) {
   GetProviderInfo_MIGraphX().MIGraphXMemcpy_HostToDevice(dst, src, num_bytes);
 }

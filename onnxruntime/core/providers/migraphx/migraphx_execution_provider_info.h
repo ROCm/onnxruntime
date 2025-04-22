@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <filesystem>
 #include <limits>
 #include <string>
 
@@ -62,13 +63,13 @@ struct MIGraphXExecutionProviderInfo {
   bool bf16_enable{false};
   bool fp8_enable{false};
   bool int8_enable{false};
-  std::string int8_calibration_table_name{""};
+  std::string int8_calibration_table_name{};
   bool int8_use_native_calibration_table{false};
   std::filesystem::path model_cache_dir{};
   bool exhaustive_tune{false};
-
-  size_t mem_limit{std::numeric_limits<size_t>::max()};                             // Will be over-ridden by contents of `default_memory_arena_cfg` (if specified)
-  ArenaExtendStrategy arena_extend_strategy{ArenaExtendStrategy::kNextPowerOfTwo};  // Will be over-ridden by contents of `default_memory_arena_cfg` (if specified)
+  std::filesystem::path int8_calibration_cache_path{};
+  size_t mem_limit{std::numeric_limits<size_t>::max()};
+  ArenaExtendStrategy arena_extend_strategy{ArenaExtendStrategy::kNextPowerOfTwo};
 
   OrtArenaCfg* default_memory_arena_cfg{nullptr};
   MIGraphXExecutionProviderExternalAllocatorInfo external_allocator_info{};
@@ -81,7 +82,7 @@ struct MIGraphXExecutionProviderInfo {
 
 template <>
 struct std::hash<::onnxruntime::MIGraphXExecutionProviderInfo> {
-  size_t operator()(const ::onnxruntime::MIGraphXExecutionProviderInfo& info) const {
+  size_t operator()(const ::onnxruntime::MIGraphXExecutionProviderInfo& info) const noexcept {
     size_t value{0xbc9f1d34};  // seed
 
     // Bits: device_id (16), arena_extend_strategy (reserved 2), boolean options (1 each)
@@ -90,10 +91,9 @@ struct std::hash<::onnxruntime::MIGraphXExecutionProviderInfo> {
                   (static_cast<size_t>(info.fp16_enable) << 18) ^
                   (static_cast<size_t>(info.int8_enable) << 19) ^
                   (static_cast<size_t>(info.int8_use_native_calibration_table) << 20) ^
-                  (static_cast<size_t>(info.exhaustive_tune) << 21) ^
-                  (static_cast<size_t>(info.bf16_enable) << 22);
-    onnxruntime::HashCombine(data, value);
+                  (static_cast<size_t>(info.exhaustive_tune) << 21);
 
+    onnxruntime::HashCombine(data, value);
     onnxruntime::HashCombine(info.target_device, value);
     onnxruntime::HashCombine(info.default_memory_arena_cfg, value);
     onnxruntime::HashCombine(info.int8_calibration_table_name, value);

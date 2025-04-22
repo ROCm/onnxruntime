@@ -27,7 +27,6 @@ constexpr auto kCachePath = "ORT_MIGRAPHX_CACHE_PATH";
 constexpr auto kINT8UseNativeMIGraphXCalibrationTable = "ORT_MIGRAPHX_INT8_USE_NATIVE_CALIBRATION_TABLE";
 constexpr auto kModelCachePath = "ORT_MIGRAPHX_MODEL_CACHE_PATH";
 constexpr auto kExhaustiveTune = "ORT_MIGRAPHX_EXHAUSTIVE_TUNE";
-
 }  // namespace migraphx_env_vars
 
 // Information to construct kernel function state.
@@ -54,14 +53,10 @@ struct MIGraphXFuncState {
 };
 
 // Logical device representation.
-class MIGraphXExecutionProvider : public IExecutionProvider {
+class MIGraphXExecutionProvider final : public IExecutionProvider {
  public:
   explicit MIGraphXExecutionProvider(const MIGraphXExecutionProviderInfo& info);
-  ~MIGraphXExecutionProvider();
-
-  void get_flags_from_session_info(const MIGraphXExecutionProviderInfo& info);
-  void get_flags_from_env();
-  void print_migraphx_ep_flags();
+  ~MIGraphXExecutionProvider() override = default;
 
   Status Sync() const override;
 
@@ -89,13 +84,17 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   OrtDevice GetOrtDeviceByMemType(OrtMemType mem_type) const override;
   std::vector<AllocatorPtr> CreatePreferredAllocators() override;
 
-  int GetDeviceId() const override { return info_.device_id; }
+  int GetDeviceId() const override { return device_id_; }
   ProviderOptions GetProviderOptions() const override {
-    return MIGraphXExecutionProviderInfo::ToProviderOptions(info_);
+     return {{migraphx_provider_option::kDeviceId, MakeStringWithClassicLocale(device_id_)},
+       {migraphx_provider_option::kFp16Enable, MakeStringWithClassicLocale(fp16_enable_)},
+       {migraphx_provider_option::kInt8Enable, MakeStringWithClassicLocale(int8_enable_)},
+       {migraphx_provider_option::kModelCacheDir, MakeStringWithClassicLocale(model_cache_path_)}
+   };
   }
 
  private:
-  MIGraphXExecutionProviderInfo info_;
+  OrtDevice::DeviceId device_id_{0};
   bool fp16_enable_ = false;
   bool bf16_enable_ = false;
   bool fp8_enable_ = false;
@@ -103,17 +102,17 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   std::string int8_calibration_cache_name_;
   bool int8_calibration_cache_available_ = false;
   bool int8_use_native_migraphx_calibration_table_ = false;
-  std::string calibration_cache_path_;
+  std::filesystem::path calibration_cache_path_{};
   std::unordered_map<std::string, float> dynamic_range_map_;
-  std::filesystem::path model_cache_path_{};
   std::set<std::string> session_input_names;
+  std::filesystem::path model_cache_path_{};
   bool dump_model_ops_ = false;
   migraphx::target t_;
   std::mutex mgx_mu_;
   hipStream_t stream_ = nullptr;
   hipDeviceProp_t device_prop_;
   bool exhaustive_tune_ = false;
-  mutable std::filesystem::path model_path_;
+  mutable std::filesystem::path model_path_{};
 
   std::unordered_map<std::string, migraphx::program> map_progs_;
   std::unordered_map<std::string, std::string> map_onnx_string_;

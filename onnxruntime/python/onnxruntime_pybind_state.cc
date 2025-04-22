@@ -908,7 +908,8 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
 #endif
   } else if (type == kMIGraphXExecutionProvider) {
 #ifdef USE_MIGRAPHX
-    std::string model_cache_path, cal_table_name;
+    std::string calibration_table;
+    std::string model_cache_path;
     auto it = provider_options_map.find(type);
     if (it != provider_options_map.end()) {
       OrtMIGraphXProviderOptions params{
@@ -940,14 +941,14 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
                 "[ERROR] [MIGraphX] The value for the key 'migraphx_fp16_enable' should be"
                 " 'True' or 'False'. Default value is 'False'.\n");
           }
-        } else if (option.first == migraphx_provider_option::kBf16Enable) {
+        } else if (option.first == migraphx_provider_option::kFp8Enable) {
           if (option.second == "True" || option.second == "true") {
-            params.migraphx_bf16_enable = true;
+            params.migraphx_fp8_enable = true;
           } else if (option.second == "False" || option.second == "false") {
-            params.migraphx_bf16_enable = false;
+            params.migraphx_fp8_enable = false;
           } else {
             ORT_THROW(
-                "[ERROR] [MIGraphX] The value for the key 'migraphx_bf16_enable' should be"
+                "[ERROR] [MIGraphX] The value for the key 'migraphx_fp8_enable' should be"
                 " 'True' or 'False'. Default value is 'False'.\n");
           }
         } else if (option.first == migraphx_provider_option::kFp8Enable) {
