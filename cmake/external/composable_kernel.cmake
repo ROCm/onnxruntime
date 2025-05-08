@@ -10,9 +10,6 @@ onnxruntime_fetchcontent_declare(composable_kernel
   URL ${DEP_URL_composable_kernel}
   URL_HASH SHA1=${DEP_SHA1_composable_kernel}
   PATCH_COMMAND ${Patch_EXECUTABLE} --binary --ignore-whitespace -p1 < ${PATCH_CLANG} &&
-                ${Patch_EXECUTABLE} --binary --ignore-whitespace -p1 < ${PATCH_GFX12X} &&
-                ${Patch_EXECUTABLE} --binary --ignore-whitespace -p1 < ${PATCH_GFX950} &&
-                ${Patch_EXECUTABLE} --binary --ignore-whitespace -p1 < ${PATCH_GFX950_TILE} &&
                 ${Patch_EXECUTABLE} --binary --ignore-whitespace -p1 < ${PATCH_Clang20} &&
                 ${Patch_EXECUTABLE} --binary --ignore-whitespace -p1 < ${PATCH_Clang20_GFX12}
 )
