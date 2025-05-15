@@ -302,4 +302,41 @@ inline std::string GenerateGraphId(const GraphViewer& graph_viewer) {
     for (const auto* node_arg : node->InputDefs()) {
       if (node_arg->Exists()) {
         hash_str(node_arg->Name());
+        int dim_size = node_arg->Shape()->dim_size();
+        for (int i = 0; i < dim_size; i++) {
+          hash_str(std::to_string(node_arg->Shape()->dim(i).dim_value()));
+        }
+      }
+    }
+  }
+
+#ifdef __linux__
+  hash_str("LINUX");
+#elif defined(_WIN32)
+  hash_str("WINDOWS");
+#endif
+
+  model_hash = hash[0] | static_cast<uint64_t>(hash[1]) << 32;
+
+  std::array<char, sizeof(HashValue) << 1> s;
+  auto [ptr, ec] = std::to_chars(s.data(), s.data() + s.size(), model_hash, 16);
+  return std::string{s.data(), ptr};
+}
+
+inline void TrimLeft(std::string& s, int (*fn)(int) = std::isspace) {
+  s.erase(s.begin(), std::find_if(s.begin(), s.end(), [fn](int ch) {
+    return fn(ch);
+  }));
+}
+
+inline void TrimRight(std::string& s, int (*fn)(int) = std::isspace) {
+  s.erase(std::find_if(s.rbegin(), s.rend(), [fn](int ch) {
+    return fn(ch);
+  }).base(), s.end());
+}
+
+inline void Trim(std::string& s, int (*fn)(int) = std::isspace) {
+  TrimLeft(s, fn); TrimRight(s, fn);
+}
+
 }  // namespace onnxruntime
