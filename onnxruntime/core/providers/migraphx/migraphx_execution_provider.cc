@@ -125,6 +125,16 @@ void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecut
   // Quantization
   fp16_enable_ = info.fp16_enable;
 
+#if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR >= 4 && HIP_VERSION_PATCH >= 2)
+  bf16_enable_ = info.bf16_enable;
+#endif
+
+  if (bf16_enable_ and fp16_enable_) {
+    bf16_enable_ = false;
+    fp16_enable_ = false;
+    LOGS_DEFAULT(FATAL) << "MIGraphX: BF16 and FP16 Quantization Mutually exclusive. Ignoring both Quantization flags";
+  }
+
 #if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR >= 4)
   fp8_enable_ = info.fp8_enable;
 #else
@@ -134,6 +144,8 @@ void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecut
   int8_enable_ = info.int8_enable;
 
   if (int8_enable_ and fp8_enable_) {
+    int8_enable_ = false;
+    fp8_enable_ = false;
     LOGS_DEFAULT(FATAL) << "MIGraphX: FP8 and INT8 Quantization Mutually exclusive. Ignoring both Quantization flags";
   }
 
@@ -171,6 +183,21 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
   if (!fp16_enable_env.empty()) {
     fp16_enable_ = (std::stoi(fp16_enable_env) == 0 ? false : true);
     LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_FP16_ENABLE: " << fp16_enable_;
+  }
+
+  const std::string bf16_enable_env = onnxruntime::GetEnvironmentVar(migraphx_env_vars::kBF16Enable);
+  if (!bf16_enable_env.empty()) {
+#if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR >= 4 && HIP_VERSION_PATCH >= 2)
+    bf16_enable_ = (std::stoi(bf16_enable_env) == 0 ? false : true);
+    LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_BF16_ENABLE: " << fp16_enable_;
+#else
+    LOGS_DEFAULT(WARNING) << "MIGraphX: BF16 Quantization requires ROCm 6.4.2 or greater";
+    bf16_enable_ = false;
+#endif
+  }
+
+  if (bf16_enable_ and fp16_enable_) {
+    LOGS_DEFAULT(FATAL) << "\nMIGraphX: FP16 and BF16 Quantization Mutually exclusive. Ignoring both flags";
   }
 
   // whether fp8 quantization is enabled
@@ -258,6 +285,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
 void MIGraphXExecutionProvider::print_migraphx_ep_flags() {
   LOGS_DEFAULT(VERBOSE) << "\n " << migraphx_provider_option::kDeviceId << ": " << info_.device_id
                         << "\n " << migraphx_provider_option::kFp16Enable << ": " << fp16_enable_
+                        << "\n " << migraphx_provider_option::kBf16Enable << ": " << bf16_enable_
                         << "\n " << migraphx_provider_option::kFp8Enable << ": " << fp8_enable_
                         << "\n " << migraphx_provider_option::kInt8Enable << ": " << int8_enable_
                         << "\n dump_model_ops: " << dump_model_ops_
@@ -329,6 +357,7 @@ static bool IsTypeSupported(const NodeArg* node_arg) {
 
   switch (type_proto->tensor_type().elem_type()) {
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT16:
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_BFLOAT16:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT8E4M3FN:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT8E4M3FNUZ:
@@ -358,6 +387,9 @@ static bool getMIGraphXType(ONNXTensorElementDataType type,
   switch (type) {
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
       mgx_type = migraphx_shape_half_type;
+      break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16:
+      mgx_type = migraphx_shape_bf16_type;
       break;
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
       mgx_type = migraphx_shape_float_type;
@@ -1245,6 +1277,7 @@ void calibrate_and_quantize(migraphx::program& prog,
                             const migraphx::target& t,
                             const migraphx::program_parameters quant_params,
                             bool fp16_enable,
+                            bool bf16_enable,
                             bool int8_enable,
                             bool fp8_enable,
                             bool int8_calibration_cache_available,
@@ -1287,6 +1320,15 @@ void calibrate_and_quantize(migraphx::program& prog,
     migraphx::quantize_fp16(prog);
     LOGS_DEFAULT(WARNING) << "Quantizing fp16: Complete";
   }
+
+#if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR >= 4 && HIP_VERSION_PATCH >= 2)
+  if (bf16_enable) {
+    LOGS_DEFAULT(WARNING) << "Quantizing input program to bf16";
+    migraphx::quantize_bf16(prog);
+    LOGS_DEFAULT(WARNING) << "Quantizing bf16: Complete";
+  }
+#endif
+
 }
 
 void compile_program(migraphx::program& prog,
@@ -1393,7 +1435,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         prog = migraphx::parse_onnx_buffer(onnx_string_buffer, options);
         migraphx::program_parameters quant_params;
 
-        calibrate_and_quantize(prog, t_, quant_params, fp16_enable_, int8_enable_,
+        calibrate_and_quantize(prog, t_, quant_params, fp16_enable_, bf16_enable_, int8_enable_,
                                fp8_enable_, int8_calibration_cache_available_, dynamic_range_map_);
         compile_program(prog, t_, exhaustive_tune_);
         save_compiled_model(prog, model_cache_file);
@@ -1417,7 +1459,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       std::unique_ptr<MIGraphXFuncState> p = std::make_unique<MIGraphXFuncState>();
       *p = {context->allocate_func, context->release_func, context->allocator_handle, map_progs_[context->node_name],
             map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_mu_,
-            map_no_input_shape_[context->node_name], fp16_enable_, fp8_enable_, int8_enable_,
+            map_no_input_shape_[context->node_name], fp16_enable_, bf16_enable_, fp8_enable_, int8_enable_,
             int8_calibration_cache_available_, dynamic_range_map_,
             model_cache_path_.string(), dump_model_ops_};
       *state = p.release();
@@ -1441,6 +1483,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       migraphx::onnx_options& cmp_options = mgx_state->options;
       bool& no_input_shape = mgx_state->no_input_shape;
       bool fp16_enable = mgx_state->fp16_enable;
+      bool bf16_enable = mgx_state->bf16_enable;
       bool fp8_enable = mgx_state->fp8_enable;
       bool int8_enable = mgx_state->int8_enable;
       bool int8_calibration_cache_available = mgx_state->int8_calibration_cache_available;
@@ -1535,7 +1578,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
               }
             }
           }
-          calibrate_and_quantize(prog, t, quant_params, fp16_enable, int8_enable,
+          calibrate_and_quantize(prog, t, quant_params, fp16_enable, bf16_enable, int8_enable,
                                  fp8_enable, int8_calibration_cache_available, map_dynamic_range);
           compile_program(prog, t, exhaustive_tune_);
           save_compiled_model(prog, model_cache_file);
