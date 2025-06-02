@@ -264,7 +264,8 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
   const auto model_cache_path_env = GetEnvironmentVar(migraphx_env_vars::kModelCachePath);
   if (!model_cache_path_env.empty()) {
     model_cache_path_ = GetEnvironmentVar(migraphx_env_vars::kModelCachePath);
-    LOGS_DEFAULT(INFO) << "\n" << migraphx_env_vars::kModelCachePath << ": " << model_cache_path_;
+    LOGS_DEFAULT(INFO) << "\n"
+                       << migraphx_env_vars::kModelCachePath << ": " << model_cache_path_;
   }
 
   // dump unsupported ops
@@ -1248,18 +1249,17 @@ bool get_input_output_names(const GraphViewer& graph,
 
 // Attempt to load a model and catch any exceptions on load fail.
 // Useful to default to EP to trigger the compile if file doesn't exist or loading fails.
-bool load_precompiled_model(migraphx::program& prog, const std::filesystem::path& path)
-  try {
-    if (!path.empty() && exists(path)) {
-      LOGS_DEFAULT(INFO) << "Attempting to load model at:" << path.string();
-      prog = migraphx::load(path.string().c_str());
-      LOGS_DEFAULT(INFO) << "load model : Success";
-      return true;
-    }
-    return false;
-  } catch (...) {
-    return false;
+bool load_precompiled_model(migraphx::program& prog, const std::filesystem::path& path) try {
+  if (!path.empty() && exists(path)) {
+    LOGS_DEFAULT(INFO) << "Attempting to load model at:" << path.string();
+    prog = migraphx::load(path.string().c_str());
+    LOGS_DEFAULT(INFO) << "load model : Success";
+    return true;
   }
+  return false;
+} catch (...) {
+  return false;
+}
 
 void save_compiled_model(const migraphx::program& prog, const std::filesystem::path& path) {
   if (!path.empty()) {
@@ -1328,7 +1328,6 @@ void calibrate_and_quantize(migraphx::program& prog,
     LOGS_DEFAULT(WARNING) << "Quantizing bf16: Complete";
   }
 #endif
-
 }
 
 void compile_program(migraphx::program& prog,
@@ -1348,18 +1347,20 @@ std::string to_hex(const uint64_t v) {
   return std::string{s.data(), ptr};
 }
 
-template <typename T> std::string make_hash(T v) {
+template <typename T>
+std::string make_hash(T v) {
   std::array<std::uint32_t, 4> temp{};
   MurmurHash3::x86_128(v.data(), gsl::narrow_cast<int32_t>(v.size()), temp[0], temp.data());
   return to_hex(temp[0] | static_cast<uint64_t>(temp[1]) << 32);
 }
 
-template <> std::string make_hash(const char* v) {
+template <>
+std::string make_hash(const char* v) {
   return make_hash(std::string_view{v});
 }
 
 constexpr std::uint64_t MIGraphX_Version =
-  ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
+    ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
 
 Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& fused_nodes,
                                           std::vector<NodeComputeInfo>& node_compute_funcs) {
