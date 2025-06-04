@@ -21,10 +21,4 @@ safetensors
 invisible_watermark
 opencv-python-headless
 
-# Following is to ensure we're grab latest ROCm instance of packages (ROCm 6.4.1 in this case)
--i https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4.1/
-torchvision==0.15.2
-onnxruntime-rocm
-
-
 # Install onnxruntime-rocm that is built from source (https://onnxruntime.ai/docs/build/eps.html#amd-rocm)
