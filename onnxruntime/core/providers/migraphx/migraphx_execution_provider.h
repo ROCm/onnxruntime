@@ -18,7 +18,6 @@ namespace onnxruntime {
 
 namespace migraphx_env_vars {
 constexpr auto kFP16Enable = "ORT_MIGRAPHX_FP16_ENABLE";
-constexpr auto kBF16Enable = "ORT_MIGRAPHX_BF16_ENABLE";
 constexpr auto kFP8Enable = "ORT_MIGRAPHX_FP8_ENABLE";
 constexpr auto kINT8Enable = "ORT_MIGRAPHX_INT8_ENABLE";
 constexpr auto kDumpModelOps = "ORT_MIGRAPHX_DUMP_MODEL_OPS";
@@ -43,7 +42,6 @@ struct MIGraphXFuncState {
   std::mutex* mgx_mu_ptr = nullptr;
   bool no_input_shape = false;
   bool fp16_enable = false;
-  bool bf16_enable = false;
   bool fp8_enable = false;
   bool int8_enable = false;
   bool int8_calibration_cache_available = false;
@@ -95,7 +93,6 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
  private:
   MIGraphXExecutionProviderInfo info_;
   bool fp16_enable_ = false;
-  bool bf16_enable_ = false;
   bool fp8_enable_ = false;
   bool int8_enable_ = false;
   std::string int8_calibration_cache_name_;
