@@ -421,7 +421,7 @@ static std::unique_ptr<onnxruntime::IExecutionProvider> LoadExecutionProvider(
   return ep_factory->CreateProvider();
 }
 
-#ifdef USE_CUDA
+#if defined(USE_CUDA) || defined(USE_CUDA_PROVIDER_INTERFACE)
 const CUDAExecutionProviderInfo GetCudaExecutionProviderInfo(ProviderInfo_CUDA* cuda_provider_info,
                                                              const ProviderOptionsMap& provider_options_map) {
   ORT_ENFORCE(cuda_provider_info);
@@ -475,7 +475,7 @@ const ROCMExecutionProviderInfo GetRocmExecutionProviderInfo(ProviderInfo_ROCM* 
 }
 #endif
 
-#ifdef USE_TENSORRT
+#if defined(USE_TENSORRT) || defined(USE_TENSORRT_PROVIDER_INTERFACE)
 void RegisterTensorRTPluginsAsCustomOps(PySessionOptions& so, const ProviderOptions& options) {
   if (auto* tensorrt_provider_info = TryGetProviderInfo_TensorRT()) {
     auto is_already_in_domains = [&](std::string& domain_name, std::vector<OrtCustomOpDomain*>& domains) {
@@ -507,6 +507,38 @@ void RegisterTensorRTPluginsAsCustomOps(PySessionOptions& so, const ProviderOpti
 }
 #endif
 
+#if defined(USE_NV) || defined(USE_NV_PROVIDER_INTERFACE)
+void RegisterNvTensorRTRtxPluginsAsCustomOps(PySessionOptions& so, const ProviderOptions& options) {
+  if (auto* nv_tensorrt_rtx_provider_info = TryGetProviderInfo_Nv()) {
+    auto is_already_in_domains = [&](std::string& domain_name, std::vector<OrtCustomOpDomain*>& domains) {
+      for (auto ptr : domains) {
+        if (domain_name == ptr->domain_) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    std::string extra_plugin_lib_paths = "";
+    const auto it = options.find("extra_plugin_lib_paths");
+    if (it != options.end()) {
+      extra_plugin_lib_paths = it->second;
+    }
+    std::vector<OrtCustomOpDomain*> custom_op_domains;
+    nv_tensorrt_rtx_provider_info->GetTensorRTCustomOpDomainList(custom_op_domains, extra_plugin_lib_paths);
+    for (auto ptr : custom_op_domains) {
+      if (!is_already_in_domains(ptr->domain_, so.custom_op_domains_)) {
+        so.custom_op_domains_.push_back(ptr);
+      } else {
+        LOGS_DEFAULT(WARNING) << "The custom op domain name " << ptr->domain_ << " is already in session option.";
+      }
+    }
+  } else {
+    ORT_THROW("Please install TensorRT libraries as mentioned in the GPU requirements page, make sure they're in the PATH or LD_LIBRARY_PATH, and that your GPU is supported.");
+  }
+}
+#endif
+
 std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
     const SessionOptions& session_options,
     const std::string& type,
@@ -516,7 +548,7 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
                session_options.enable_cpu_mem_arena)
         ->CreateProvider();
   } else if (type == kTensorrtExecutionProvider) {
-#ifdef USE_TENSORRT
+#if defined(USE_TENSORRT) || defined(USE_TENSORRT_PROVIDER_INTERFACE)
     // If the environment variable 'ORT_TENSORRT_UNAVAILABLE' exists, then we do not load TensorRT. This is set by _ld_preload for the manylinux case
     // as in that case, trying to load the library itself will result in a crash due to the way that auditwheel strips dependencies.
     if (Env::Default().GetEnvironmentVar("ORT_TENSORRT_UNAVAILABLE").empty()) {
@@ -526,7 +558,7 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
       // and TRT EP instance, so it won't be released.)
       std::string calibration_table, cache_path, cache_prefix, timing_cache_path, lib_path, trt_tactic_sources,
           trt_extra_plugin_lib_paths, min_profile, max_profile, opt_profile, ep_context_file_path,
-          onnx_model_folder_path, trt_op_types_to_exclude;
+          onnx_model_folder_path, trt_op_types_to_exclude, preview_features;
       auto it = provider_options_map.find(type);
       if (it != provider_options_map.end()) {
         OrtTensorRTProviderOptionsV2 params;
@@ -827,6 +859,11 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
           } else if (option.first == "trt_op_types_to_exclude") {
             trt_op_types_to_exclude = option.second;
             params.trt_op_types_to_exclude = trt_op_types_to_exclude.c_str();
+          } else if (option.first == "trt_preview_features") {
+            if (!option.second.empty()) {
+              preview_features = option.second;
+              params.trt_preview_features = preview_features.c_str();
+            }
           } else {
             ORT_THROW("Invalid TensorRT EP option: ", option.first);
           }
@@ -837,6 +874,29 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
       } else {
         if (std::shared_ptr<IExecutionProviderFactory> tensorrt_provider_factory = onnxruntime::TensorrtProviderFactoryCreator::Create(cuda_device_id)) {
           return tensorrt_provider_factory->CreateProvider();
+        }
+      }
+    }
+    LOGS_DEFAULT(WARNING) << "Failed to create "
+                          << type
+                          << ". Please reference "
+                          << "https://onnxruntime.ai/docs/execution-providers/"
+                          << "TensorRT-ExecutionProvider.html#requirements to ensure all dependencies are met.";
+#endif
+
+  } else if (type == kNvTensorRTRTXExecutionProvider) {
+#if defined(USE_NV) || defined(USE_NV_PROVIDER_INTERFACE)
+    if (Env::Default().GetEnvironmentVar("ORT_NV_TENSORRT_RTX_UNAVAILABLE").empty()) {
+      auto it = provider_options_map.find(type);
+      if (it != provider_options_map.end()) {
+        ProviderOptions info = it->second;
+        if (std::shared_ptr<IExecutionProviderFactory> nv_tensorrt_rtx_provider_factory = onnxruntime::NvProviderFactoryCreator::Create(
+                info, &session_options)) {
+          return nv_tensorrt_rtx_provider_factory->CreateProvider();
+        }
+      } else {
+        if (std::shared_ptr<IExecutionProviderFactory> nv_tensorrt_rtx_provider_factory = onnxruntime::NvProviderFactoryCreator::Create(cuda_device_id)) {
+          return nv_tensorrt_rtx_provider_factory->CreateProvider();
         }
       }
     }
@@ -964,7 +1024,7 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
     }
 #endif
   } else if (type == kCudaExecutionProvider) {
-#ifdef USE_CUDA
+#if defined(USE_CUDA) || defined(USE_CUDA_PROVIDER_INTERFACE)
     // If the environment variable 'CUDA_UNAVAILABLE' exists, then we do not load cuda.
     // This is set by _ld_preload for the manylinux case as in that case,
     // trying to load the library itself will result in a crash due to the way that auditwheel strips dependencies.
@@ -981,6 +1041,7 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
         return cuda_provider_info->CreateExecutionProviderFactory(info)->CreateProvider();
       }
     }
+#if defined(USE_CUDA)
     LOGS_DEFAULT(WARNING) << "Failed to create "
                           << type
                           << ". Require cuDNN " << CUDNN_MAJOR << ".* and "
@@ -991,7 +1052,15 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
                           << ". Please install all dependencies as mentioned in the GPU requirements page"
                              " (https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html#requirements), "
                              "make sure they're in the PATH, and that your GPU is supported.";
-#endif
+#elif defined(USE_CUDA_PROVIDER_INTERFACE)
+    // Can't include "cuda.h", so don't print version info.
+    LOGS_DEFAULT(WARNING) << "Failed to create "
+                          << type
+                          << ". Please install all dependencies as mentioned in the GPU requirements page"
+                             " (https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html#requirements), "
+                             "make sure they're in the PATH, and that your GPU is supported.";
+#endif  // defined(USE_CUDA)
+#endif  // defined(USE_CUDA) || defined(USE_CUDA_PROVIDER_INTERFACE)
   } else if (type == kRocmExecutionProvider) {
 #ifdef USE_ROCM
     if (auto* rocm_provider_info = TryGetProviderInfo_ROCM()) {
@@ -1042,7 +1111,7 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
     return onnxruntime::DnnlProviderFactoryCreator::Create(&dnnl_options)->CreateProvider();
 #endif
   } else if (type == kOpenVINOExecutionProvider) {
-#ifdef USE_OPENVINO
+#if defined(USE_OPENVINO) || defined(USE_OPENVINO_PROVIDER_INTERFACE)
     ProviderOptions OV_provider_options_map;
     auto it = provider_options_map.find(type);
     if (it != provider_options_map.end()) {
@@ -1100,6 +1169,9 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
         } else if (option.first == "enable_qdq_optimizer") {
           OV_provider_options_map[option.first] = option.second;
           continue;
+        } else if (option.first == "enable_causallm") {
+          OV_provider_options_map[option.first] = option.second;
+          continue;
         } else {
           ORT_THROW("Invalid OpenVINO EP option: ", option.first);
         }
@@ -1120,14 +1192,21 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
     }
 #endif
   } else if (type == kVitisAIExecutionProvider) {
-#ifdef USE_VITISAI
+#if defined(USE_VITISAI) || defined(USE_VITISAI_PROVIDER_INTERFACE)
     ProviderOptions info{};
     const auto it = provider_options_map.find(type);
     if (it != provider_options_map.end()) {
       info = it->second;
     }
     info["session_options"] = std::to_string((uintptr_t)(void*)&session_options);
-    return onnxruntime::VitisAIProviderFactoryCreator::Create(info)->CreateProvider();
+    if (auto vitisai_factory = onnxruntime::VitisAIProviderFactoryCreator::Create(info); vitisai_factory) {
+      return vitisai_factory->CreateProvider();
+    }
+    LOGS_DEFAULT(WARNING) << "Failed to create "
+                          << type
+                          << ". Please reference "
+                          << "https://onnxruntime.ai/docs/execution-providers/"
+                          << "Vitis-AI-ExecutionProvider.html#requirements to ensure all dependencies are met.";
 #endif
   } else if (type == kAclExecutionProvider) {
 #ifdef USE_ACL
@@ -1243,11 +1322,18 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
     return onnxruntime::AzureProviderFactoryCreator::Create({})->CreateProvider();
 #endif
   } else if (type == kQnnExecutionProvider) {
-#ifdef USE_QNN
+#if defined(USE_QNN) || defined(USE_QNN_PROVIDER_INTERFACE)
     auto cit = provider_options_map.find(type);
-    return onnxruntime::QNNProviderFactoryCreator::Create(
-               cit == provider_options_map.end() ? ProviderOptions{} : cit->second, &session_options)
-        ->CreateProvider();
+    auto qnn_factory = onnxruntime::QNNProviderFactoryCreator::Create(
+        cit == provider_options_map.end() ? ProviderOptions{} : cit->second, &session_options);
+    if (qnn_factory) {
+      return qnn_factory->CreateProvider();
+    }
+    LOGS_DEFAULT(WARNING) << "Failed to create "
+                          << type
+                          << ". Please reference "
+                          << "https://onnxruntime.ai/docs/execution-providers/QNN-ExecutionProvider.html"
+                          << " to ensure all dependencies are met.";
 #endif
   } else {
     // check whether it is a dynamic load EP:
@@ -1370,9 +1456,8 @@ bool CheckIfTensor(const std::vector<const NodeArg*>& def_list,
   return type_proto.has_tensor_type();
 }
 
-#if defined(USE_OPENVINO) || \
-    defined(USE_CUDA) ||     \
-    defined(USE_ROCM)
+#if defined(USE_OPENVINO) || defined(USE_OPENVINO_PROVIDER_INTERFACE) || \
+    defined(USE_CUDA) || defined(USE_CUDA_PROVIDER_INTERFACE) || defined(USE_ROCM)
 static void LogDeprecationWarning(
     const std::string& deprecated, const optional<std::string>& alternative = nullopt) {
   LOGS_DEFAULT(WARNING) << "This is DEPRECATED and will be removed in the future: " << deprecated;
@@ -1434,10 +1519,10 @@ void addGlobalMethods(py::module& m) {
         }
       });
 
-#ifdef USE_OPENVINO
+#if defined(USE_OPENVINO) || defined(USE_OPENVINO_PROVIDER_INTERFACE)
   m.def(
       "get_available_openvino_device_ids", []() -> std::vector<std::string> {
-        if (auto* info = GetProviderInfo_OpenVINO()) {
+        if (auto* info = TryGetProviderInfo_OpenVINO()) {
           return info->GetAvailableDevices();
         }
         return {};
@@ -1463,7 +1548,7 @@ void addGlobalMethods(py::module& m) {
       "Gets the dynamically selected OpenVINO device type for inference.");
 #endif
 
-#if defined(USE_CUDA) || defined(USE_ROCM)
+#if defined(USE_CUDA) || defined(USE_CUDA_PROVIDER_INTERFACE) || defined(USE_ROCM)
   /*
    * The following set_* methods are deprecated.
    *
@@ -1511,10 +1596,16 @@ void addGlobalMethods(py::module& m) {
   });
 #endif
 
-#ifdef USE_TENSORRT
+#if defined(USE_TENSORRT) || defined(USE_TENSORRT_PROVIDER_INTERFACE)
   m.def(
       "register_tensorrt_plugins_as_custom_ops", [](PySessionOptions& so, const ProviderOptions& options) { RegisterTensorRTPluginsAsCustomOps(so, options); },
       "Register TensorRT plugins as custom ops.");
+#endif
+
+#if defined(USE_NV) || defined(USE_NV_PROVIDER_INTERFACE)
+  m.def(
+      "register_nv_tensorrt_rtx_plugins_as_custom_ops", [](PySessionOptions& so, const ProviderOptions& options) { RegisterNvTensorRTRtxPluginsAsCustomOps(so, options); },
+      "Register NV TensorRT RTX plugins as custom ops.");
 #endif
 
 #ifdef ENABLE_ATEN
@@ -1738,6 +1829,12 @@ Applies to session load, initialization, etc. Default is 0.)pbdoc")
             options->value.execution_mode = execution_mode;
           },
           R"pbdoc(Sets the execution mode. Default is sequential.)pbdoc")
+      .def(
+          "set_load_cancellation_flag",
+          [](PySessionOptions* options, bool value) -> void {
+            options->value.SetLoadCancellationFlag(value);
+          },
+          R"pbdoc(Request inference session load cancellation)pbdoc")
       .def_property(
           "execution_order",
           [](const PySessionOptions* options) -> ExecutionOrder { return options->value.execution_order; },

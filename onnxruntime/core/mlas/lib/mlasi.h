@@ -996,8 +996,13 @@ extern const MLAS_GEMM_QUANT_DISPATCH MlasGemmS8S8DispatchSdot;
 extern const MLAS_GEMM_QUANT_DISPATCH MlasGemmU8X8DispatchUmmla;
 extern const MLAS_GEMM_QUANT_DISPATCH MlasGemmS8S8DispatchSmmla;
 extern const MLAS_GEMM_QUANT_DISPATCH MlasGemmU8X8DispatchWasmSimd;
+extern const MLAS_GEMM_QUANT_DISPATCH MlasGemmU8X8DispatchWasmRelaxedSimd;
 extern const MLAS_GEMM_QUANT_DISPATCH MlasGemmQuantDispatchDefault;
 extern const MLAS_GEMM_QUANT_DISPATCH MlasGemm8X8DispatchPOWER10;
+
+#if defined(MLAS_TARGET_WASM_RELAXED_SIMD)
+extern bool HasUSDot();
+#endif
 
 //
 // Symmetric quantized qgemm dispatch structure
@@ -1138,6 +1143,10 @@ enum MlasCoreType { mlas_core_unknown = 0, mlas_core_little = 2, mlas_core_big =
 struct MLAS_PLATFORM {
 
     MLAS_PLATFORM(void);
+
+    // TODO: move to cpuinfo
+    bool Avx2Supported_ = false;
+    bool Avx512Supported_ = false;
 
 #if defined(MLAS_TARGET_AMD64_IX86) || defined(MLAS_TARGET_POWER)
     MLAS_GEMM_FLOAT_KERNEL* GemmFloatKernel;
@@ -1450,6 +1459,9 @@ MlasConvDepthwiseFloat_CHW(
 #endif
 #elif defined(MLAS_TARGET_WASM_SIMD)
 #define MLAS_WASM_SIMD_INTRINSICS
+#if defined(MLAS_TARGET_WASM_RELAXED_SIMD)
+#define MLAS_WASM_RELAXED_SIMD_INTRINSICS
+#endif
 #elif defined(MLAS_TARGET_LARCH64)
 #define MLAS_LSX_INTRINSICS
 #endif
@@ -2260,6 +2272,8 @@ MlasMaximumFloat32x4(MLAS_FLOAT32X4 Vector1, MLAS_FLOAT32X4 Vector2)
 #elif defined(MLAS_VSX_INTRINSICS)
     // Don't use vec_max to avoid undefined behavior if NAN
     return vec_sel(Vector2, Vector1, vec_cmpgt(Vector1, Vector2));
+#elif defined(MLAS_WASM_RELAXED_SIMD_INTRINSICS)
+    return wasm_f32x4_relaxed_max(Vector1, Vector2);
 #elif defined(MLAS_WASM_SIMD_INTRINSICS)
     return wasm_f32x4_max(Vector1, Vector2);
 #elif defined(MLAS_LSX_INTRINSICS)
@@ -2280,6 +2294,8 @@ MlasMinimumFloat32x4(MLAS_FLOAT32X4 Vector1, MLAS_FLOAT32X4 Vector2)
 #elif defined(MLAS_VSX_INTRINSICS)
     // Don't use vec_min to avoid undefined behavior if NAN
     return vec_sel(Vector2, Vector1, vec_cmpgt(Vector2, Vector1));
+#elif defined(MLAS_WASM_RELAXED_SIMD_INTRINSICS)
+    return wasm_f32x4_relaxed_min(Vector1, Vector2);
 #elif defined(MLAS_WASM_SIMD_INTRINSICS)
     return wasm_f32x4_min(Vector1, Vector2);
 #elif defined(MLAS_LSX_INTRINSICS)
