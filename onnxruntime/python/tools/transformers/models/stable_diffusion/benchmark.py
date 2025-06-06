@@ -1337,14 +1337,14 @@ def main():
 
     coloredlogs.install(fmt="%(funcName)20s: %(message)s")
 
-    memory_monitor_type = "rocm" if args.provider == "rocm" else "cuda"
+    memory_monitor_type = "rocm" if args.provider == "rocm" or "migraphx" else "cuda"
 
     start_memory = measure_gpu_memory(memory_monitor_type, None)
     print("GPU memory used before loading models:", start_memory)
 
     sd_model = SD_MODELS[args.version]
     provider = PROVIDERS[args.provider]
-    if args.engine == "onnxruntime" and args.provider == "tensorrt":
+    if args.engine == "onnxruntime" and args.provider == "tensorrt" or args.provider == "migraphx":
         if "xl" in args.version:
             print("Testing Txt2ImgXLPipeline with static input shape. Backend is ORT TensorRT EP.")
             result = run_ort_trt_xl(
