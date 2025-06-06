@@ -1362,7 +1362,6 @@ def main():
                 max_batch_size=args.max_trt_batch_size,
                 nvtx_profile=False,
                 use_cuda_graph=args.enable_cuda_graph,
-                skip_warmup=args.skip_warmup,
             )
         else:
             print("Testing Txt2ImgPipeline with static input shape. Backend is ORT TensorRT EP.")
@@ -1381,7 +1380,6 @@ def main():
                 max_batch_size=args.max_trt_batch_size,
                 nvtx_profile=False,
                 use_cuda_graph=args.enable_cuda_graph,
-                skip_warmup=args.skip_warmup,
             )
     elif args.engine == "optimum" and provider == "CUDAExecutionProvider":
         if "xl" in args.version:
