@@ -336,13 +336,14 @@ namespace Microsoft.ML.OnnxRuntime
         public IntPtr GetModelEditorApi;
         public IntPtr CreateTensorWithDataAndDeleterAsOrtValue;
         public IntPtr SessionOptionsSetLoadCancellationFlag;
-               
+
+        
         public IntPtr CreateMIGraphXProviderOptions;
         public IntPtr UpdateMIGraphXProviderOptions;
         public IntPtr GetMIGraphXProviderOptionsAsString;
         public IntPtr ReleaseMIGraphXProviderOptions;
         public IntPtr UpdateMIGraphXProviderOptionsWithValue;
-        public IntPtr GetMIGraphXProviderOptionsByName;        
+        public IntPtr GetMIGraphXProviderOptionsByName;
     }
 
     internal static class NativeMethods

@@ -3026,9 +3026,10 @@ static constexpr OrtApi ort_api_1_to_22 = {
     &OrtApis::EpDevice_EpMetadata,
     &OrtApis::EpDevice_EpOptions,
     &OrtApis::EpDevice_Device,
-	    
+
     &OrtApis::GetEpApi,
     // End of Version 22 - DO NOT MODIFY ABOVE (see above text for more information)
+
     &OrtApis::CreateMIGraphXProviderOptions,
     &OrtApis::UpdateMIGraphXProviderOptions,
     &OrtApis::GetMIGraphXProviderOptionsAsString,

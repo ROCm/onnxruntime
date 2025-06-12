@@ -16,6 +16,7 @@ const EnumNameMapping<ArenaExtendStrategy> arena_extend_strategy_mapping{
     {ArenaExtendStrategy::kNextPowerOfTwo, "kNextPowerOfTwo"},
     {ArenaExtendStrategy::kSameAsRequested, "kSameAsRequested"},
 };
+
 MIGraphXExecutionProviderInfo MIGraphXExecutionProviderInfo::FromProviderOptions(const ProviderOptions& options) {
   MIGraphXExecutionProviderInfo info{};
   void* alloc = nullptr;

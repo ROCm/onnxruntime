@@ -110,7 +110,7 @@ ORT_API_STATUS_IMPL(OrtApis::SessionOptionsAppendExecutionProvider,
     const char* canonical_name = nullptr;
   };
 
-  static std::array<EpToAppend, 12> supported_eps = {
+  static std::array<EpToAppend, 13> supported_eps = {
       EpToAppend{EpID::DML, "DML", kDmlExecutionProvider},
       EpToAppend{EpID::QNN, "QNN", kQnnExecutionProvider},
       EpToAppend{EpID::OpenVINO, "OpenVINO", kOpenVINOExecutionProvider},
@@ -123,7 +123,8 @@ ORT_API_STATUS_IMPL(OrtApis::SessionOptionsAppendExecutionProvider,
       EpToAppend{EpID::VitisAI, "VitisAI", kVitisAIExecutionProvider},
       EpToAppend{EpID::CoreML, "CoreML", kCoreMLExecutionProvider},
       EpToAppend{EpID::NvTensorRtRtx, "NvTensorRtRtx", kNvTensorRTRTXExecutionProvider},
-      EpToAppend{EpID::MIGraphX, "MIGraphX",kMIGraphXExecutionProvider}};
+      EpToAppend{EpID::MIGraphX, "MIGraphX",kMIGraphXExecutionProvider}
+  };
 
   ProviderOptions provider_options;
   OrtStatus* status = ParseProviderOptions(provider_options_keys,

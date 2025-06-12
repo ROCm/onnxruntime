@@ -19,6 +19,7 @@
 #include "core/providers/migraphx/migraphx_inc.h"
 #include "core/providers/migraphx/gpu_data_transfer.h"
 #include <hip/hip_version.h>
+#include "core/providers/migraphx/migraphx_call.h"
 
 #include "core/providers/migraphx/migraphx_stream_handle.h"
 
