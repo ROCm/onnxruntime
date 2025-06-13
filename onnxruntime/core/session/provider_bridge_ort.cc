@@ -6,6 +6,7 @@
 
 #include <optional>
 #include <utility>
+#include <charconv>
 
 #include "core/common/inlined_containers.h"
 #include "core/common/path_string.h"
@@ -3244,7 +3245,58 @@ ORT_API_STATUS_IMPL(OrtApis::GetMIGraphXProviderOptionsAsString,
 ORT_API(void, OrtApis::ReleaseMIGraphXProviderOptions, _Frees_ptr_opt_ OrtMIGraphXProviderOptions* ptr) {
 #ifdef USE_MIGRAPHX
   std::unique_ptr<OrtMIGraphXProviderOptions> p(ptr);
+  if(ptr->migraphx_cache_dir != nullptr) {
+    onnxruntime::AllocatorDefaultFree(const_cast<char*>(ptr->migraphx_cache_dir));
+  }
 #else
   ORT_UNUSED_PARAMETER(ptr);
 #endif
 }
+
+ORT_API_STATUS_IMPL(OrtApis::UpdateMIGraphXProviderOptionsWithValue,
+                    _Inout_ OrtMIGraphXProviderOptions* migraphx_options,
+                    _In_ const char* key,
+                    _In_ void* value) {
+  API_IMPL_BEGIN
+#ifdef USE_MIGRAPHX
+  auto sv = std::string_view{key};
+  OrtAllocator* allocator;
+  GetAllocatorWithDefaultOptions(&allocator);
+  if (sv == onnxruntime::migraphx_provider_option::kDeviceId) {
+    auto dv = std::string_view{static_cast<char*>(value)};
+    if (std::from_chars(dv.data(), dv.data() + dv.length(), migraphx_options->device_id).ec == std::errc::invalid_argument) {
+      ORT_THROW("Cannot convert from string to integer - invalid argument");
+    }
+  } else
+  if (sv == onnxruntime::migraphx_provider_option::kModelCacheDir) {
+    auto sd = std::string_view{static_cast<char*>(value)};
+    migraphx_options->migraphx_cache_dir = onnxruntime::StrDup(sd.data(), allocator);
+  } else {
+    ORT_THROW("Unsupported provider option name: '" + std::string{sv} + "'");
+  }
+  return nullptr;
+#else
+  ORT_UNUSED_PARAMETER(migraphx_options);
+  ORT_UNUSED_PARAMETER(key);
+  ORT_UNUSED_PARAMETER(value);
+  return CreateStatus(ORT_FAIL, "MIGraphX execution provider is not enabled in this build.");
+#endif
+  API_IMPL_END
+}
+
+ORT_API_STATUS_IMPL(OrtApis::GetMIGraphXProviderOptionsByName,
+                    _In_ const OrtMIGraphXProviderOptions* migraphx_options,
+                    _In_ const char* key,
+                    _Outptr_ void** ptr) {
+  API_IMPL_BEGIN
+#ifdef USE_MIGRAPHX
+  return nullptr;
+#else
+  ORT_UNUSED_PARAMETER(cuda_options);
+  ORT_UNUSED_PARAMETER(key);
+  ORT_UNUSED_PARAMETER(ptr);
+  return CreateStatus(ORT_FAIL, "CUDA execution provider is not enabled in this build.");
+#endif
+  API_IMPL_END
+}
+

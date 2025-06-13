@@ -699,4 +699,24 @@ ORT_API(void, OrtApis::ReleaseMIGraphXProviderOptions, _Frees_ptr_opt_ OrtMIGrap
   ORT_UNUSED_PARAMETER(ptr);
 }
 
+ORT_API_STATUS_IMPL(OrtApis::UpdateMIGraphXProviderOptionsWithValue,
+                    _Inout_ OrtMIGraphXProviderOptions* migraphx_options,
+                    _In_ const char* key,
+                    _In_ void* value) {
+  ORT_UNUSED_PARAMETER(migraphx_options);
+  ORT_UNUSED_PARAMETER(key);
+  ORT_UNUSED_PARAMETER(value);
+  return CreateNotEnabledStatus("MIGraphX");
+}
+
+ORT_API_STATUS_IMPL(OrtApis::GetMIGraphXProviderOptionsByName,
+                    _In_ const OrtMIGraphXProviderOptions* migraphx_options,
+                    _In_ const char* key,
+                    _Outptr_ void** ptr) {
+  ORT_UNUSED_PARAMETER(migraphx_options);
+  ORT_UNUSED_PARAMETER(key);
+  ORT_UNUSED_PARAMETER(ptr);
+  return CreateNotEnabledStatus("MIGraphX");
+}
+
 #endif
