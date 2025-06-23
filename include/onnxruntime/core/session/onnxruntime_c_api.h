@@ -680,6 +680,10 @@ typedef struct OrtMIGraphXProviderOptions {
   const char* migraphx_cache_dir;                    // MIGraphX model cache directory
   int migraphx_exhaustive_tune;                      // MIGraphX tuned compile. Default = false, nonzero = true
 
+  void* migraphx_external_alloc;                     // Pointer to an external Alloc() function (default is none)
+  void* migraphx_external_free;                      // Pointer to an external Free() function (default is none)
+  void* migraphx_external_empty_cache;               // Pointer to an external EmptyCache() function (default is none)
+
   /** \brief MIGraphX memory limit (To use all possible memory pass in maximum size_t)
    *   Defaults to SIZE_MAX.
    *   \note If a ::OrtArenaCfg has been applied, it will override this field

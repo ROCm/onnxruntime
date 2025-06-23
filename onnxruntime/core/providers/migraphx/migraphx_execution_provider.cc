@@ -107,7 +107,9 @@ std::shared_ptr<KernelRegistry> MIGraphXExecutionProvider::GetKernelRegistry() c
 }
 
 MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProviderInfo& info)
-    : IExecutionProvider{kMIGraphXExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, info.device_id)}, info_(info) {
+    : IExecutionProvider{kMIGraphXExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, info.device_id)},
+      device_id_{info.device_id}
+{
   InitProviderOrtApi();
   get_flags_from_session_info(info);
   metadef_id_generator_ = ModelMetadefIdGenerator::Create();
@@ -116,7 +118,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
 
 void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecutionProviderInfo& info) {
   // Set GPU device to be used
-  HIP_CALL_THROW(hipSetDevice(info_.device_id));
+  HIP_CALL_THROW(hipSetDevice(device_id_));
   HIP_CALL_THROW(hipGetDeviceProperties(&device_prop_, info.device_id));
   t_ = migraphx::target(info.target_device.c_str());
 
@@ -159,9 +161,9 @@ void MIGraphXExecutionProvider::get_flags_from_session_info(const MIGraphXExecut
   // Load INT8 calibration table
   std::unordered_map<std::string, float> dynamic_range_map;
   if ((int8_enable_ || fp8_enable_) && int8_calibration_cache_available_) {
-    const std::string calibration_cache_path = GetCachePath(calibration_cache_path_, int8_calibration_cache_name_);
+    auto calibration_cache_path = GetCachePath(calibration_cache_path_, int8_calibration_cache_name_);
     if (!ReadDynamicRange(calibration_cache_path, int8_use_native_migraphx_calibration_table_, dynamic_range_map)) {
-      throw std::runtime_error("Session Failed to read INT8 calibration table " + calibration_cache_path);
+      throw std::runtime_error("Session Failed to read INT8 calibration table " + calibration_cache_path.string());
     }
   }
 
@@ -232,7 +234,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
     const std::string cache_path = GetEnvironmentVar(migraphx_env_vars::kCachePath);
     if (!cache_path.empty()) {
       calibration_cache_path_ = cache_path;
-      LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_CACHE_PATH: " << calibration_cache_path_;
+      LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_CACHE_PATH: " << calibration_cache_path_.string();
     }
 
     const std::string int8_use_native_migraphx_calibration_table_env =
@@ -251,9 +253,9 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
   // Load INT8 calibration table
   std::unordered_map<std::string, float> dynamic_range_map;
   if ((int8_enable_ || fp8_enable_) && int8_calibration_cache_available_) {
-    const std::string calibration_cache_path = GetCachePath(calibration_cache_path_, int8_calibration_cache_name_);
+    auto calibration_cache_path = GetCachePath(calibration_cache_path_, int8_calibration_cache_name_);
     if (!ReadDynamicRange(calibration_cache_path, int8_use_native_migraphx_calibration_table_, dynamic_range_map)) {
-      throw std::runtime_error("ENV Failed to read calibration table " + calibration_cache_path);
+      throw std::runtime_error("ENV Failed to read calibration table " + calibration_cache_path.string());
     }
   }
 
@@ -262,7 +264,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
   if (!model_cache_path_env.empty()) {
     model_cache_path_ = GetEnvironmentVar(migraphx_env_vars::kModelCachePath);
     LOGS_DEFAULT(INFO) << "\n"
-                       << migraphx_env_vars::kModelCachePath << ": " << model_cache_path_;
+                       << migraphx_env_vars::kModelCachePath << ": " << model_cache_path_.string();
   }
 
   // dump unsupported ops
@@ -281,7 +283,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
 }
 
 void MIGraphXExecutionProvider::print_migraphx_ep_flags() const {
-  LOGS_DEFAULT(VERBOSE) << "\n " << migraphx_provider_option::kDeviceId << ": " << info_.device_id
+  LOGS_DEFAULT(VERBOSE) << "\n " << migraphx_provider_option::kDeviceId << ": " << device_id_
                         << "\n " << migraphx_provider_option::kFp16Enable << ": " << fp16_enable_
                         << "\n " << migraphx_provider_option::kBf16Enable << ": " << bf16_enable_
                         << "\n " << migraphx_provider_option::kFp8Enable << ": " << fp8_enable_
@@ -297,22 +299,21 @@ void MIGraphXExecutionProvider::print_migraphx_ep_flags() const {
 AllocatorPtr MIGraphXExecutionProvider::CreateMIGraphXAllocator(const OrtDevice::DeviceId device_id,
                                                                 const size_t migx_mem_limit,
                                                                 ArenaExtendStrategy arena_extend_strategy,
-                                                                MIGraphXExecutionProviderExternalAllocatorInfo
-                                                                    external_allocator_info,
+                                                                void* alloc_fn,
+                                                                void* free_fn,
+                                                                void* empty_cache_fn,
                                                                 const OrtArenaCfg* default_memory_arena_cfg) {
-  if (external_allocator_info.UseExternalAllocator()) {
+  if (alloc_fn != nullptr && free_fn != nullptr) {
     const AllocatorCreationInfo default_memory_info(
-        [external_allocator_info](OrtDevice::DeviceId id) {
-          return std::make_unique<MIGraphXExternalAllocator>(id, HIP,
-                                                             external_allocator_info.alloc,
-                                                             external_allocator_info.free,
-                                                             external_allocator_info.empty_cache);
+        [alloc_fn, free_fn, empty_cache_fn](OrtDevice::DeviceId id) {
+          return std::make_unique<MIGraphXExternalAllocator>(id, HIP, alloc_fn, free_fn, empty_cache_fn);
         },
         device_id,
         false);
 
     return CreateAllocator(default_memory_info);
   }
+
   const AllocatorCreationInfo default_memory_info(
       [](OrtDevice::DeviceId id) {
         return std::make_unique<MIGraphXAllocator>(id, HIP);
@@ -333,12 +334,13 @@ AllocatorPtr MIGraphXExecutionProvider::CreateMIGraphXAllocator(const OrtDevice:
 
 std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators() {
   const AllocatorCreationInfo default_memory_info(
-      [](const OrtDevice::DeviceId device_id) { return std::make_unique<MIGraphXAllocator>(device_id, CUDA); }, info_.device_id);
+      [](const OrtDevice::DeviceId device_id) {
+       return std::make_unique<MIGraphXAllocator>(device_id, CUDA);
+      }, device_id_);
   const AllocatorCreationInfo pinned_allocator_info(
       [](const OrtDevice::DeviceId device_id) {
         return std::make_unique<MIGraphXPinnedAllocator>(device_id, CUDA_PINNED);
-      },
-      0);
+      }, device_id_);
   return {CreateAllocator(default_memory_info), CreateAllocator(pinned_allocator_info)};
 }
 
