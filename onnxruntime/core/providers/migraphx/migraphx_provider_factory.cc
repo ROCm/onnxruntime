@@ -2,6 +2,7 @@
 // Licensed under the MIT License
 #include <atomic>
 #include <string>
+#include <utility>
 
 #include "core/providers/shared_library/provider_api.h"
 #include "core/providers/migraphx/migraphx_provider_factory.h"
@@ -20,9 +21,9 @@ namespace onnxruntime {
 void InitializeRegistry();
 void DeleteRegistry();
 
-struct MIGraphXProviderFactory : IExecutionProviderFactory {
-  MIGraphXProviderFactory(const MIGraphXExecutionProviderInfo& info) : info_{info} {}
-  ~MIGraphXProviderFactory() override {}
+struct MIGraphXProviderFactory final : IExecutionProviderFactory {
+  explicit MIGraphXProviderFactory(MIGraphXExecutionProviderInfo info) : info_{std::move(info)} {}
+  ~MIGraphXProviderFactory() override = default;
 
   std::unique_ptr<IExecutionProvider> CreateProvider() override;
 
@@ -35,15 +36,15 @@ std::unique_ptr<IExecutionProvider> MIGraphXProviderFactory::CreateProvider() {
 }
 
 struct ProviderInfo_MIGraphX_Impl final : ProviderInfo_MIGraphX {
-  std::unique_ptr<IAllocator> CreateMIGraphXAllocator(int16_t device_id, const char* name) override {
+  std::unique_ptr<IAllocator> CreateMIGraphXAllocator(OrtDevice::DeviceId device_id, const char* name) override {
     return std::make_unique<MIGraphXAllocator>(device_id, name);
   }
 
-  std::unique_ptr<IAllocator> CreateMIGraphXPinnedAllocator(int16_t device_id, const char* name) override {
+  std::unique_ptr<IAllocator> CreateMIGraphXPinnedAllocator(OrtDevice::DeviceId device_id, const char* name) override {
     return std::make_unique<MIGraphXPinnedAllocator>(device_id, name);
   }
 
-  void MIGraphXMemcpy_HostToDevice(void* dst, const void* src, size_t count) override {
+  void MIGraphXMemcpy_HostToDevice(void* dst, const void* src, const size_t count) override {
     // hipMemcpy() operates on the default stream
     HIP_CALL_THROW(hipMemcpy(dst, src, count, hipMemcpyHostToDevice));
 
@@ -52,18 +53,17 @@ struct ProviderInfo_MIGraphX_Impl final : ProviderInfo_MIGraphX {
     // The function will return once the pageable buffer has been copied to the staging memory for DMA transfer
     // to device memory, but the DMA to final destination may not have completed.
 
-    HIP_CALL_THROW(hipStreamSynchronize(0));
+    HIP_CALL_THROW(hipStreamSynchronize(nullptr));
   }
 
   // Used by onnxruntime_pybind_state.cc
-  void MIGraphXMemcpy_DeviceToHost(void* dst, const void* src, size_t count) override {
+  void MIGraphXMemcpy_DeviceToHost(void* dst, const void* src, const size_t count) override {
     // For transfers from device to either pageable or pinned host memory, the function returns only once the copy has completed.
     HIP_CALL_THROW(hipMemcpy(dst, src, count, hipMemcpyDeviceToHost));
   }
 
-  std::shared_ptr<IAllocator> CreateMIGraphXAllocator(int16_t device_id, const size_t migx_mem_limit, const ArenaExtendStrategy arena_extend_strategy,
-    void* alloc_fn, void* free_fn, void* empty_cache_fn, const OrtArenaCfg* default_memory_arena_cfg) override {
-    return MIGraphXExecutionProvider::CreateMIGraphXAllocator(device_id, migx_mem_limit, arena_extend_strategy, alloc_fn, free_fn, empty_cache_fn, default_memory_arena_cfg);
+  std::shared_ptr<IAllocator> CreateMIGraphXAllocator(const OrtDevice::DeviceId device_id, const size_t mem_limit, const ArenaExtendStrategy arena_extend_strategy, void* alloc_fn, void* free_fn, void* empty_cache_fn, const OrtArenaCfg* default_memory_arena_cfg) override {
+    return MIGraphXExecutionProvider::CreateMIGraphXAllocator(device_id, mem_limit, arena_extend_strategy, alloc_fn, free_fn, empty_cache_fn, default_memory_arena_cfg);
   }
 } g_info;
 
@@ -72,7 +72,7 @@ struct MIGraphX_Provider final : Provider {
 
   virtual ~MIGraphX_Provider() = default;
 
-  std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory(int device_id) override {
+  std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory(const int device_id) override {
     MIGraphXExecutionProviderInfo info;
     info.device_id = static_cast<OrtDevice::DeviceId>(device_id);
     info.target_device = "gpu";
@@ -166,8 +166,7 @@ struct MIGraphX_Provider final : Provider {
 }  // namespace onnxruntime
 
 extern "C" {
-
 ORT_API(onnxruntime::Provider*, GetProvider) {
-  return &onnxruntime::g_provider;
+  return &g_provider;
 }
 }
