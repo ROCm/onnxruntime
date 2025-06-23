@@ -1,7 +1,7 @@
 // Copyright 2019 AMD AMDMIGraphX
 
 #include "core/framework/provider_options.h"
-#include "onnxruntime_c_api.h"
+#include "core/session/onnxruntime_c_api.h"
 
 namespace onnxruntime {
 class IAllocator;

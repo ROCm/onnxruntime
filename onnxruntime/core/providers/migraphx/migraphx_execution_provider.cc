@@ -12,15 +12,14 @@
 #include "core/session/onnxruntime_cxx_api.h"
 #include "core/common/safeint.h"
 #include "core/common/logging/severity.h"
-#include "migraphx_execution_provider.h"
-#include "migraphx_execution_provider_info.h"
-#include "migraphx_execution_provider_utils.h"
-#include "migraphx_allocator.h"
-#include "gpu_data_transfer.h"
+#include "core/providers/migraphx/migraphx_execution_provider.h"
+#include "core/providers/migraphx/migraphx_execution_provider_info.h"
+#include "core/providers/migraphx/migraphx_execution_provider_utils.h"
+#include "core/providers/migraphx/migraphx_allocator.h"
+#include "core/providers/migraphx/gpu_data_transfer.h"
 #include <hip/hip_version.h>
-#include "migraphx_call.h"
-
-#include "migraphx_stream_handle.h"
+#include "core/providers/migraphx/migraphx_call.h"
+#include "core/providers/migraphx/migraphx_stream_handle.h"
 
 #if defined(_MSC_VER)
 #pragma warning(disable : 4244 4245)

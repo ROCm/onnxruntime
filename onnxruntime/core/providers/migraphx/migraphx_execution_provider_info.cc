@@ -7,8 +7,8 @@
 #include "core/common/make_string.h"
 #include "core/common/parse_string.h"
 #include "core/framework/provider_options_utils.h"
-#include "migraphx_inc.h"
-#include "migraphx_call.h"
+#include "core/providers/migraphx/migraphx_inc.h"
+#include "core/providers/migraphx/migraphx_call.h"
 
 namespace onnxruntime {
 
