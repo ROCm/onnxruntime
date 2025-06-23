@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License
+
 #include <atomic>
+#include <memory>
 #include <string>
 
 #ifdef _WIN32
@@ -11,16 +13,14 @@
 
 #include "core/providers/shared_library/provider_api.h"
 #include "core/providers/migraphx/migraphx_provider_factory.h"
-#include "migraphx_execution_provider.h"
-#include "migraphx_execution_provider_info.h"
-#include "migraphx_provider_factory_creator.h"
-#include "migraphx_allocator.h"
-#include "gpu_data_transfer.h"
+#include "core/providers/migraphx/migraphx_execution_provider.h"
+#include "core/providers/migraphx/migraphx_execution_provider_info.h"
+#include "core/providers/migraphx/migraphx_provider_factory_creator.h"
+#include "core/providers/migraphx/migraphx_allocator.h"
+#include "core/providers/migraphx/gpu_data_transfer.h"
 #include "core/framework/provider_options.h"
 
 #include "core/session/onnxruntime_c_api.h"
-
-using namespace onnxruntime;
 
 namespace onnxruntime {
 
