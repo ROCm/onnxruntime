@@ -268,13 +268,14 @@ AllocatorPtr MIGraphXExecutionProvider::CreateMIGraphXAllocator(const OrtDevice:
 }
 
 std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators() {
-  AllocatorCreationInfo default_memory_info(
-      [](OrtDevice::DeviceId device_id) { return std::make_unique<MIGraphXAllocator>(device_id, CUDA); }, device_id_);
-  AllocatorCreationInfo pinned_allocator_info(
+  const AllocatorCreationInfo default_memory_info{
       [](OrtDevice::DeviceId device_id) {
-        return std::make_unique<MIGraphXPinnedAllocator>(device_id, CUDA_PINNED);
-      },
-      0);
+        return std::make_unique<MIGraphXAllocator>(device_id, onnxruntime::CUDA);
+      }, device_id_};
+  const AllocatorCreationInfo pinned_allocator_info{
+      [](OrtDevice::DeviceId device_id) {
+        return std::make_unique<MIGraphXPinnedAllocator>(device_id, onnxruntime::CUDA_PINNED);
+      }, device_id_};
   return {CreateAllocator(default_memory_info), CreateAllocator(pinned_allocator_info)};
 }
 
