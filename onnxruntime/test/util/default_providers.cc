@@ -80,7 +80,7 @@ std::unique_ptr<IExecutionProvider> TensorrtExecutionProviderWithOptions(const O
 
 std::unique_ptr<IExecutionProvider> DefaultMIGraphXExecutionProvider() {
 #ifdef USE_MIGRAPHX
-  OrtMIGraphXProviderOptions params{
+  constexpr OrtMIGraphXProviderOptions params{
       0,
       0,
       0,
@@ -90,6 +90,9 @@ std::unique_ptr<IExecutionProvider> DefaultMIGraphXExecutionProvider() {
       nullptr,
       nullptr,
       1,
+      nullptr,
+      nullptr,
+      nullptr,
       SIZE_MAX,
       0};
   return MIGraphXProviderFactoryCreator::Create(&params)->CreateProvider();
