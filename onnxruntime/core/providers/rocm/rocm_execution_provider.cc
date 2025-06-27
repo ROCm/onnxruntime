@@ -2465,6 +2465,17 @@ ROCMExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph,
       continue;
     }
 
+    auto& device_prop = GetDeviceProp();
+    if (std::string_view(node.Name()).find("GroupQueryAttention") != std::string_view::npos &&
+        std::string_view(device_prop.gcnArchName).find("gfx90a") == std::string_view::npos &&
+        std::string_view(device_prop.gcnArchName).find("gfx942") == std::string_view::npos){
+      LOGS(logger, WARNING)
+        << "Node " << node.Name() << " moved to CPU execution, not supported on "
+        << device_prop.gcnArchName << " arch.";
+      continue;
+    }
+
+
     bool not_supported = false;
     bool force_inside = false;  // for some compute heavy ops, we'll force it to run inside ROCM
     if ("LSTM" == node.OpType() ||
