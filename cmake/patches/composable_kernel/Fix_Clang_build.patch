@@ -1,0 +1,193 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6e032a30c..532e9aebb 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -34,7 +34,7 @@ option(BUILD_MHA_LIB "Build the static library for flash attention" OFF)
+ # CK Codegen requires dataclass which is added in Python 3.7
+ # Python version 3.8 is required for general good practice as it is default for Ubuntu 20.04
+ if(NOT CK_USE_ALTERNATIVE_PYTHON)
+-   find_package(Python3 3.8 COMPONENTS Interpreter REQUIRED)
++   find_package(Python3 COMPONENTS Interpreter REQUIRED)
+ else()
+    message(STATUS "Using alternative python version")
+    set(EXTRA_PYTHON_PATH)
+@@ -199,9 +199,8 @@ endif()
+ if(NOT USER_GPU_TARGETS)
+     set(GPU_TARGETS "")
+ endif()
+-#make sure all the targets on the list are actually supported by the current compiler
+-rocm_check_target_ids(SUPPORTED_GPU_TARGETS
+-        TARGETS ${CK_GPU_TARGETS})
++
++set(SUPPORTED_GPU_TARGETS ${CK_GPU_TARGETS})
+ 
+ message(STATUS "Building CK for the following targets: ${SUPPORTED_GPU_TARGETS}")
+ 
+@@ -355,27 +354,6 @@ set(CMAKE_HIP_COMPILER ${CMAKE_CXX_COMPILER})
+ set(CMAKE_HIP_EXTENSIONS ON)
+ message(STATUS "CMAKE_HIP_COMPILER: ${CMAKE_HIP_COMPILER}")
+ 
+-## OpenMP
+-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+-	# workaround issue hipcc in rocm3.5 cannot find openmp
+-	set(OpenMP_CXX "${CMAKE_CXX_COMPILER}")
+-	set(OpenMP_CXX_FLAGS "-fopenmp=libomp -Wno-unused-command-line-argument")
+-	set(OpenMP_CXX_LIB_NAMES "libomp" "libgomp" "libiomp5")
+-	set(OpenMP_libomp_LIBRARY ${OpenMP_CXX_LIB_NAMES})
+-	set(OpenMP_libgomp_LIBRARY ${OpenMP_CXX_LIB_NAMES})
+-	set(OpenMP_libiomp5_LIBRARY ${OpenMP_CXX_LIB_NAMES})
+-else()
+-	find_package(OpenMP REQUIRED)
+-endif()
+-
+-message(STATUS "OpenMP_CXX_LIB_NAMES: ${OpenMP_CXX_LIB_NAMES}")
+-message(STATUS "OpenMP_gomp_LIBRARY: ${OpenMP_gomp_LIBRARY}")
+-message(STATUS "OpenMP_pthread_LIBRARY: ${OpenMP_pthread_LIBRARY}")
+-message(STATUS "OpenMP_CXX_FLAGS: ${OpenMP_CXX_FLAGS}")
+-
+-link_libraries(${OpenMP_gomp_LIBRARY})
+-link_libraries(${OpenMP_pthread_LIBRARY})
+-
+ ## HIP
+ # Override HIP version in config.h, if necessary.
+ # The variables set by find_package() can't be overwritten,
+@@ -396,12 +374,6 @@ if( DEFINED CK_OVERRIDE_HIP_VERSION_PATCH )
+     message(STATUS "CK_HIP_VERSION_PATCH overriden with ${CK_OVERRIDE_HIP_VERSION_PATCH}")
+ endif()
+ message(STATUS "Build with HIP ${HIP_VERSION}")
+-link_libraries(hip::device)
+-if(CK_hip_VERSION VERSION_GREATER_EQUAL 6.0.23494)
+-    add_compile_definitions(__HIP_PLATFORM_AMD__=1)
+-else()
+-    add_compile_definitions(__HIP_PLATFORM_HCC__=1)
+-endif()
+ 
+ include(EnableCompilerWarnings)
+ ## tidy
+@@ -694,10 +666,3 @@ rocm_install(FILES
+ set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+ set(CPACK_RPM_PACKAGE_LICENSE "MIT")
+ 
+-rocm_create_package(
+-    NAME composablekernel
+-    DESCRIPTION "High Performance Composable Kernel for AMD GPUs"
+-    MAINTAINER "MIOpen Kernels Dev Team <dl.MIOpen@amd.com>"
+-    LDCONFIG
+-    HEADER_ONLY
+-)
+diff --git a/include/ck/host_utility/hip_check_error.hpp b/include/ck/host_utility/hip_check_error.hpp
+index 0dfd27526..afeb5eb3b 100644
+--- a/include/ck/host_utility/hip_check_error.hpp
++++ b/include/ck/host_utility/hip_check_error.hpp
+@@ -6,19 +6,7 @@
+ #include <sstream>
+ #include <hip/hip_runtime.h>
+ 
+-// To be removed, which really does not tell the location of failed HIP functional call
+-inline void hip_check_error(hipError_t x)
+-{
+-    if(x != hipSuccess)
+-    {
+-        std::ostringstream ss;
+-        ss << "HIP runtime error: " << hipGetErrorString(x) << ". "
+-           << "hip_check_error.hpp"
+-           << ": " << __LINE__ << "in function: " << __func__;
+-        throw std::runtime_error(ss.str());
+-    }
+-}
+-
++#idndef HIP_CHECK_ERROR
+ #define HIP_CHECK_ERROR(retval_or_funcall)                                         \
+     do                                                                             \
+     {                                                                              \
+@@ -31,3 +19,8 @@ inline void hip_check_error(hipError_t x)
+             throw std::runtime_error(ostr.str());                                  \
+         }                                                                          \
+     } while(0)
++#endif
++
++#ifndef hip_check_error
++#define hip_check_error HIP_CHECK_ERROR
++#endif
+diff --git a/include/ck_tile/host/hip_check_error.hpp b/include/ck_tile/host/hip_check_error.hpp
+index 3acdb4d87..20ec1a389 100644
+--- a/include/ck_tile/host/hip_check_error.hpp
++++ b/include/ck_tile/host/hip_check_error.hpp
+@@ -8,20 +8,7 @@
+ #include <stdexcept>
+ #include <hip/hip_runtime.h>
+ 
+-namespace ck_tile {
+-// To be removed, which really does not tell the location of failed HIP functional call
+-CK_TILE_HOST void hip_check_error(hipError_t x)
+-{
+-    if(x != hipSuccess)
+-    {
+-        std::ostringstream ss;
+-        ss << "HIP runtime error: " << hipGetErrorString(x) << ". " << __FILE__ << ": " << __LINE__
+-           << "in function: " << __func__;
+-        throw std::runtime_error(ss.str());
+-    }
+-}
+-} // namespace ck_tile
+-
++#ifndef HIP_CHECK_ERROR
+ #define HIP_CHECK_ERROR(retval_or_funcall)                                         \
+     do                                                                             \
+     {                                                                              \
+@@ -34,3 +21,8 @@ CK_TILE_HOST void hip_check_error(hipError_t x)
+             throw std::runtime_error(ostr.str());                                  \
+         }                                                                          \
+     } while(0)
++#endif
++
++#ifndef hip_check_error
++#define hip_check_error HIP_CHECK_ERROR
++#endif
+diff --git a/library/src/tensor_operation_instance/gpu/CMakeLists.txt b/library/src/tensor_operation_instance/gpu/CMakeLists.txt
+index aea3359af..666f15766 100644
+--- a/library/src/tensor_operation_instance/gpu/CMakeLists.txt
++++ b/library/src/tensor_operation_instance/gpu/CMakeLists.txt
+@@ -115,7 +115,7 @@ function(add_instance_library INSTANCE_NAME)
+             elseif(source MATCHES "_wmma")
+                 list(REMOVE_ITEM INST_TARGETS gfx900 gfx906 gfx906:xnack- gfx908:xnack+ gfx908:xnack- gfx90a:xnack+ gfx90a:xnack- gfx908 gfx90a gfx942 gfx1030 gfx950)
+             elseif(source MATCHES "mha")
+-                list(REMOVE_ITEM INST_TARGETS gfx900 gfx906 gfx906:xnack- gfx908:xnack- gfx908:xnack+ gfx908 gfx1030 gfx1100 gfx1101 gfx1102 gfx1103 gfx1150 gfx1151 gfx1152 gfx1200 gfx1201 gfx10-3-generic gfx11-generic gfx12-generic)
++                list(REMOVE_ITEM INST_TARGETS gfx900 gfx906 gfx906:xnack- gfx908:xnack- gfx908:xnack+ gfx9 gfx1030 gfx1100 gfx1101 gfx1102 gfx1103 gfx1150 gfx1151 gfx1152 gfx1200 gfx1201 gfx10-3-generic gfx11-generic gfx12-generic)
+             endif()
+ 
+             if(source MATCHES "_mx")
+@@ -145,9 +145,11 @@ function(add_instance_library INSTANCE_NAME)
+             foreach(target IN LISTS INST_TARGETS)
+                     string(APPEND offload_targets "--offload-arch=${target} ")
+             endforeach()
+-            set_source_files_properties(${source} PROPERTIES COMPILE_FLAGS ${offload_targets})
++
++            set_source_files_properties(${source} PROPERTIES LANGUAGE HIP)
+             list(APPEND INST_OBJ ${source})
+         endforeach()
++
+         add_library(${INSTANCE_NAME} OBJECT ${INST_OBJ})
+ 
+         # Allow comparing floating points directly in order to check sentinel values
+@@ -167,6 +169,7 @@ function(add_instance_library INSTANCE_NAME)
+         endif()
+         
+         target_compile_features(${INSTANCE_NAME} PUBLIC)
++        target_compile_definitions(${INSTANCE_NAME} PRIVATE "__HIP_PLATFORM_AMD__=1" "__HIP_PLATFORM_HCC__=1")
+ 
+         # flags to compress the library
+         if(NOT DISABLE_OFFLOAD_COMPRESS AND NOT WIN32 AND ${hip_VERSION_FLAT} GREATER 600241132)
+diff --git a/library/src/tensor_operation_instance/gpu/mha/CMakeLists.txt b/library/src/tensor_operation_instance/gpu/mha/CMakeLists.txt
+index 99ed93801..6c7535c2d 100644
+--- a/library/src/tensor_operation_instance/gpu/mha/CMakeLists.txt
++++ b/library/src/tensor_operation_instance/gpu/mha/CMakeLists.txt
+@@ -1,5 +1,7 @@
+ set(FMHA_CPP_FOLDER ${CMAKE_CURRENT_BINARY_DIR})
+-set(FMHA_SRC_FOLDER ${CMAKE_SOURCE_DIR}/example/ck_tile/01_fmha/)
++#set(FMHA_SRC_FOLDER ${CMAKE_SOURCE_DIR}/example/ck_tile/01_fmha/)
++set(FMHA_SRC_FOLDER /onnxruntime/build/Linux/Release/_deps/composable_kernel-src/example/ck_tile/01_fmha)
++set(HIP_ARCHITECTURES ${CMAKE_HIP_ARCHITECTURES})
+ set(CK_TILE_SRC_FOLDER ${CMAKE_SOURCE_DIR}/include/ck_tile/)
+ 
+ # Usage: for customized Python location cmake -DCK_USE_ALTERNATIVE_PYTHON="/opt/Python-3.8.13/bin/python3.8"
