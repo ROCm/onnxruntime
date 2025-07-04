@@ -576,8 +576,14 @@ struct alignas(sizeof(T) * vec_size) aligned_vector {
 // HIP_KERNEL_ASSERT is a macro that wraps an assert() call inside rocm kernels.
 #define HIP_KERNEL_ASSERT(...) assert(__VA_ARGS__)
 
+#if defined(__GFX9__)
+#define ROCM_EP_HIP_WAVEFRONT_SIZE 64
+#else
+#define ROCM_EP_HIP_WAVEFRONT_SIZE 32
+#endif
+
 // WARP related definitions and functions
-constexpr int GPU_WARP_SIZE = warpSize;
+constexpr int GPU_WARP_SIZE = ROCM_EP_HIP_WAVEFRONT_SIZE;
 inline int GPU_WARP_SIZE_HOST = warpSizeDynamic();
 
 template <typename T>

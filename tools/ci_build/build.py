@@ -716,6 +716,8 @@ def generate_build_tree(
     if args.use_rocm:
         cmake_args.append("-Donnxruntime_ROCM_HOME=" + rocm_home)
         cmake_args.append("-Donnxruntime_ROCM_VERSION=" + args.rocm_version)
+        if args.rocm_gfx_arch:
+            cmake_args.append("-DCMAKE_HIP_ARCHITECTURES=" + args.rocm_gfx_arch)
     if args.use_tensorrt or args.use_nv_tensorrt_rtx:
         cmake_args.append("-Donnxruntime_TENSORRT_HOME=" + tensorrt_home)
 

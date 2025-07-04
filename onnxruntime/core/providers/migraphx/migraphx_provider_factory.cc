@@ -1,10 +1,12 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License
 #include <atomic>
+#include <string>
 
 #include "core/providers/shared_library/provider_api.h"
 #include "core/providers/migraphx/migraphx_provider_factory.h"
 #include "migraphx_execution_provider.h"
+#include "migraphx_execution_provider_info.h"
 #include "migraphx_provider_factory_creator.h"
 #include "migraphx_allocator.h"
 #include "gpu_data_transfer.h"
@@ -42,6 +44,27 @@ struct ProviderInfo_MIGraphX_Impl final : ProviderInfo_MIGraphX {
     return std::make_unique<MIGraphXPinnedAllocator>(device_id, name);
   }
 
+  void MIGraphXMemcpy_HostToDevice(void* dst, const void* src, size_t count) override {
+    // hipMemcpy() operates on the default stream
+    HIP_CALL_THROW(hipMemcpy(dst, src, count, hipMemcpyHostToDevice));
+
+    // To ensure that the copy has completed, invoke a stream sync for the default stream.
+    // For transfers from pageable host memory to device memory, a stream sync is performed before the copy is initiated.
+    // The function will return once the pageable buffer has been copied to the staging memory for DMA transfer
+    // to device memory, but the DMA to final destination may not have completed.
+
+    HIP_CALL_THROW(hipStreamSynchronize(0));
+  }
+
+  // Used by onnxruntime_pybind_state.cc
+  void MIGraphXMemcpy_DeviceToHost(void* dst, const void* src, size_t count) override {
+    // For transfers from device to either pageable or pinned host memory, the function returns only once the copy has completed.
+    HIP_CALL_THROW(hipMemcpy(dst, src, count, hipMemcpyDeviceToHost));
+  }
+
+  std::shared_ptr<IAllocator> CreateMIGraphXAllocator(int16_t device_id, size_t migx_mem_limit, onnxruntime::ArenaExtendStrategy arena_extend_strategy, onnxruntime::MIGraphXExecutionProviderExternalAllocatorInfo& external_allocator_info, const OrtArenaCfg* default_memory_arena_cfg) override {
+    return MIGraphXExecutionProvider::CreateMIGraphXAllocator(device_id, migx_mem_limit, arena_extend_strategy, external_allocator_info, default_memory_arena_cfg);
+  }
 } g_info;
 
 struct MIGraphX_Provider : Provider {
@@ -60,6 +83,8 @@ struct MIGraphX_Provider : Provider {
     info.device_id = static_cast<OrtDevice::DeviceId>(options.device_id);
     info.target_device = "gpu";
     info.fp16_enable = options.migraphx_fp16_enable;
+    info.bf16_enable = options.migraphx_bf16_enable;
+    info.fp8_enable = options.migraphx_fp8_enable;
     info.exhaustive_tune = options.migraphx_exhaustive_tune;
     info.int8_enable = options.migraphx_int8_enable;
     info.int8_calibration_table_name = "";
@@ -67,16 +92,12 @@ struct MIGraphX_Provider : Provider {
       info.int8_calibration_table_name = options.migraphx_int8_calibration_table_name;
     }
     info.int8_use_native_calibration_table = options.migraphx_use_native_calibration_table != 0;
-    info.save_compiled_model = options.migraphx_save_compiled_model;
-    info.save_model_file = "";
-    if (options.migraphx_save_model_path != nullptr) {
-      info.save_model_file = options.migraphx_save_model_path;
+    info.model_cache_dir = "";
+    if (options.migraphx_cache_dir != nullptr) {
+      info.model_cache_dir = options.migraphx_cache_dir;
     }
-    info.load_compiled_model = options.migraphx_load_compiled_model;
-    info.load_model_file = "";
-    if (options.migraphx_load_model_path != nullptr) {
-      info.load_model_file = options.migraphx_load_model_path;
-    }
+    info.arena_extend_strategy = static_cast<onnxruntime::ArenaExtendStrategy>(options.migraphx_arena_extend_strategy);
+    info.mem_limit = options.migraphx_mem_limit;
     return std::make_shared<MIGraphXProviderFactory>(info);
   }
 
@@ -85,6 +106,8 @@ struct MIGraphX_Provider : Provider {
     auto& migx_options = *reinterpret_cast<OrtMIGraphXProviderOptions*>(provider_options);
     migx_options.device_id = internal_options.device_id;
     migx_options.migraphx_fp16_enable = internal_options.fp16_enable;
+    migx_options.migraphx_bf16_enable = internal_options.bf16_enable;
+    migx_options.migraphx_fp8_enable = internal_options.fp8_enable;
     migx_options.migraphx_int8_enable = internal_options.int8_enable;
     migx_options.migraphx_exhaustive_tune = internal_options.exhaustive_tune;
 
@@ -105,10 +128,9 @@ struct MIGraphX_Provider : Provider {
 
     migx_options.migraphx_use_native_calibration_table = internal_options.int8_use_native_calibration_table;
 
-    migx_options.migraphx_save_compiled_model = internal_options.save_compiled_model;
-    migx_options.migraphx_save_model_path = internal_options.save_model_file.c_str();
-    migx_options.migraphx_load_compiled_model = internal_options.load_compiled_model;
-    migx_options.migraphx_load_model_path = internal_options.load_model_file.c_str();
+    migx_options.migraphx_cache_dir = internal_options.model_cache_dir.string().c_str();
+    migx_options.migraphx_arena_extend_strategy = static_cast<int>(internal_options.arena_extend_strategy);
+    migx_options.migraphx_mem_limit = internal_options.mem_limit;
   }
 
   ProviderOptions GetProviderOptions(const void* provider_options) override {
