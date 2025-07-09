@@ -75,7 +75,7 @@ class MIGraphXExecutionProvider final : public IExecutionProvider {
                 IResourceAccountant* /* resource_accountant */) const override;
 
   Status Compile(const std::vector<FusedNodeAndGraph>& fused_nodes,
-                         std::vector<NodeComputeInfo>& node_compute_funcs) override;
+                 std::vector<NodeComputeInfo>& node_compute_funcs) override;
 
   std::shared_ptr<KernelRegistry> GetKernelRegistry() const override;
   std::unique_ptr<IDataTransfer> GetDataTransfer() const override;

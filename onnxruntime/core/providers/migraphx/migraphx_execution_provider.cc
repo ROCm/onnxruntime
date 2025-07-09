@@ -218,7 +218,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
 
   if (int8_enable_ || fp8_enable_) {
     const std::string int8_calibration_cache_name_env =
-      GetEnvironmentVar(migraphx_env_vars::kINT8CalibrationTableName);
+        GetEnvironmentVar(migraphx_env_vars::kINT8CalibrationTableName);
     if (!int8_calibration_cache_name_env.empty()) {
       int8_calibration_cache_name_ = int8_calibration_cache_name_env;
       LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_CALIBRATION_TABLE_NAME: " << int8_calibration_cache_name_;
@@ -867,11 +867,11 @@ std::unique_ptr<IndexedSubGraph> MIGraphXExecutionProvider::GetSubGraph(const st
 
   // Sort inputs and outputs by the order they were added
   std::multimap<int, const NodeArg*> inputs, outputs;
-  for (auto & [fst, snd] : fused_inputs) {
+  for (auto& [fst, snd] : fused_inputs) {
     inputs.insert({snd, fst});
   }
 
-  for (auto & [fst, snd] : fused_outputs) {
+  for (auto& [fst, snd] : fused_outputs) {
     outputs.insert({snd, fst});
   }
 
