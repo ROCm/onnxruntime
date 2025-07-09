@@ -1,11 +1,13 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License
-#include <fstream>
 #include <algorithm>
-#include <iterator>
-#include <unordered_map>
-#include <set>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <memory>
+#include <set>
+#include <string>
+#include <unordered_map>
 
 #include "core/providers/shared_library/provider_api.h"
 #define ORT_API_MANUAL_INIT
@@ -400,6 +402,7 @@ static bool getMIGraphXType(const ONNXTensorElementDataType type,
       mgx_type = migraphx_shape_fp8e5m2fnuz_type;
       break;
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT4:
+      // No `break` intentional
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:
       mgx_type = migraphx_shape_int8_type;
       break;
@@ -413,6 +416,7 @@ static bool getMIGraphXType(const ONNXTensorElementDataType type,
       mgx_type = migraphx_shape_int64_type;
       break;
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT4:
+      // No `break` intentional
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:
       mgx_type = migraphx_shape_uint8_type;
       break;
@@ -675,9 +679,9 @@ void SubgraphPostProcessing(const GraphViewer& graph_viewer, std::vector<std::ve
       if (auto node = graph_viewer.GetNode(index); node->OpType() == "Reshape") {
         if (const auto& args = node->InputDefs(); args.size() == 2) {
           if (std::vector<NodeIndex> node_inputs; canEvalNodeArgument(graph_viewer, node, {1}, node_inputs)) {
-            return (not std::all_of(node_inputs.begin(), node_inputs.end(), [&](auto i) {
+            return !std::all_of(node_inputs.begin(), node_inputs.end(), [&](auto i) {
               return std::find(git.begin(), git.end(), i) != git.end();
-            }));
+            });
           } else {
             return true;
           }
