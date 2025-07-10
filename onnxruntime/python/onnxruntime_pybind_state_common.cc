@@ -51,7 +51,6 @@ onnxruntime::ArenaExtendStrategy arena_extend_strategy = onnxruntime::ArenaExten
 onnxruntime::MIGraphXExecutionProviderExternalAllocatorInfo migx_external_allocator_info{};
 #endif
 
-
 void DlpackCapsuleDestructor(PyObject* data) {
   DLManagedTensor* dlmanaged_tensor = reinterpret_cast<DLManagedTensor*>(PyCapsule_GetPointer(data, "dltensor"));
   if (dlmanaged_tensor) {
