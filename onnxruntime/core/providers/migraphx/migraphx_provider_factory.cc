@@ -173,6 +173,6 @@ struct MIGraphX_Provider final : Provider {
 
 extern "C" {
 ORT_API(onnxruntime::Provider*, GetProvider) {
-  return &g_provider;
+  return &onnxruntime::g_provider;
 }
 }
