@@ -1,4 +1,7 @@
-// Copyright 2019 AMD AMDMIGraphX
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License
+
+#pragma once
 
 #include "core/framework/ortdevice.h"
 #include "onnxruntime_c_api.h"
