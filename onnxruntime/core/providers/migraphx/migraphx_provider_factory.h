@@ -3,8 +3,9 @@
 
 #pragma once
 
+#include <memory>
 #include "core/framework/ortdevice.h"
-#include "onnxruntime_c_api.h"
+#include "core/session/onnxruntime_c_api.h"
 
 namespace onnxruntime {
 class IAllocator;
