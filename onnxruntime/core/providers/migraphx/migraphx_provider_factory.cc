@@ -150,12 +150,12 @@ struct MIGraphX_Provider final : Provider {
   void Initialize() override {
 #ifdef _WIN32
     HMODULE module = nullptr;
-    if(GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+    if (GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                           static_cast<LPCSTR>(static_cast<void*>(InitializeRegistry)),
                           &module) != 0) {
       char buffer[MAX_PATH];
-      if(GetModuleFileName(module, buffer, sizeof(buffer)) != 0) {
+      if (GetModuleFileName(module, buffer, sizeof(buffer)) != 0) {
         PathRemoveFileSpec(buffer);
         SetDllDirectory(buffer);
       }
