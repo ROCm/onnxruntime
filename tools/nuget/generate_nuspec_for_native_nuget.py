@@ -70,8 +70,8 @@ def generate_file_list_for_ep(nuget_artifacts_dir, ep, files_list, include_pdbs,
                     if (
                         child_file.suffix in suffixes
                         and is_this_file_needed(ep, child_file.name, package_name)
-                        and package_name not in ["Microsoft.ML.OnnxRuntime.Gpu.Linux",
-                                                 "Microsoft.ML.OnnxRuntime.MIGraphX.Linux"]
+                        and package_name
+                        not in ["Microsoft.ML.OnnxRuntime.Gpu.Linux", "Microsoft.ML.OnnxRuntime.MIGraphX.Linux"]
                     ):
                         files_list.append(
                             '<file src="' + str(child_file) + f'" target="runtimes/win-{cpu_arch}/native"/>'
@@ -193,7 +193,9 @@ def generate_description(line_list, package_name):
     elif "Microsoft.ML.OnnxRuntime.MIGraphX.Linux" in package_name:
         description = "This package contains Linux native shared library artifacts for ONNX Runtime with the MIGraphX."
     elif "Microsoft.ML.OnnxRuntime.MIGraphX.Windows" in package_name:
-        description = "This package contains Windows native shared library artifacts for ONNX Runtime with the MIGraphX."
+        description = (
+            "This package contains Windows native shared library artifacts for ONNX Runtime with the MIGraphX."
+        )
     elif "Intel.ML.OnnxRuntime" in package_name:
         description = "This package contains native shared library artifacts for ONNX Runtime with OpenVINO."
     elif "Microsoft.ML.OnnxRuntime" in package_name:  # This is a Microsoft.ML.OnnxRuntime.* package

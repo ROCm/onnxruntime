@@ -123,8 +123,7 @@ ORT_API_STATUS_IMPL(OrtApis::SessionOptionsAppendExecutionProvider,
       EpToAppend{EpID::VitisAI, "VitisAI", kVitisAIExecutionProvider},
       EpToAppend{EpID::CoreML, "CoreML", kCoreMLExecutionProvider},
       EpToAppend{EpID::NvTensorRtRtx, "NvTensorRtRtx", kNvTensorRTRTXExecutionProvider},
-      EpToAppend{EpID::MIGraphX, "MIGraphX",kMIGraphXExecutionProvider}
-  };
+      EpToAppend{EpID::MIGraphX, "MIGraphX", kMIGraphXExecutionProvider}};
 
   ProviderOptions provider_options;
   OrtStatus* status = ParseProviderOptions(provider_options_keys,
@@ -290,9 +289,9 @@ ORT_API_STATUS_IMPL(OrtApis::SessionOptionsAppendExecutionProvider,
       options->provider_factories.push_back(MIGraphXProviderFactoryCreator::Create(provider_options));
 #else
       status = create_not_supported_status();
-#endif	
-	  break;
-	}
+#endif
+      break;
+    }
     case EpID::VitisAI: {
 #if defined(USE_VITISAI) || defined(USE_VITISAI_PROVIDER_INTERFACE)
       status = OrtApis::SessionOptionsAppendExecutionProvider_VitisAI(options, provider_options_keys,
