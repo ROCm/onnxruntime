@@ -3029,7 +3029,12 @@ static constexpr OrtApi ort_api_1_to_22 = {
 
     &OrtApis::GetEpApi,
     // End of Version 22 - DO NOT MODIFY ABOVE (see above text for more information)
-};
+    &OrtApis::CreateMIGraphXProviderOptions,
+    &OrtApis::UpdateMIGraphXProviderOptions,
+    &OrtApis::GetMIGraphXProviderOptionsAsString,
+    &OrtApis::ReleaseMIGraphXProviderOptions,
+    &OrtApis::UpdateMIGraphXProviderOptionsWithValue,
+    &OrtApis::GetMIGraphXProviderOptionsByName};
 
 // OrtApiBase can never change as there is no way to know what version of OrtApiBase is returned by OrtGetApiBase.
 static_assert(sizeof(OrtApiBase) == sizeof(void*) * 2, "New methods can't be added to OrtApiBase as it is not versioned");
