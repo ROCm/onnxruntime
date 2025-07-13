@@ -6,7 +6,6 @@
 
 import datetime
 import logging
-import os
 import platform
 import shlex
 import subprocess
