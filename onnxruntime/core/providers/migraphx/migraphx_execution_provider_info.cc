@@ -69,19 +69,18 @@ MIGraphXExecutionProviderInfo::MIGraphXExecutionProviderInfo(const ProviderOptio
 }
 
 MIGraphXExecutionProviderInfo::MIGraphXExecutionProviderInfo(const OrtMIGraphXProviderOptions& options) noexcept
-  : device_id{static_cast<OrtDevice::DeviceId>(options.device_id)},
-    fp16_enable{options.migraphx_fp16_enable != 0},
-    bf16_enable{options.migraphx_bf16_enable != 0},
-    fp8_enable{options.migraphx_fp8_enable != 0},
-    int8_enable{options.migraphx_int8_enable != 0},
-    model_cache_dir{options.migraphx_cache_dir},
-    exhaustive_tune{options.migraphx_exhaustive_tune != 0},
-    mem_limit{options.migraphx_mem_limit},
-    arena_extend_strategy{options.migraphx_arena_extend_strategy},
-    external_alloc{options.migraphx_external_alloc},
-    external_free{options.migraphx_external_free},
-    external_empty_cache{options.migraphx_external_empty_cache}
-{
+    : device_id{static_cast<OrtDevice::DeviceId>(options.device_id)},
+      fp16_enable{options.migraphx_fp16_enable != 0},
+      bf16_enable{options.migraphx_bf16_enable != 0},
+      fp8_enable{options.migraphx_fp8_enable != 0},
+      int8_enable{options.migraphx_int8_enable != 0},
+      model_cache_dir{options.migraphx_cache_dir},
+      exhaustive_tune{options.migraphx_exhaustive_tune != 0},
+      mem_limit{options.migraphx_mem_limit},
+      arena_extend_strategy{options.migraphx_arena_extend_strategy},
+      external_alloc{options.migraphx_external_alloc},
+      external_free{options.migraphx_external_free},
+      external_empty_cache{options.migraphx_external_empty_cache} {
 }
 
 ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions() const {

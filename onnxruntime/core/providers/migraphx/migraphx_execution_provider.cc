@@ -108,8 +108,7 @@ std::shared_ptr<KernelRegistry> MIGraphXExecutionProvider::GetKernelRegistry() c
 
 MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProviderInfo& info)
     : IExecutionProvider{kMIGraphXExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, info.device_id)},
-      device_id_{info.device_id}
-{
+      device_id_{info.device_id} {
   InitProviderOrtApi();
   get_flags_from_session_info(info);
   metadef_id_generator_ = ModelMetadefIdGenerator::Create();
@@ -335,12 +334,14 @@ AllocatorPtr MIGraphXExecutionProvider::CreateMIGraphXAllocator(const OrtDevice:
 std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators() {
   const AllocatorCreationInfo default_memory_info(
       [](const OrtDevice::DeviceId device_id) {
-       return std::make_unique<MIGraphXAllocator>(device_id, CUDA);
-      }, device_id_);
+        return std::make_unique<MIGraphXAllocator>(device_id, CUDA);
+      },
+      device_id_);
   const AllocatorCreationInfo pinned_allocator_info(
       [](const OrtDevice::DeviceId device_id) {
         return std::make_unique<MIGraphXPinnedAllocator>(device_id, CUDA_PINNED);
-      }, device_id_);
+      },
+      device_id_);
   return {CreateAllocator(default_memory_info), CreateAllocator(pinned_allocator_info)};
 }
 

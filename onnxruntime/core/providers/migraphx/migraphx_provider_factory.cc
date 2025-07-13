@@ -69,7 +69,7 @@ struct ProviderInfo_MIGraphX_Impl final : ProviderInfo_MIGraphX {
   }
 
   std::shared_ptr<IAllocator> CreateMIGraphXAllocator(int16_t device_id, const size_t migx_mem_limit, const ArenaExtendStrategy arena_extend_strategy,
-    void* alloc_fn, void* free_fn, void* empty_cache_fn, const OrtArenaCfg* default_memory_arena_cfg) override {
+                                                      void* alloc_fn, void* free_fn, void* empty_cache_fn, const OrtArenaCfg* default_memory_arena_cfg) override {
     return MIGraphXExecutionProvider::CreateMIGraphXAllocator(device_id, migx_mem_limit, arena_extend_strategy, alloc_fn, free_fn, empty_cache_fn, default_memory_arena_cfg);
   }
 } g_info;

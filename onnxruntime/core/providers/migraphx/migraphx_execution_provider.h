@@ -95,19 +95,18 @@ class MIGraphXExecutionProvider final : public IExecutionProvider {
   int GetDeviceId() const override { return device_id_; }
   ProviderOptions GetProviderOptions() const override {
     return {
-      {migraphx_provider_option::kDeviceId, MakeStringWithClassicLocale(device_id_)},
-      {migraphx_provider_option::kFp16Enable, MakeStringWithClassicLocale(fp16_enable_)},
-      {migraphx_provider_option::kBf16Enable, MakeStringWithClassicLocale(bf16_enable_)},
-      {migraphx_provider_option::kFp8Enable, MakeStringWithClassicLocale(fp8_enable_)},
-      {migraphx_provider_option::kInt8Enable, MakeStringWithClassicLocale(int8_enable_)},
-      {migraphx_provider_option::kModelCacheDir, MakeStringWithClassicLocale(model_cache_path_)},
-      {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(mem_limit_)},
-      {migraphx_provider_option::kArenaExtendStrategy, EnumToName(arena_extend_strategy_mapping, arena_extend_strategy_)},
-      {migraphx_provider_option::kExhaustiveTune, MakeStringWithClassicLocale(exhaustive_tune_)},
-      {migraphx_provider_option::kGpuExternalAlloc, MakeStringWithClassicLocale(external_alloc_)},
-      {migraphx_provider_option::kGpuExternalFree, MakeStringWithClassicLocale(external_free_)},
-      {migraphx_provider_option::kGpuExternalEmptyCache, MakeStringWithClassicLocale(external_empty_cache_)}
-    };
+        {migraphx_provider_option::kDeviceId, MakeStringWithClassicLocale(device_id_)},
+        {migraphx_provider_option::kFp16Enable, MakeStringWithClassicLocale(fp16_enable_)},
+        {migraphx_provider_option::kBf16Enable, MakeStringWithClassicLocale(bf16_enable_)},
+        {migraphx_provider_option::kFp8Enable, MakeStringWithClassicLocale(fp8_enable_)},
+        {migraphx_provider_option::kInt8Enable, MakeStringWithClassicLocale(int8_enable_)},
+        {migraphx_provider_option::kModelCacheDir, MakeStringWithClassicLocale(model_cache_path_)},
+        {migraphx_provider_option::kMemLimit, MakeStringWithClassicLocale(mem_limit_)},
+        {migraphx_provider_option::kArenaExtendStrategy, EnumToName(arena_extend_strategy_mapping, arena_extend_strategy_)},
+        {migraphx_provider_option::kExhaustiveTune, MakeStringWithClassicLocale(exhaustive_tune_)},
+        {migraphx_provider_option::kGpuExternalAlloc, MakeStringWithClassicLocale(external_alloc_)},
+        {migraphx_provider_option::kGpuExternalFree, MakeStringWithClassicLocale(external_free_)},
+        {migraphx_provider_option::kGpuExternalEmptyCache, MakeStringWithClassicLocale(external_empty_cache_)}};
   }
 
  private:
