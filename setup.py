@@ -287,10 +287,13 @@ try:
                 hipsdk_dependencies = [
                     "amd_comgr0602.dll",
                     "amd_comgr0604.dll",
+                    "amd_comgr0700.dll",
                     "hiprtc0602.dll",
                     "hiprtc0604.dll",
+                    "hiprtc0700.dll",
                     "hiprtc-builtins0602.dll",
                     "hiprtc-builtins0604.dll",
+                    "hiprtc-builtins0700.dll",
                 ]
 
                 migraphx_dependencies = [
@@ -460,10 +463,13 @@ else:
     migraphx_deps = [
         "amd_comgr0602.dll",
         "amd_comgr0604.dll",
+        "amd_comgr0700.dll",
         "hiprtc0602.dll",
         "hiprtc0604.dll",
+        "hiprtc0700.dll",
         "hiprtc-builtins0602.dll",
         "hiprtc-builtins0604.dll",
+        "hiprtc-builtins0700.dll",
         "migraphx-hiprtc-driver.exe",
         "migraphx.dll",
         "migraphx_c.dll",
