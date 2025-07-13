@@ -335,14 +335,14 @@ inline std::string GenerateGraphId(const GraphViewer& graph_viewer) {
 
 inline std::string_view TrimLeft(std::string_view sv, int (*fn)(int) = std::isspace) {
   return sv.substr(0, sv.end() - std::find_if(sv.begin(), sv.end(), [fn](int ch) {
-    return fn(ch);
-  }));
+                        return fn(ch);
+                      }));
 }
 
 inline std::string_view TrimRight(std::string_view sv, int (*fn)(int) = std::isspace) {
   return sv.substr(sv.end() - std::find_if(sv.rbegin(), sv.rend(), [fn](int ch) {
-    return fn(ch);
-  }).base());
+                                return fn(ch);
+                              }).base());
 }
 
 inline std::string_view Trim(std::string_view sv, int (*fn)(int) = std::isspace) {
