@@ -6,7 +6,6 @@
 
 import datetime
 import logging
-import os
 import platform
 import shlex
 import subprocess
@@ -302,7 +301,7 @@ try:
                     "migraphx_device.dll",
                     "migraphx_gpu.dll",
                     "migraphx_onnx.dll",
-                    "migraphx_tf.dll"
+                    "migraphx_tf.dll",
                 ]
 
             _bdist_wheel.run(self)
@@ -311,7 +310,14 @@ try:
                 file = glob(path.join(self.dist_dir, "*linux*.whl"))[0]
                 logger.info("repairing %s for manylinux1", file)
                 auditwheel_cmd = ["auditwheel", "-v", "repair", "-w", self.dist_dir, file]
-                for i in cuda_dependencies + hipsdk_dependencies + rocm_dependencies + migraphx_dependencies + tensorrt_dependencies + cann_dependencies:
+                for i in (
+                    cuda_dependencies
+                    + hipsdk_dependencies
+                    + rocm_dependencies
+                    + migraphx_dependencies
+                    + tensorrt_dependencies
+                    + cann_dependencies
+                ):
                     auditwheel_cmd += ["--exclude", i]
                 logger.info("Running %s", " ".join([shlex.quote(arg) for arg in auditwheel_cmd]))
                 try:

@@ -854,12 +854,8 @@ def generate_files(line_list, args):
                 path = native_build_path / nuget_dependencies[key]
                 if path.exists():
                     files_list.append(
-                        "<file src="
-                        + '"'
-                        + str(path)
-                        + runtimes_target
-                        + args.target_architecture
-                        + '\\native" />')
+                        "<file src=" + '"' + str(path) + runtimes_target + args.target_architecture + '\\native" />'
+                    )
 
             _files_list_append("amd_comgr0602")
             _files_list_append("amd_comgr0604")
