@@ -1,25 +1,17 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-#include <memory>
-#include <utility>
-#include "core/providers/resource.h"
-#include "core/providers/migraphx/migraphx_stream_handle.h"
-
-#define MIGRAPHX_RESOURCE_VERSION 1
+#include <core/providers/rocm/rocm_resource.h>
+#include "migraphx_stream_handle.h"
 
 namespace onnxruntime {
 
-enum class MIGraphXResource {
-  hip_stream_t = rocm_resource_offset
-};
-
-struct MIGraphXNotification : synchronize::Notification {
-  explicit MIGraphXNotification(Stream& s) : Notification(s) {
+struct MIGraphXNotification : public synchronize::Notification {
+  MIGraphXNotification(Stream& s) : Notification(s) {
     HIP_CALL_THROW(hipEventCreateWithFlags(&event_, hipEventDisableTiming));
   }
 
-  ~MIGraphXNotification() override {
+  ~MIGraphXNotification() {
     if (event_)
       HIP_CALL_THROW(hipEventDestroy(event_));
   }
@@ -29,18 +21,18 @@ struct MIGraphXNotification : synchronize::Notification {
     HIP_CALL_THROW(hipEventRecord(event_, static_cast<hipStream_t>(stream_.GetHandle())));
   }
 
-  void wait_on_device(const Stream& device_stream) const {
+  void wait_on_device(Stream& device_stream) {
     ORT_ENFORCE(device_stream.GetDevice().Type() == OrtDevice::GPU, "Unexpected device:", device_stream.GetDevice().ToString());
     // launch a wait command to the migraphx stream
     HIP_CALL_THROW(hipStreamWaitEvent(static_cast<hipStream_t>(device_stream.GetHandle()), event_, 0));
-  }
+  };
 
-  void wait_on_host() const {
+  void wait_on_host() {
     // CUDA_CALL_THROW(cudaStreamSynchronize(stream_));
     HIP_CALL_THROW(hipEventSynchronize(event_));
   }
 
-  hipEvent_t event_{};
+  hipEvent_t event_;
 };
 
 MIGraphXStream::MIGraphXStream(hipStream_t stream,
@@ -48,14 +40,15 @@ MIGraphXStream::MIGraphXStream(hipStream_t stream,
                                AllocatorPtr cpu_allocator,
                                bool release_cpu_buffer_on_migraphx_stream)
     : Stream(stream, device),
-      cpu_allocator_(std::move(cpu_allocator)),
+      cpu_allocator_(cpu_allocator),
       release_cpu_buffer_on_migraphx_stream_(release_cpu_buffer_on_migraphx_stream) {
 }
 
 MIGraphXStream::~MIGraphXStream() {
-  ORT_IGNORE_RETURN_VALUE(MIGraphXStream::CleanUpOnRunEnd());
+  ORT_IGNORE_RETURN_VALUE(CleanUpOnRunEnd());
   if (own_stream_) {
-    if (auto* handle = GetHandle())
+    auto* handle = GetHandle();
+    if (handle)
       HIP_CALL_THROW(hipStreamDestroy(static_cast<hipStream_t>(handle)));
   }
 }
@@ -93,12 +86,12 @@ struct CpuBuffersInfo {
   std::unique_ptr<void*[]> buffers;
   // CPU buffer buffers[i].
   // Number of buffer points in "buffers".
-  size_t n_buffers{};
+  size_t n_buffers;
 };
 
 static void ReleaseCpuBufferCallback(void* raw_info) {
   std::unique_ptr<CpuBuffersInfo> info = std::make_unique<CpuBuffersInfo>();
-  info.reset(static_cast<CpuBuffersInfo*>(raw_info));
+  info.reset(reinterpret_cast<CpuBuffersInfo*>(raw_info));
   for (size_t i = 0; i < info->n_buffers; ++i) {
     info->allocator->Free(info->buffers[i]);
   }
@@ -130,28 +123,29 @@ Status MIGraphXStream::CleanUpOnRunEnd() {
 }
 
 void* MIGraphXStream::GetResource(int version, int id) const {
-  ORT_ENFORCE(version <= MIGRAPHX_RESOURCE_VERSION, "resource version unsupported!");
+  ORT_ENFORCE(version <= ORT_ROCM_RESOURCE_VERSION, "resource version unsupported!");
+  void* resource{};
   switch (id) {
-    case MIGraphXResource::hip_stream_t:
-      return GetHandle();
+    case RocmResource::hip_stream_t:
+      return reinterpret_cast<void*>(GetHandle());
     default:
       break;
   }
-  return nullptr;
+  return resource;
 }
 
 // CPU Stream command handles
-void WaitMIGraphXNotificationOnDevice(const Stream& stream, synchronize::Notification& notification) {
-  dynamic_cast<MIGraphXNotification*>(&notification)->wait_on_device(stream);
+void WaitMIGraphXNotificationOnDevice(Stream& stream, synchronize::Notification& notification) {
+  static_cast<MIGraphXNotification*>(&notification)->wait_on_device(stream);
 }
 
 void WaitMIGraphXNotificationOnHost(Stream& /*stream*/, synchronize::Notification& notification) {
-  dynamic_cast<MIGraphXNotification*>(&notification)->wait_on_host();
+  static_cast<MIGraphXNotification*>(&notification)->wait_on_host();
 }
 
 void RegisterMIGraphXStreamHandles(IStreamCommandHandleRegistry& stream_handle_registry,
                                    const OrtDevice::DeviceType device_type,
-                                   const AllocatorPtr& cpu_allocator,
+                                   AllocatorPtr cpu_allocator,
                                    bool release_cpu_buffer_on_migraphx_stream,
                                    hipStream_t external_stream,
                                    bool use_existing_stream) {
@@ -159,20 +153,19 @@ void RegisterMIGraphXStreamHandles(IStreamCommandHandleRegistry& stream_handle_r
   stream_handle_registry.RegisterWaitFn(device_type, device_type, WaitMIGraphXNotificationOnDevice);
   // wait migraphx notification on cpu ep
   stream_handle_registry.RegisterWaitFn(device_type, OrtDevice::CPU, WaitMIGraphXNotificationOnHost);
-  if (!use_existing_stream) {
+  if (!use_existing_stream)
     stream_handle_registry.RegisterCreateStreamFn(device_type, [cpu_allocator, release_cpu_buffer_on_migraphx_stream](const OrtDevice& device) {
       HIP_CALL_THROW(hipSetDevice(device.Id()));
       hipStream_t stream = nullptr;
       HIP_CALL_THROW(hipStreamCreateWithFlags(&stream, hipStreamNonBlocking));
       return std::make_unique<MIGraphXStream>(stream, device, cpu_allocator, release_cpu_buffer_on_migraphx_stream);
     });
-  } else {
+  else
     stream_handle_registry.RegisterCreateStreamFn(device_type, [cpu_allocator,
                                                                 release_cpu_buffer_on_migraphx_stream,
                                                                 external_stream](const OrtDevice& device) {
       return std::make_unique<MIGraphXStream>(external_stream, device, cpu_allocator, release_cpu_buffer_on_migraphx_stream);
     });
-  }
 }
 
 }  // namespace onnxruntime
