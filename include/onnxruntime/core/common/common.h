@@ -312,7 +312,7 @@ inline std::wstring ToWideString(const std::wstring& s) { return s; }
 inline std::wstring ToWideString(std::wstring_view s) { return std::wstring{s}; }
 #else
 inline std::string ToWideString(const std::string& s) { return s; }
-inline std::string ToWideString(std::string_view s) { return s; }
+inline std::string ToWideString(std::string_view s) { return std::string{s}; }
 #endif
 
 constexpr size_t kMaxStrLen = 2048;
