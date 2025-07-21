@@ -138,10 +138,10 @@ struct MIGraphX_Provider final : Provider {
     if (internal_options.model_cache_dir.empty()) {
       migx_options.migraphx_cache_dir = nullptr;
     } else {
-      const std::string cache_dir_str{internal_options.model_cache_dir.string()};
+      const auto cache_dir_str{internal_options.model_cache_dir.native()};
       auto cache_dir = new ORTCHAR_T[cache_dir_str.size() + 1];
 #ifdef _MSC_VER
-      strncpy_s(cache_dir, cache_dir_str.size() + 1, cache_dir_str.data(), cache_dir_str.size());
+      wcsncpy_s(cache_dir, cache_dir_str.size() + 1, cache_dir_str.data(), cache_dir_str.size());
 #else
       strncpy(cache_dir, cache_dir_str.data(), cache_dir_str.size());
 #endif
@@ -149,7 +149,6 @@ struct MIGraphX_Provider final : Provider {
       migx_options.migraphx_cache_dir = cache_dir;
     }
 
-    migx_options.migraphx_cache_dir = internal_options.model_cache_dir.string().c_str();
     migx_options.migraphx_arena_extend_strategy = static_cast<int>(internal_options.arena_extend_strategy);
     migx_options.migraphx_mem_limit = internal_options.mem_limit;
   }

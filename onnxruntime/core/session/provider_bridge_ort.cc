@@ -3247,7 +3247,7 @@ ORT_API(void, OrtApis::ReleaseMIGraphXProviderOptions, _Frees_ptr_opt_ OrtMIGrap
 #ifdef USE_MIGRAPHX
   std::unique_ptr<OrtMIGraphXProviderOptions> p(ptr);
   if (ptr->migraphx_cache_dir != nullptr) {
-    onnxruntime::AllocatorDefaultFree(const_cast<char*>(ptr->migraphx_cache_dir));
+    onnxruntime::AllocatorDefaultFree(const_cast<ORTCHAR_T*>(ptr->migraphx_cache_dir));
   }
 #else
   ORT_UNUSED_PARAMETER(ptr);
@@ -3269,8 +3269,8 @@ ORT_API_STATUS_IMPL(OrtApis::UpdateMIGraphXProviderOptionsWithValue,
       ORT_THROW("Cannot convert from string to integer - invalid argument");
     }
   } else if (sv == onnxruntime::migraphx_provider_option::kModelCacheDir) {
-    auto sd = std::string_view{static_cast<char*>(value)};
-    migraphx_options->migraphx_cache_dir = onnxruntime::StrDup(sd.data(), allocator);
+    const auto sd = std::string_view{static_cast<char*>(value)};
+    migraphx_options->migraphx_cache_dir = onnxruntime::StrDup(sd, allocator);
   } else {
     ORT_THROW("Unsupported provider option name: '" + std::string{sv} + "'");
   }

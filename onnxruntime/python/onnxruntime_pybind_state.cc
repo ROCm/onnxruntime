@@ -908,7 +908,8 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
 #endif
   } else if (type == kMIGraphXExecutionProvider) {
 #ifdef USE_MIGRAPHX
-    std::string model_cache_path, cal_table_name;
+    std::wstring model_cache_path;
+    std::string cal_table_name;
     auto it = provider_options_map.find(type);
     if (it != provider_options_map.end()) {
       OrtMIGraphXProviderOptions params{
@@ -991,8 +992,9 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
           }
         } else if (option.first == migraphx_provider_option::kModelCacheDir) {
           if (!option.second.empty()) {
-            model_cache_path = option.second;
-            params.migraphx_cache_dir = model_cache_path.c_str();
+            std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
+            model_cache_path = converter.from_bytes(option.second);
+            params.migraphx_cache_dir =  model_cache_path.c_str();
           } else {
             ORT_THROW(
                 "[ERROR] [MIGraphX] The value for the key 'migraphx_load_model_name' should be a "

@@ -8,4 +8,7 @@
 struct OrtAllocator;
 namespace onnxruntime {
 char* StrDup(const std::string& str, OrtAllocator* allocator);
+wchar_t* StrDup(std::wstring_view str, OrtAllocator* allocator);
+// Convert from UTF-8 string to wide string
+wchar_t* StrDup(std::string_view str, OrtAllocator* allocator);
 }  // namespace onnxruntime
