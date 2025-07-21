@@ -102,7 +102,7 @@ class MIGraphXExecutionProvider final : public IExecutionProvider {
   std::string int8_calibration_cache_name_;
   bool int8_calibration_cache_available_ = false;
   bool int8_use_native_migraphx_calibration_table_ = false;
-  std::string calibration_cache_path_;
+  std::filesystem::path calibration_cache_path_;
   std::unordered_map<std::string, float> dynamic_range_map_;
   std::filesystem::path model_cache_path_{};
   std::set<std::string> session_input_names;
