@@ -62,6 +62,10 @@ inline std::string PathToUTF8String(const PathString& s) {
 
 static_assert(std::is_same<PathString, std::string>::value, "PathString is not std::string!");
 
+inline PathString ToPathString(std::string_view s) {
+  return PathString{s};
+}
+
 inline PathChar ToLowerPathChar(PathChar c) {
   return std::tolower(c);
 }
