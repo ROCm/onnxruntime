@@ -7,8 +7,15 @@
 // forward declaration
 struct OrtAllocator;
 namespace onnxruntime {
-char* StrDup(const std::string& str, OrtAllocator* allocator);
+char* StrDup(std::string_view str, OrtAllocator* allocator);
+inline char* StrDup(const std::string& str, OrtAllocator* allocator) {
+  return StrDup(std::string_view{str}, allocator);
+}
 wchar_t* StrDup(std::wstring_view str, OrtAllocator* allocator);
 // Convert from UTF-8 string to wide string
-wchar_t* StrDup(std::string_view str, OrtAllocator* allocator);
+void StrConvert(std::string_view str, wchar_t* &dst, OrtAllocator* allocator);
+inline void StrConvert(std::string_view str, char* &dst, OrtAllocator* allocator) {
+  dst = StrDup(str, allocator);
+}
+
 }  // namespace onnxruntime

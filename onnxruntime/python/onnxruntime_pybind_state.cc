@@ -908,7 +908,7 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
 #endif
   } else if (type == kMIGraphXExecutionProvider) {
 #ifdef USE_MIGRAPHX
-    std::wstring model_cache_path;
+    PathString model_cache_path;
     std::string cal_table_name;
     auto it = provider_options_map.find(type);
     if (it != provider_options_map.end()) {
@@ -992,8 +992,12 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
           }
         } else if (option.first == migraphx_provider_option::kModelCacheDir) {
           if (!option.second.empty()) {
+#if _WIN32
             std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
             model_cache_path = converter.from_bytes(option.second);
+#else
+            model_cache_path = option.second;
+#endif
             params.migraphx_cache_dir =  model_cache_path.c_str();
           } else {
             ORT_THROW(

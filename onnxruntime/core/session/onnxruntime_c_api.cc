@@ -1329,24 +1329,26 @@ ORT_API_STATUS_IMPL(OrtApis::SessionGetOverridableInitializerTypeInfo, _In_ cons
   return GetNodeDefTypeInfoHelper(sess, get_overridable_initializers_fn, index, out);
 }
 
-char* onnxruntime::StrDup(const std::string& str, OrtAllocator* allocator) {
+char* onnxruntime::StrDup(std::string_view str, OrtAllocator* allocator) {
   char* output_string = static_cast<char*>(allocator->Alloc(allocator, str.size() + 1));
-  memcpy(output_string, str.c_str(), str.size());
+  memcpy(output_string, str.data(), str.size());
   output_string[str.size()] = '\0';
   return output_string;
 }
 
 wchar_t* onnxruntime::StrDup(std::wstring_view str, OrtAllocator* allocator) {
   auto* output_string = static_cast<wchar_t*>(allocator->Alloc(allocator, str.size() + 1));
-  wcsncpy_s(output_string, str.size() + 1, str.data(), str.size());
+  memcpy(output_string, str.data(), str.size() * sizeof(wchar_t));
   output_string[str.size()] = '\0';
   return output_string;
 }
 
-wchar_t* onnxruntime::StrDup(std::string_view str, OrtAllocator* allocator) {
-  std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
-  const auto output_string = converter.from_bytes(str.data(), str.data() + str.size());
-  return StrDup(output_string, allocator);
+void onnxruntime::StrConvert(std::string_view str, wchar_t* &dst, OrtAllocator* allocator) {
+  if (dst != nullptr) {
+    std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
+    const auto output_string = converter.from_bytes(str.data(), str.data() + str.size());
+    dst = StrDup(output_string, allocator);
+  }
 }
 
 static ORT_STATUS_PTR GetNodeDefNameImpl(_In_ const OrtSession* sess, size_t index, _Inout_ OrtAllocator* allocator,

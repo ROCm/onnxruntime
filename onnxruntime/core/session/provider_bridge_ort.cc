@@ -3270,7 +3270,7 @@ ORT_API_STATUS_IMPL(OrtApis::UpdateMIGraphXProviderOptionsWithValue,
     }
   } else if (sv == onnxruntime::migraphx_provider_option::kModelCacheDir) {
     const auto sd = std::string_view{static_cast<char*>(value)};
-    migraphx_options->migraphx_cache_dir = onnxruntime::StrDup(sd, allocator);
+    onnxruntime::StrConvert(sd, const_cast<ORTCHAR_T*&>(migraphx_options->migraphx_cache_dir), allocator);
   } else {
     ORT_THROW("Unsupported provider option name: '" + std::string{sv} + "'");
   }
