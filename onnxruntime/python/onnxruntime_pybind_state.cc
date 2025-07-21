@@ -998,7 +998,7 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
 #else
             model_cache_path = option.second;
 #endif
-            params.migraphx_cache_dir =  model_cache_path.c_str();
+            params.migraphx_cache_dir = model_cache_path.c_str();
           } else {
             ORT_THROW(
                 "[ERROR] [MIGraphX] The value for the key 'migraphx_load_model_name' should be a "

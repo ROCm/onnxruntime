@@ -1343,7 +1343,7 @@ wchar_t* onnxruntime::StrDup(std::wstring_view str, OrtAllocator* allocator) {
   return output_string;
 }
 
-void onnxruntime::StrConvert(std::string_view str, wchar_t* &dst, OrtAllocator* allocator) {
+void onnxruntime::StrConvert(std::string_view str, wchar_t*& dst, OrtAllocator* allocator) {
   if (dst != nullptr) {
     std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
     const auto output_string = converter.from_bytes(str.data(), str.data() + str.size());

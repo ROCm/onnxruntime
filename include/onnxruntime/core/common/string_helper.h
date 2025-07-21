@@ -13,8 +13,8 @@ inline char* StrDup(const std::string& str, OrtAllocator* allocator) {
 }
 wchar_t* StrDup(std::wstring_view str, OrtAllocator* allocator);
 // Convert from UTF-8 string to wide string
-void StrConvert(std::string_view str, wchar_t* &dst, OrtAllocator* allocator);
-inline void StrConvert(std::string_view str, char* &dst, OrtAllocator* allocator) {
+void StrConvert(std::string_view str, wchar_t*& dst, OrtAllocator* allocator);
+inline void StrConvert(std::string_view str, char*& dst, OrtAllocator* allocator) {
   dst = StrDup(str, allocator);
 }
 
