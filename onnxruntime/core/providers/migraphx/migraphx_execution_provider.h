@@ -3,30 +3,33 @@
 
 #pragma once
 
+#include <filesystem>
+#include <map>
+#include <mutex>
 #include <set>
+#include <string_view>
+#include <unordered_map>
+
 #include "core/framework/arena_extend_strategy.h"
 #include "core/framework/execution_provider.h"
-#include <mutex>
 #include "core/providers/migraphx/migraphx_execution_provider_info.h"
 #include "core/providers/migraphx/migraphx_call.h"
 
-#include <map>
-#include <unordered_map>
-#include <filesystem>
+using namespace std::literals::string_view_literals;
 
 namespace onnxruntime {
 
 namespace migraphx_env_vars {
-constexpr auto kFP16Enable = "ORT_MIGRAPHX_FP16_ENABLE";
-constexpr auto kBF16Enable = "ORT_MIGRAPHX_BF16_ENABLE";
-constexpr auto kFP8Enable = "ORT_MIGRAPHX_FP8_ENABLE";
-constexpr auto kINT8Enable = "ORT_MIGRAPHX_INT8_ENABLE";
-constexpr auto kDumpModelOps = "ORT_MIGRAPHX_DUMP_MODEL_OPS";
-constexpr auto kINT8CalibrationTableName = "ORT_MIGRAPHX_INT8_CALIBRATION_TABLE_NAME";
-constexpr auto kCachePath = "ORT_MIGRAPHX_CACHE_PATH";
-constexpr auto kINT8UseNativeMIGraphXCalibrationTable = "ORT_MIGRAPHX_INT8_USE_NATIVE_CALIBRATION_TABLE";
-constexpr auto kModelCachePath = "ORT_MIGRAPHX_MODEL_CACHE_PATH";
-constexpr auto kExhaustiveTune = "ORT_MIGRAPHX_EXHAUSTIVE_TUNE";
+constexpr auto kFP16Enable = "ORT_MIGRAPHX_FP16_ENABLE"sv;
+constexpr auto kBF16Enable = "ORT_MIGRAPHX_BF16_ENABLE"sv;
+constexpr auto kFP8Enable = "ORT_MIGRAPHX_FP8_ENABLE"sv;
+constexpr auto kINT8Enable = "ORT_MIGRAPHX_INT8_ENABLE"sv;
+constexpr auto kDumpModelOps = "ORT_MIGRAPHX_DUMP_MODEL_OPS"sv;
+constexpr auto kINT8CalibrationTableName = "ORT_MIGRAPHX_INT8_CALIBRATION_TABLE_NAME"sv;
+constexpr auto kCachePath = "ORT_MIGRAPHX_CACHE_PATH"sv;
+constexpr auto kINT8UseNativeMIGraphXCalibrationTable = "ORT_MIGRAPHX_INT8_USE_NATIVE_CALIBRATION_TABLE"sv;
+constexpr auto kModelCachePath = "ORT_MIGRAPHX_MODEL_CACHE_PATH"sv;
+constexpr auto kExhaustiveTune = "ORT_MIGRAPHX_EXHAUSTIVE_TUNE"sv;
 }  // namespace migraphx_env_vars
 
 // Information to construct kernel function state.
