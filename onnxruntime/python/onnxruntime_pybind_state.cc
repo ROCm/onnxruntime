@@ -992,12 +992,7 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
           }
         } else if (option.first == migraphx_provider_option::kModelCacheDir) {
           if (!option.second.empty()) {
-#if _WIN32
-            std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
-            model_cache_path = converter.from_bytes(option.second);
-#else
-            model_cache_path = option.second;
-#endif
+            model_cache_path = ToPathString(option.second);
             params.migraphx_cache_dir = model_cache_path.c_str();
           } else {
             ORT_THROW(
