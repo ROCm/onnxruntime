@@ -11,7 +11,7 @@ namespace onnxruntime {
 
 class MIGraphXAllocator : public IAllocator {
  public:
-  MIGraphXAllocator(const int device_id, const char* name)
+  MIGraphXAllocator(OrtDevice::DeviceId device_id, const char* name)
       : IAllocator(
             OrtMemoryInfo(name, OrtDeviceAllocator,
                           OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, OrtDevice::VendorIds::AMD,
@@ -31,7 +31,7 @@ class MIGraphXExternalAllocator final : public MIGraphXAllocator {
   typedef void (*ExternalEmptyCache)();
 
  public:
-  MIGraphXExternalAllocator(const OrtDevice::DeviceId device_id, const char* name, void* alloc, void* free, void* empty_cache)
+  MIGraphXExternalAllocator(OrtDevice::DeviceId device_id, const char* name, void* alloc, void* free, void* empty_cache)
       : MIGraphXAllocator(device_id, name) {
     alloc_ = reinterpret_cast<ExternalAlloc>(alloc);
     free_ = reinterpret_cast<ExternalFree>(free);
@@ -52,7 +52,7 @@ class MIGraphXExternalAllocator final : public MIGraphXAllocator {
 
 class MIGraphXPinnedAllocator final : public IAllocator {
  public:
-  MIGraphXPinnedAllocator(const int device_id, const char* name)
+  MIGraphXPinnedAllocator(OrtDevice::DeviceId device_id, const char* name)
       : IAllocator(
             OrtMemoryInfo(name, OrtDeviceAllocator,
                           OrtDevice(OrtDevice::GPU, OrtDevice::MemType::HOST_ACCESSIBLE, OrtDevice::VendorIds::AMD,

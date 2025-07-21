@@ -676,7 +676,7 @@ void SubgraphPostProcessing(const onnxruntime::GraphViewer& graph_viewer, std::v
 }
 
 static bool IsNodeSupported(const std::set<std::string>& op_set,
-                            const onnxruntime::GraphViewer& graph_viewer,
+                            const GraphViewer& graph_viewer,
                             const NodeIndex node_idx,
                             [[maybe_unused]] const logging::Logger& logger) {
   const auto& node = graph_viewer.GetNode(node_idx);
@@ -1268,7 +1268,7 @@ void compile_program(migraphx::program& prog,
   LOGS_DEFAULT(WARNING) << "Model Compile: Complete";
 }
 
-std::string to_hex(const uint64_t v) {
+std::string to_hex(uint64_t v) {
   std::array<char, sizeof v << 1> s{};
   auto [ptr, _] = std::to_chars(s.data(), s.data() + s.size(), v, 16);
   return std::string{s.data(), ptr};
