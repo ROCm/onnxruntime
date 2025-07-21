@@ -40,6 +40,12 @@ inline PathString ToPathString(const PathString& s) {
 
 static_assert(std::is_same<PathString, std::wstring>::value, "PathString is not std::wstring!");
 
+inline PathString ToPathString(std::string_view s) {
+  return ToWideString(s);
+}
+inline PathString ToPathString(const char* s) {
+  return ToWideString(s);
+}
 inline PathString ToPathString(const std::string& s) {
   return ToWideString(s);
 }
