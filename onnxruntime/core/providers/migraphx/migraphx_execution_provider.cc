@@ -224,9 +224,9 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
       LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_CALIBRATION_TABLE_NAME: " << int8_calibration_cache_name_;
     }
 
-    const std::string cache_path = GetEnvironmentVar(migraphx_env_vars::kCachePath);
-    if (!cache_path.empty()) {
-      calibration_cache_path_ = cache_path;
+    const std::string cache_path_env = GetEnvironmentVar(migraphx_env_vars::kCachePath);
+    if (!cache_path_env.empty()) {
+      calibration_cache_path_ = ToPathString(cache_path_env);
       LOGS_DEFAULT(WARNING) << "\nORT_MIGRAPHX_CACHE_PATH: " << calibration_cache_path_;
     }
 
@@ -255,7 +255,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
   // Save/load migraphx compiled models
   const auto model_cache_path_env = GetEnvironmentVar(migraphx_env_vars::kModelCachePath);
   if (!model_cache_path_env.empty()) {
-    model_cache_path_ = GetEnvironmentVar(migraphx_env_vars::kModelCachePath);
+    model_cache_path_ = ToPathString(model_cache_path_env);
     LOGS_DEFAULT(INFO) << "\n"
                        << migraphx_env_vars::kModelCachePath << ": " << model_cache_path_;
   }

@@ -3269,8 +3269,7 @@ ORT_API_STATUS_IMPL(OrtApis::UpdateMIGraphXProviderOptionsWithValue,
       ORT_THROW("Cannot convert from string to integer - invalid argument");
     }
   } else if (sv == onnxruntime::migraphx_provider_option::kModelCacheDir) {
-    const auto sd = std::string_view{static_cast<char*>(value)};
-    onnxruntime::StrConvert(sd, const_cast<ORTCHAR_T*&>(migraphx_options->migraphx_cache_dir), allocator);
+    migraphx_options->migraphx_cache_dir = onnxruntime::StrDup(onnxruntime::ToPathString(static_cast<char*>(value)), allocator);
   } else {
     ORT_THROW("Unsupported provider option name: '" + std::string{sv} + "'");
   }
