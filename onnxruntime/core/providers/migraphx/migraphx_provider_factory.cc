@@ -42,15 +42,15 @@ std::unique_ptr<IExecutionProvider> MIGraphXProviderFactory::CreateProvider() {
 }
 
 struct ProviderInfo_MIGraphX_Impl final : ProviderInfo_MIGraphX {
-  std::unique_ptr<IAllocator> CreateMIGraphXAllocator(const OrtDevice::DeviceId device_id, const char* name) override {
+  std::unique_ptr<IAllocator> CreateMIGraphXAllocator(OrtDevice::DeviceId device_id, const char* name) override {
     return std::make_unique<MIGraphXAllocator>(device_id, name);
   }
 
-  std::unique_ptr<IAllocator> CreateMIGraphXPinnedAllocator(const OrtDevice::DeviceId device_id, const char* name) override {
+  std::unique_ptr<IAllocator> CreateMIGraphXPinnedAllocator(OrtDevice::DeviceId device_id, const char* name) override {
     return std::make_unique<MIGraphXPinnedAllocator>(device_id, name);
   }
 
-  void MIGraphXMemcpy_HostToDevice(void* dst, const void* src, const size_t count) override {
+  void MIGraphXMemcpy_HostToDevice(void* dst, const void* src, size_t count) override {
     // hipMemcpy() operates on the default stream
     HIP_CALL_THROW(hipMemcpy(dst, src, count, hipMemcpyHostToDevice));
 
@@ -63,12 +63,12 @@ struct ProviderInfo_MIGraphX_Impl final : ProviderInfo_MIGraphX {
   }
 
   // Used by onnxruntime_pybind_state.cc
-  void MIGraphXMemcpy_DeviceToHost(void* dst, const void* src, const size_t count) override {
+  void MIGraphXMemcpy_DeviceToHost(void* dst, const void* src, size_t count) override {
     // For transfers from device to either pageable or pinned host memory, the function returns only once the copy has completed.
     HIP_CALL_THROW(hipMemcpy(dst, src, count, hipMemcpyDeviceToHost));
   }
 
-  std::shared_ptr<IAllocator> CreateMIGraphXAllocator(const OrtDevice::DeviceId device_id, const size_t mem_limit, const ArenaExtendStrategy arena_extend_strategy, const MIGraphXExecutionProviderExternalAllocatorInfo external_allocator_info, const OrtArenaCfg* default_memory_arena_cfg) override {
+  std::shared_ptr<IAllocator> CreateMIGraphXAllocator(OrtDevice::DeviceId device_id, size_t mem_limit, const ArenaExtendStrategy arena_extend_strategy, const MIGraphXExecutionProviderExternalAllocatorInfo external_allocator_info, const OrtArenaCfg* default_memory_arena_cfg) override {
     return MIGraphXExecutionProvider::CreateMIGraphXAllocator(device_id, mem_limit, arena_extend_strategy, external_allocator_info, default_memory_arena_cfg);
   }
 } g_info;
@@ -78,7 +78,7 @@ struct MIGraphX_Provider final : Provider {
 
   virtual ~MIGraphX_Provider() = default;
 
-  std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory(const int device_id) override {
+  std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory(int device_id) override {
     MIGraphXExecutionProviderInfo info;
     info.device_id = static_cast<OrtDevice::DeviceId>(device_id);
     info.target_device = "gpu";

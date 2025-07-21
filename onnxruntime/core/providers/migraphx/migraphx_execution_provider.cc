@@ -253,7 +253,7 @@ void MIGraphXExecutionProvider::get_flags_from_env() {
   }
 
   // Save/load migraphx compiled models
-  const auto model_cache_path_env = GetEnvironmentVar(migraphx_env_vars::kModelCachePath);
+  const std::string model_cache_path_env = GetEnvironmentVar(migraphx_env_vars::kModelCachePath);
   if (!model_cache_path_env.empty()) {
     model_cache_path_ = GetEnvironmentVar(migraphx_env_vars::kModelCachePath);
     LOGS_DEFAULT(INFO) << "\n"
@@ -289,8 +289,8 @@ void MIGraphXExecutionProvider::print_migraphx_ep_flags() const {
                         << "\n " << migraphx_provider_option::kModelCacheDir << ": " << model_cache_path_;
 }
 
-AllocatorPtr MIGraphXExecutionProvider::CreateMIGraphXAllocator(const OrtDevice::DeviceId device_id,
-                                                                const size_t migx_mem_limit,
+AllocatorPtr MIGraphXExecutionProvider::CreateMIGraphXAllocator(OrtDevice::DeviceId device_id,
+                                                                size_t migx_mem_limit,
                                                                 ArenaExtendStrategy arena_extend_strategy,
                                                                 MIGraphXExecutionProviderExternalAllocatorInfo
                                                                     external_allocator_info,
@@ -328,9 +328,9 @@ AllocatorPtr MIGraphXExecutionProvider::CreateMIGraphXAllocator(const OrtDevice:
 
 std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators() {
   const AllocatorCreationInfo default_memory_info(
-      [](const OrtDevice::DeviceId device_id) { return std::make_unique<MIGraphXAllocator>(device_id, CUDA); }, info_.device_id);
+      [](OrtDevice::DeviceId device_id) { return std::make_unique<MIGraphXAllocator>(device_id, CUDA); }, info_.device_id);
   const AllocatorCreationInfo pinned_allocator_info(
-      [](const OrtDevice::DeviceId device_id) {
+      [](OrtDevice::DeviceId device_id) {
         return std::make_unique<MIGraphXPinnedAllocator>(device_id, CUDA_PINNED);
       },
       0);
@@ -373,7 +373,7 @@ static bool IsTypeSupported(const NodeArg* node_arg) {
   }
 }
 
-static bool getMIGraphXType(const ONNXTensorElementDataType type,
+static bool getMIGraphXType(ONNXTensorElementDataType type,
                             migraphx_shape_datatype_t& mgx_type) {
   mgx_type = migraphx_shape_float_type;
   switch (type) {
@@ -734,7 +734,7 @@ void SubgraphPostProcessing(const GraphViewer& graph_viewer, std::vector<std::ve
 
 static bool IsNodeSupported(const std::set<std::string>& op_set,
                             const GraphViewer& graph_viewer,
-                            const NodeIndex node_idx,
+                            NodeIndex node_idx,
                             [[maybe_unused]] const logging::Logger& logger) {
   const auto& node = graph_viewer.GetNode(node_idx);
   const auto& optype = node->OpType();
@@ -1268,11 +1268,11 @@ void save_compiled_model(const migraphx::program& prog, const std::filesystem::p
 void calibrate_and_quantize(const migraphx::program& prog,
                             const migraphx::target& t,
                             const migraphx::program_parameters& quant_params,
-                            const bool fp16_enable,
-                            const bool bf16_enable,
-                            const bool int8_enable,
-                            const bool fp8_enable,
-                            const bool int8_calibration_cache_available,
+                            bool fp16_enable,
+                            bool bf16_enable,
+                            bool int8_enable,
+                            bool fp8_enable,
+                            bool int8_calibration_cache_available,
                             std::unordered_map<std::string, float>& dynamic_range_map) {
   // Read in the calibration data and map it to a migraphx parameter map for the calibration ops
   if ((int8_enable xor fp8_enable) && int8_calibration_cache_available) {
@@ -1324,7 +1324,7 @@ void calibrate_and_quantize(const migraphx::program& prog,
 
 void compile_program(const migraphx::program& prog,
                      const migraphx::target& t,
-                     const bool exhaustive_tune) {
+                     bool exhaustive_tune) {
   LOGS_DEFAULT(WARNING) << "Model Compile: Begin";
   migraphx::compile_options co;
   co.set_fast_math(false);
@@ -1333,7 +1333,7 @@ void compile_program(const migraphx::program& prog,
   LOGS_DEFAULT(WARNING) << "Model Compile: Complete";
 }
 
-std::string to_hex(const uint64_t v) {
+std::string to_hex(uint64_t v) {
   std::array<char, sizeof v << 1> s{};
   auto [ptr, _] = std::to_chars(s.data(), s.data() + s.size(), v, 16);
   return std::string{s.data(), ptr};
