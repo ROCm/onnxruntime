@@ -139,7 +139,7 @@ class ProviderOptionsParser {
   template <typename ValueType>
   ProviderOptionsParser& AddAssignmentToReference(
       const char* name, ValueType& dest) {
-    return AddAssignmentToReference<ValueType>(name, dest);
+    return AddAssignmentToReference<ValueType>(std::string_view{name}, dest);
   }
 
   /**
@@ -179,7 +179,7 @@ class ProviderOptionsParser {
   template <typename EnumType>
   ProviderOptionsParser& AddAssignmentToEnumReference(
       const char* name, const EnumNameMapping<EnumType>& mapping, EnumType& dest) {
-    return AddAssignmentToEnumReference<EnumType>(name, mapping, dest);
+    return AddAssignmentToEnumReference<EnumType>(std::string_view{name}, mapping, dest);
   }
 
   /**
