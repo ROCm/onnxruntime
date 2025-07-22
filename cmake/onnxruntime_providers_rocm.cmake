@@ -156,11 +156,6 @@
   set_target_properties(onnxruntime_providers_rocm PROPERTIES FOLDER "ONNXRuntime")
   target_compile_definitions(onnxruntime_providers_rocm PRIVATE HIPBLAS)
 
-  # Add linker flags to prevent duplicate library loading conflicts
-  if(NOT MSVC)
-    target_link_options(onnxruntime_providers_rocm PRIVATE "-Wl,--enable-new-dtags")
-  endif()
-
   if (onnxruntime_ENABLE_TRAINING)
     target_include_directories(onnxruntime_providers_rocm PRIVATE ${ORTTRAINING_ROOT} ${CMAKE_CURRENT_BINARY_DIR}/amdgpu/orttraining ${MPI_CXX_INCLUDE_DIRS})
 
