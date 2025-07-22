@@ -6,6 +6,7 @@
 
 #include <optional>
 #include <utility>
+#include <charconv>
 
 #include "core/common/inlined_containers.h"
 #include "core/common/path_string.h"
@@ -114,6 +115,7 @@ using EtwRegistrationManager_EtwInternalCallback = EtwRegistrationManager::EtwIn
 #include "core/providers/rocm/rocm_provider_factory.h"
 #include "core/providers/dnnl/dnnl_provider_factory.h"
 #include "core/providers/migraphx/migraphx_provider_factory.h"
+#include "core/providers/migraphx/migraphx_execution_provider_info.h"
 #include "core/providers/openvino/openvino_provider_factory.h"
 #include "core/providers/tensorrt/tensorrt_provider_factory.h"
 #include "core/providers/tensorrt/tensorrt_provider_options.h"
@@ -1961,7 +1963,7 @@ std::shared_ptr<IExecutionProviderFactory> DnnlProviderFactoryCreator::Create(in
   return s_library_dnnl.Get().CreateExecutionProviderFactory(use_arena);
 }
 
-std::shared_ptr<IExecutionProviderFactory> MIGraphXProviderFactoryCreator::Create(int device_id) {
+std::shared_ptr<IExecutionProviderFactory> MIGraphXProviderFactoryCreator::Create(const int device_id) {
   return s_library_migraphx.Get().CreateExecutionProviderFactory(device_id);
 }
 
@@ -2063,6 +2065,12 @@ std::shared_ptr<IExecutionProviderFactory> NvProviderFactoryCreator::Create(
   // Will get an exception when fail to load EP library.
   LOGS_DEFAULT(ERROR) << exception.what();
   return nullptr;
+}
+
+std::shared_ptr<IExecutionProviderFactory> MIGraphXProviderFactoryCreator::Create(const ProviderOptions& provider_options) {
+  OrtMIGraphXProviderOptions migraphx_options;
+  s_library_migraphx.Get().UpdateProviderOptions(&migraphx_options, provider_options);
+  return s_library_migraphx.Get().CreateExecutionProviderFactory(&migraphx_options);
 }
 
 std::shared_ptr<IExecutionProviderFactory> MIGraphXProviderFactoryCreator::Create(const OrtMIGraphXProviderOptions* provider_options) {
@@ -2655,7 +2663,8 @@ ORT_API_STATUS_IMPL(OrtApis::UpdateTensorRTProviderOptions,
     defined(USE_CUDA) || defined(USE_CUDA_PROVIDER_INTERFACE) ||         \
     defined(USE_CANN) ||                                                 \
     defined(USE_DNNL) ||                                                 \
-    defined(USE_ROCM)
+    defined(USE_ROCM) ||                                                 \
+    defined(USE_MIGRAPHX)
 static std::string BuildOptionsString(const onnxruntime::ProviderOptions::iterator& begin,
                                       const onnxruntime::ProviderOptions::iterator& end) {
   std::ostringstream options;
@@ -3168,5 +3177,125 @@ ORT_API_STATUS_IMPL(OrtApis::SessionOptionsAppendExecutionProvider_VitisAI, _In_
 
   options->provider_factories.push_back(factory);
   return nullptr;
+  API_IMPL_END
+}
+
+ORT_API_STATUS_IMPL(OrtApis::CreateMIGraphXProviderOptions, _Outptr_ OrtMIGraphXProviderOptions** out) {
+  API_IMPL_BEGIN
+#ifdef USE_MIGRAPHX
+  auto migraphx_options = std::make_unique<OrtMIGraphXProviderOptions>();
+  memset(migraphx_options.get(), 0, sizeof(OrtMIGraphXProviderOptions));
+  *out = migraphx_options.release();
+  return nullptr;
+#else
+  ORT_UNUSED_PARAMETER(out);
+  return CreateStatus(ORT_FAIL, "MIGraphX execution provider is not enabled in this build.");
+#endif
+  API_IMPL_END
+}
+
+ORT_API_STATUS_IMPL(OrtApis::UpdateMIGraphXProviderOptions,
+                    _Inout_ OrtMIGraphXProviderOptions* migraphx_options,
+                    _In_reads_(num_keys) const char* const* provider_options_keys,
+                    _In_reads_(num_keys) const char* const* provider_options_values,
+                    size_t num_keys) {
+  API_IMPL_BEGIN
+#ifdef USE_MIGRAPHX
+  onnxruntime::ProviderOptions provider_options_map;
+  for (size_t i = 0; i != num_keys; ++i) {
+    if (provider_options_keys[i] == nullptr || provider_options_keys[i][0] == '\0' ||
+        provider_options_values[i] == nullptr || provider_options_values[i][0] == '\0') {
+      return OrtApis::CreateStatus(ORT_INVALID_ARGUMENT, "key/value cannot be empty");
+    }
+
+    provider_options_map[provider_options_keys[i]] = provider_options_values[i];
+  }
+
+  onnxruntime::s_library_migraphx.Get().UpdateProviderOptions(reinterpret_cast<void*>(migraphx_options), provider_options_map);
+  return nullptr;
+#else
+  ORT_UNUSED_PARAMETER(migraphx_options);
+  ORT_UNUSED_PARAMETER(provider_options_keys);
+  ORT_UNUSED_PARAMETER(provider_options_values);
+  ORT_UNUSED_PARAMETER(num_keys);
+  return CreateStatus(ORT_FAIL, "MIGraphX execution provider is not enabled in this build.");
+#endif
+  API_IMPL_END
+}
+
+ORT_API_STATUS_IMPL(OrtApis::GetMIGraphXProviderOptionsAsString,
+                    _In_ const OrtMIGraphXProviderOptions* migraphx_options,
+                    _Inout_ OrtAllocator* allocator,
+                    _Outptr_ char** ptr) {
+  API_IMPL_BEGIN
+#ifdef USE_MIGRAPHX
+  onnxruntime::ProviderOptions options =
+      onnxruntime::s_library_migraphx.Get().GetProviderOptions(reinterpret_cast<const void*>(migraphx_options));
+  std::string options_str = BuildOptionsString(options.begin(), options.end());
+  *ptr = onnxruntime::StrDup(options_str, allocator);
+  return nullptr;
+#else
+  ORT_UNUSED_PARAMETER(migraphx_options);
+  ORT_UNUSED_PARAMETER(allocator);
+  ORT_UNUSED_PARAMETER(ptr);
+  return CreateStatus(ORT_FAIL, "MIGraphX execution provider is not enabled in this build.");
+#endif
+  API_IMPL_END
+}
+
+ORT_API(void, OrtApis::ReleaseMIGraphXProviderOptions, _Frees_ptr_opt_ OrtMIGraphXProviderOptions* ptr) {
+#ifdef USE_MIGRAPHX
+  std::unique_ptr<OrtMIGraphXProviderOptions> p(ptr);
+  if (ptr->migraphx_cache_dir != nullptr) {
+    onnxruntime::AllocatorDefaultFree(const_cast<char*>(ptr->migraphx_cache_dir));
+  }
+#else
+  ORT_UNUSED_PARAMETER(ptr);
+#endif
+}
+
+ORT_API_STATUS_IMPL(OrtApis::UpdateMIGraphXProviderOptionsWithValue,
+                    _Inout_ OrtMIGraphXProviderOptions* migraphx_options,
+                    _In_ const char* key,
+                    _In_ void* value) {
+  API_IMPL_BEGIN
+#ifdef USE_MIGRAPHX
+  auto sv = std::string_view{key};
+  OrtAllocator* allocator;
+  GetAllocatorWithDefaultOptions(&allocator);
+  if (sv == onnxruntime::migraphx_provider_option::kDeviceId) {
+    auto dv = std::string_view{static_cast<char*>(value)};
+    if (std::from_chars(dv.data(), dv.data() + dv.length(), migraphx_options->device_id).ec == std::errc::invalid_argument) {
+      ORT_THROW("Cannot convert from string to integer - invalid argument");
+    }
+  } else if (sv == onnxruntime::migraphx_provider_option::kModelCacheDir) {
+    auto sd = std::string_view{static_cast<char*>(value)};
+    migraphx_options->migraphx_cache_dir = onnxruntime::StrDup(sd.data(), allocator);
+  } else {
+    ORT_THROW("Unsupported provider option name: '" + std::string{sv} + "'");
+  }
+  return nullptr;
+#else
+  ORT_UNUSED_PARAMETER(migraphx_options);
+  ORT_UNUSED_PARAMETER(key);
+  ORT_UNUSED_PARAMETER(value);
+  return CreateStatus(ORT_FAIL, "MIGraphX execution provider is not enabled in this build.");
+#endif
+  API_IMPL_END
+}
+
+ORT_API_STATUS_IMPL(OrtApis::GetMIGraphXProviderOptionsByName,
+                    _In_ const OrtMIGraphXProviderOptions* migraphx_options,
+                    _In_ const char* key,
+                    _Outptr_ void** ptr) {
+  API_IMPL_BEGIN
+#ifdef USE_MIGRAPHX
+  return nullptr;
+#else
+  ORT_UNUSED_PARAMETER(migraphx_options);
+  ORT_UNUSED_PARAMETER(key);
+  ORT_UNUSED_PARAMETER(ptr);
+  return CreateStatus(ORT_FAIL, "MIGraphX execution provider is not enabled in this build.");
+#endif
   API_IMPL_END
 }

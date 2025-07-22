@@ -3029,7 +3029,12 @@ static constexpr OrtApi ort_api_1_to_22 = {
 
     &OrtApis::GetEpApi,
     // End of Version 22 - DO NOT MODIFY ABOVE (see above text for more information)
-};
+    &OrtApis::CreateMIGraphXProviderOptions,
+    &OrtApis::UpdateMIGraphXProviderOptions,
+    &OrtApis::GetMIGraphXProviderOptionsAsString,
+    &OrtApis::ReleaseMIGraphXProviderOptions,
+    &OrtApis::UpdateMIGraphXProviderOptionsWithValue,
+    &OrtApis::GetMIGraphXProviderOptionsByName};
 
 // OrtApiBase can never change as there is no way to know what version of OrtApiBase is returned by OrtGetApiBase.
 static_assert(sizeof(OrtApiBase) == sizeof(void*) * 2, "New methods can't be added to OrtApiBase as it is not versioned");
@@ -3066,7 +3071,7 @@ static_assert(offsetof(OrtApi, SetEpDynamicOptions) / sizeof(void*) == 284, "Siz
 static_assert(offsetof(OrtApi, GetEpApi) / sizeof(void*) == 317, "Size of version 22 API cannot change");
 
 // So that nobody forgets to finish an API version, this check will serve as a reminder:
-static_assert(std::string_view(ORT_VERSION) == "1.22.0",
+static_assert(std::string_view(ORT_VERSION) == "1.22.1",
               "ORT_Version change detected, please follow below steps to ensure OrtApi is updated properly");
 // 1. Update the hardcoded version string in above static_assert to silence it
 // 2. If there were any APIs added to ort_api_1_to_22 above:
