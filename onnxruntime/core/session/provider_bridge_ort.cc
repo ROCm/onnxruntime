@@ -3292,10 +3292,10 @@ ORT_API_STATUS_IMPL(OrtApis::GetMIGraphXProviderOptionsByName,
 #ifdef USE_MIGRAPHX
   return nullptr;
 #else
-  ORT_UNUSED_PARAMETER(cuda_options);
+  ORT_UNUSED_PARAMETER(migraphx_options);
   ORT_UNUSED_PARAMETER(key);
   ORT_UNUSED_PARAMETER(ptr);
-  return CreateStatus(ORT_FAIL, "CUDA execution provider is not enabled in this build.");
+  return CreateStatus(ORT_FAIL, "MIGraphX execution provider is not enabled in this build.");
 #endif
   API_IMPL_END
 }
