@@ -23,7 +23,7 @@ void MIGraphXAllocator::CheckDevice() const {
 #endif
 }
 
-void* MIGraphXAllocator::Alloc(const size_t size) {
+void* MIGraphXAllocator::Alloc(size_t size) {
   CheckDevice();
   void* p = nullptr;
   if (size > 0) {
@@ -37,7 +37,7 @@ void MIGraphXAllocator::Free(void* p) {
   (void)hipFree(p);  // do not throw error since it's OK for hipFree to fail during shutdown
 }
 
-void* MIGraphXExternalAllocator::Alloc(const size_t size) {
+void* MIGraphXExternalAllocator::Alloc(size_t size) {
   void* p = nullptr;
   if (size > 0) {
     p = alloc_(size);
@@ -58,7 +58,7 @@ void MIGraphXExternalAllocator::Free(void* p) {
   }
 }
 
-void* MIGraphXExternalAllocator::Reserve(const size_t size) {
+void* MIGraphXExternalAllocator::Reserve(size_t size) {
   void* p = Alloc(size);
   if (p != nullptr) {
     std::lock_guard lock(lock_);
@@ -68,7 +68,7 @@ void* MIGraphXExternalAllocator::Reserve(const size_t size) {
   return p;
 }
 
-void* MIGraphXPinnedAllocator::Alloc(const size_t size) {
+void* MIGraphXPinnedAllocator::Alloc(size_t size) {
   void* p = nullptr;
   if (size > 0) {
     HIP_CALL_THROW(hipHostMalloc(&p, size));

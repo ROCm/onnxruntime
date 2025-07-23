@@ -908,7 +908,8 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
 #endif
   } else if (type == kMIGraphXExecutionProvider) {
 #ifdef USE_MIGRAPHX
-    std::string model_cache_path, cal_table_name;
+    std::string model_cache_path;
+    std::string calibration_table;
     auto it = provider_options_map.find(type);
     if (it != provider_options_map.end()) {
       OrtMIGraphXProviderOptions params{
@@ -972,8 +973,8 @@ std::unique_ptr<IExecutionProvider> CreateExecutionProviderInstance(
           }
         } else if (option.first == migraphx_provider_option::kInt8CalibTable) {
           if (!option.second.empty()) {
-            cal_table_name = option.second;
-            params.migraphx_int8_calibration_table_name = cal_table_name.c_str();
+            calibration_table = option.second;
+            params.migraphx_int8_calibration_table_name = calibration_table.c_str();
           } else {
             ORT_THROW(
                 "[ERROR] [MIGraphX] The value for the key 'migraphx_int8_calibration_table_name' should be a "
