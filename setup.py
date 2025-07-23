@@ -237,8 +237,10 @@ try:
 
                 rocm_dependencies = [
                     "libamd_comgr.so.2",
+                    "libamd_comgr.so.3",
                     "libamdhip64.so.5",
                     "libamdhip64.so.6",
+                    "libamdhip64.so.7",
                     "libdrm.so.2",
                     "libdrm_amdgpu.so.1",
                     "libelf.so.1",
@@ -250,13 +252,18 @@ try:
                     "libnuma.so.1",
                     "librccl.so.1",
                     "libhipblas.so.2",
+                    "libhipblas.so.3"
+                    "libhipblaslt.so.1",
                     "librocblas.so.3",
                     "librocblas.so.4",
+                    "librocblas.so.5",
                     "librocfft.so.0",
                     "libroctx64.so.4",
                     "librocm_smi64.so.5",
                     "librocm_smi64.so.6",
+                    "librocm_smi64.so.7",
                     "libroctracer64.so.4",
+                    "librocsolver.so.0",
                     "libtinfo.so.6",
                     "libmigraphx_c.so.3",
                     "libmigraphx.so.2",
@@ -410,6 +417,7 @@ else:
     libs.extend(["onnxruntime_providers_nv_tensorrt_rtx.dll"])
     libs.extend(["onnxruntime_providers_openvino.dll"])
     libs.extend(["onnxruntime_providers_cuda.dll"])
+    libs.extend(["onnxruntime_providers_migraphx.dll"])
     libs.extend(["onnxruntime_providers_vitisai.dll"])
     libs.extend(["onnxruntime_providers_qnn.dll"])
     # DirectML Libs
