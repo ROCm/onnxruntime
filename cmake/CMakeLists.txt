@@ -339,7 +339,7 @@ if (onnxruntime_USE_ROCM)
     if (ROCM_VERSION_DEV VERSION_LESS "6.2")
       message(FATAL_ERROR "CMAKE_HIP_ARCHITECTURES is not set when ROCm version < 6.2")
     else()
-      set(CMAKE_HIP_ARCHITECTURES "gfx908;gfx90a;gfx1030;gfx1100;gfx1101;gfx942;gfx1200;gfx1201;gfx1150")
+      set(CMAKE_HIP_ARCHITECTURES "gfx908;gfx90a;gfx1030;gfx1100;gfx1101;gfx942;gfx1200;gfx1201;gfx1150;gfx1151;gfx1152")
     endif()
   endif()
 
