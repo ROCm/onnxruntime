@@ -975,7 +975,7 @@ if (onnxruntime_USE_JSEP)
     list(APPEND ONNXRUNTIME_PROVIDER_NAMES js)
 endif()
 if (onnxruntime_USE_QNN OR onnxruntime_USE_QNN_INTERFACE)
-
+    
     if(onnxruntime_USE_QNN)
         list(APPEND ORT_PROVIDER_FLAGS -DUSE_QNN=1)
     else()
