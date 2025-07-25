@@ -383,20 +383,30 @@ void addOrtValueMethods(pybind11::module& m) {
       // Converts Tensor into a numpy array
       .def("numpy", [](const OrtValue* ml_value) -> py::object {
         ORT_ENFORCE(ml_value->IsTensor(), "Only OrtValues that are Tensors are convertible to Numpy objects");
+        const auto device = ml_value->Get<Tensor>().Location().device;
+        py::object obj;
 
+        if (device.Vendor() == OrtDevice::VendorIds::NVIDIA) {
 #ifdef USE_CUDA
-        py::object obj = GetPyObjFromTensor(*ml_value, nullptr, GetCudaToHostMemCpyFunction());
-#elif USE_ROCM
-        py::object obj = GetPyObjFromTensor(*ml_value, nullptr, GetRocmToHostMemCpyFunction());
-#elif USE_CANN
-        py::object obj = GetPyObjFromTensor(*ml_value, nullptr, GetCannToHostMemCpyFunction());
-#elif USE_MIGRAPHX
-        py::object obj = GetPyObjFromTensor(*ml_value, nullptr, GetMIGraphXToHostMemCpyFunction());
-#elif USE_DML
-        py::object obj = GetPyObjFromTensor(*ml_value, nullptr, GetDmlToHostMemCpyFunction());
-#else
-        py::object obj = GetPyObjFromTensor(*ml_value, nullptr, nullptr);
+          obj = GetPyObjFromTensor(*ml_value, nullptr, GetCudaToHostMemCpyFunction());
 #endif
+        } else if (device.Vendor() == OrtDevice::VendorIds::AMD) {
+#ifdef USE_ROCM
+          obj = GetPyObjFromTensor(*ml_value, nullptr, GetRocmToHostMemCpyFunction());
+#elif USE_MIGRAPHX
+          obj = GetPyObjFromTensor(*ml_value, nullptr, GetMIGraphXToHostMemCpyFunction());
+#endif
+        } else if (device.Vendor() == OrtDevice::VendorIds::MICROSOFT) {
+#ifdef USE_DML
+          obj = GetPyObjFromTensor(*ml_value, nullptr, GetDmlToHostMemCpyFunction());
+#endif
+        } else if (device.Vendor() == OrtDevice::VendorIds::HUAWEI) {
+#ifdef USE_CANN
+          obj = GetPyObjFromTensor(*ml_value, nullptr, GetCannToHostMemCpyFunction());
+#endif
+        } else {
+          obj = GetPyObjFromTensor(*ml_value, nullptr, nullptr);
+        }
         return obj; })
 #if defined(ENABLE_DLPACK)
       .def("to_dlpack", [](OrtValue* ort_value) -> py::object { return py::reinterpret_steal<py::object>(ToDlpack(*ort_value)); },
