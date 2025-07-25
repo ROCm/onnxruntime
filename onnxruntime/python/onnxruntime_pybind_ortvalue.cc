@@ -385,27 +385,30 @@ void addOrtValueMethods(pybind11::module& m) {
         ORT_ENFORCE(ml_value->IsTensor(), "Only OrtValues that are Tensors are convertible to Numpy objects");
         const auto device = ml_value->Get<Tensor>().Location().device;
         py::object obj;
-
-        if (device.Vendor() == OrtDevice::VendorIds::NVIDIA) {
+        switch (device.Vendor()) {
 #ifdef USE_CUDA
-          obj = GetPyObjFromTensor(*ml_value, nullptr, GetCudaToHostMemCpyFunction());
+          case OrtDevice::VendorIds::NVIDIA:
+            obj = GetPyObjFromTensor(*ml_value, nullptr, GetCudaToHostMemCpyFunction());
+            break;
 #endif
-        } else if (device.Vendor() == OrtDevice::VendorIds::AMD) {
-#ifdef USE_ROCM
-          obj = GetPyObjFromTensor(*ml_value, nullptr, GetRocmToHostMemCpyFunction());
-#elif USE_MIGRAPHX
-          obj = GetPyObjFromTensor(*ml_value, nullptr, GetMIGraphXToHostMemCpyFunction());
+#ifdef USE_MIGRAPHX
+          case OrtDevice::VendorIds::AMD:
+            obj = GetPyObjFromTensor(*ml_value, nullptr, GetMIGraphXToHostMemCpyFunction());
+            break;
 #endif
-        } else if (device.Vendor() == OrtDevice::VendorIds::MICROSOFT) {
 #ifdef USE_DML
-          obj = GetPyObjFromTensor(*ml_value, nullptr, GetDmlToHostMemCpyFunction());
+          case OrtDevice::VendorIds::MICROSOFT:
+            obj = GetPyObjFromTensor(*ml_value, nullptr, GetDmlToHostMemCpyFunction());
+            break;
 #endif
-        } else if (device.Vendor() == OrtDevice::VendorIds::HUAWEI) {
 #ifdef USE_CANN
-          obj = GetPyObjFromTensor(*ml_value, nullptr, GetCannToHostMemCpyFunction());
+          case OrtDevice::VendorIds::HUAWEI:
+            obj = GetPyObjFromTensor(*ml_value, nullptr, GetCannToHostMemCpyFunction());
+            break;
 #endif
-        } else {
-          obj = GetPyObjFromTensor(*ml_value, nullptr, nullptr);
+          default:
+            obj = GetPyObjFromTensor(*ml_value, nullptr, nullptr);
+            break;
         }
         return obj; })
 #if defined(ENABLE_DLPACK)
