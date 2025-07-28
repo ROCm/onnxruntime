@@ -403,8 +403,7 @@ void addOrtValueMethods(pybind11::module& m) {
 #endif
           default:
             return GetPyObjFromTensor(*ml_value, nullptr, nullptr);
-        }
-       })
+        } })
 #if defined(ENABLE_DLPACK)
       .def("to_dlpack", [](OrtValue* ort_value) -> py::object { return py::reinterpret_steal<py::object>(ToDlpack(*ort_value)); },
            "Returns a DLPack representing the tensor. This method does not copy the pointer shape, "
