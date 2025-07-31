@@ -182,6 +182,7 @@ struct MIGraphX_Provider final : Provider {
         SetDllDirectory(buffer);
       }
     }
+    SetEnvironmentVariable("MIGRAPHX_DISABLE_PASSES", "rewrite_reshapes");
 #endif
     InitializeRegistry();
   }
