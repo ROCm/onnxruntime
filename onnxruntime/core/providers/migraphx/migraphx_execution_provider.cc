@@ -1399,7 +1399,19 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           input_shapes.push_back(tensor_shape->dim(j).dim_value());
         }
       }
-      model_cache_file = model_cache_path_ / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
+      
+      std::string quant_flags{""};
+      if(fp16_enable_)
+        quant_flags+="fp16_";
+      else if(bf16_enable_)
+        quant_flags+="bf16_";
+
+      if(int8_enable_)
+        quant_flags+="int8_";
+      else if(fp8_enable_)
+        quant_flags+="fp8_";     
+
+      model_cache_file = model_cache_path_ / (mxr_filename_prefix + make_hash(input_shapes) + quant_flags + ".mxr");
     }
 
     // map parameter input name to index
