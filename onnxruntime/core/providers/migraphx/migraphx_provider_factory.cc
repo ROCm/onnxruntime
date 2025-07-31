@@ -133,7 +133,12 @@ struct MIGraphX_Provider final : Provider {
     }
 
     migx_options.migraphx_use_native_calibration_table = internal_options.int8_use_native_calibration_table;
-    migx_options.migraphx_cache_dir = internal_options.model_cache_dir.string().c_str();
+    migx_options.migraphx_cache_dir = nullptr;
+    if (internal_options.model_cache_dir.string() != "")
+    {
+      migx_options.migraphx_cache_dir = internal_options.model_cache_dir.string().c_str();
+    }
+
     migx_options.migraphx_arena_extend_strategy = static_cast<int>(internal_options.arena_extend_strategy);
     migx_options.migraphx_mem_limit = internal_options.mem_limit;
   }
@@ -154,7 +159,11 @@ struct MIGraphX_Provider final : Provider {
     const ConfigOptions* config_options = &session_options.GetConfigOptions();
 
     std::array<const void*, 2> configs_array = {&provider_options, config_options};
-    auto ep_factory = CreateExecutionProviderFactory(&provider_options);
+
+    OrtMIGraphXProviderOptions migraphx_options;
+    UpdateProviderOptions(&migraphx_options, provider_options);
+
+    auto ep_factory = CreateExecutionProviderFactory(&migraphx_options);
     ep = ep_factory->CreateProvider(session_options, logger);
 
     return Status::OK();
@@ -282,7 +291,8 @@ struct MigraphXEpFactory : OrtEpFactory {
   const std::string ep_name;
   const std::string vendor{"AMD"};
   const std::string ep_version{"0.1.0"};
-  const uint32_t vendor_id{0x1002};
+  // Not using AMD vendor id 0x1002 so that OrderDevices in provider_policy_context.cc will default dml ep
+  const uint32_t vendor_id{0x9999};
   const OrtHardwareDeviceType ort_hw_device_type;  // Supported OrtHardwareDevice
 };
 
