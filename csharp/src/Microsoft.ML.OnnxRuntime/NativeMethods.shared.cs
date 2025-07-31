@@ -455,6 +455,7 @@ namespace Microsoft.ML.OnnxRuntime
         public IntPtr Node_GetNumAttributes;
         public IntPtr Node_GetAttributes;
         public IntPtr Node_GetAttributeByName;
+        public IntPtr Node_GetTensorAttributeAsOrtValue;
         public IntPtr OpAttr_GetType;
         public IntPtr OpAttr_GetName;
         public IntPtr Node_GetNumSubgraphs;
