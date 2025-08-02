@@ -90,14 +90,21 @@ static common::Status DeserializeTensorProto(const Env& env, const std::basic_st
                   "DeserializeTensorProto() takes either pre-allocated buffer or an allocator!");
   }
 
+  const auto& memory_info = (alloc != nullptr) ? alloc->Info() : memory_buffer->GetAllocInfo();
+  const auto device = memory_info.device;
+
+#ifdef USE_MIGRAPHX
+  if (device.Type() == OrtDevice::GPU && device.Vendor() == OrtDevice::VendorIds::AMD) {
+    return common::Status::OK();
+  }
+#endif
+
+  // Get shape and type of the tensor, and allocate the empty tensor
   TensorShape tensor_shape = utils::GetTensorShapeFromTensorProto(tensor_proto);
   const DataTypeImpl* const type = DataTypeImpl::TensorTypeFromONNXEnum(tensor_proto.data_type())->GetElementType();
   Tensor tensor;
 
-  // Get shape and type of the tensor, and allocate the empty tensor
   static const auto default_cpu_device = OrtDevice();
-  const auto& memory_info = (alloc != nullptr) ? alloc->Info() : memory_buffer->GetAllocInfo();
-  const auto device = memory_info.device;
 
   if (utils::HasExternalData(tensor_proto)) {
     auto external_data_loader = external_data_loader_mgr.GetExternalDataLoader(memory_info);
