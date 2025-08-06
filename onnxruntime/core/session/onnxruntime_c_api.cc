@@ -1378,9 +1378,16 @@ ORT_API_STATUS_IMPL(OrtApis::SessionGetOverridableInitializerTypeInfo, _In_ cons
   return GetNodeDefTypeInfoHelper(sess, get_overridable_initializers_fn, index, out);
 }
 
-char* onnxruntime::StrDup(const std::string& str, OrtAllocator* allocator) {
-  char* output_string = reinterpret_cast<char*>(allocator->Alloc(allocator, str.size() + 1));
-  memcpy(output_string, str.c_str(), str.size());
+char* onnxruntime::StrDup(std::string_view str, OrtAllocator* allocator) {
+  char* output_string = static_cast<char*>(allocator->Alloc(allocator, str.size() + 1));
+  memcpy(output_string, str.data(), str.size());
+  output_string[str.size()] = '\0';
+  return output_string;
+}
+
+wchar_t* onnxruntime::StrDup(std::wstring_view str, OrtAllocator* allocator) {
+  auto* output_string = static_cast<wchar_t*>(allocator->Alloc(allocator, (str.size() + 1) * sizeof(wchar_t)));
+  memcpy(output_string, str.data(), str.size() * sizeof(wchar_t));
   output_string[str.size()] = '\0';
   return output_string;
 }
@@ -4088,13 +4095,6 @@ static constexpr OrtApi ort_api_1_to_23 = {
     &OrtApis::ReleaseSyncStream,
 
     &OrtApis::CopyTensors,
-
-    &OrtApis::CreateMIGraphXProviderOptions,
-    &OrtApis::UpdateMIGraphXProviderOptions,
-    &OrtApis::GetMIGraphXProviderOptionsAsString,
-    &OrtApis::ReleaseMIGraphXProviderOptions,
-    &OrtApis::UpdateMIGraphXProviderOptionsWithValue,
-    &OrtApis::GetMIGraphXProviderOptionsByName
 };
 
 // OrtApiBase can never change as there is no way to know what version of OrtApiBase is returned by OrtGetApiBase.

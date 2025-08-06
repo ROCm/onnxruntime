@@ -5,5 +5,5 @@
 
 #include <hip/hip_runtime.h>
 #include <iso646.h>
-#include <migraphx/migraphx.hpp>
 #include <migraphx/version.h>
+#include <migraphx/migraphx.hpp>
