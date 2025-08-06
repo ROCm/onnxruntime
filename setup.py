@@ -6,7 +6,6 @@
 
 import datetime
 import logging
-import os
 import platform
 import shlex
 import subprocess
@@ -69,6 +68,7 @@ if wheel_name_suffix == "gpu":
         is_cuda_version_12 = cuda_version.startswith("12.")
 elif parse_arg_remove_boolean(sys.argv, "--use_migraphx"):
     is_migraphx = True
+    package_name = "onnxruntime-migraphx"
 elif parse_arg_remove_boolean(sys.argv, "--use_openvino"):
     is_openvino = True
     package_name = "onnxruntime-openvino"
@@ -91,8 +91,6 @@ elif parse_arg_remove_boolean(sys.argv, "--use_qnn"):
     is_qnn = True
     package_name = "onnxruntime-qnn"
     qnn_version = parse_arg_remove_string(sys.argv, "--qnn_version=")
-elif is_migraphx:
-    package_name = "onnxruntime-migraphx" if not nightly_build else "ort-migraphx-nightly"
 
 # PEP 513 defined manylinux1_x86_64 and manylinux1_i686
 # PEP 571 defined manylinux2010_x86_64 and manylinux2010_i686
@@ -284,27 +282,8 @@ try:
                 self._rewrite_ld_preload_tensorrt(to_preload_tensorrt)
                 self._rewrite_ld_preload_tensorrt(to_preload_nv_tensorrt_rtx)
                 self._rewrite_ld_preload(to_preload_cann)
-
             else:
-                hipsdk_dependencies = [
-                    "amd_comgr0602.dll",
-                    "amd_comgr0604.dll",
-                    "hiprtc0602.dll",
-                    "hiprtc0604.dll",
-                    "hiprtc-builtins0602.dll",
-                    "hiprtc-builtins0604.dll",
-                ]
-
-                migraphx_dependencies = [
-                    "migraphx-hiprtc-driver.exe",
-                    "migraphx.dll",
-                    "migraphx_c.dll",
-                    "migraphx_cpu.dll",
-                    "migraphx_device.dll",
-                    "migraphx_gpu.dll",
-                    "migraphx_onnx.dll",
-                    "migraphx_tf.dll"
-                ]
+                pass
 
             _bdist_wheel.run(self)
             if is_manylinux and not disable_auditwheel_repair and not is_openvino and not is_qnn:
@@ -312,7 +291,7 @@ try:
                 file = glob(path.join(self.dist_dir, "*linux*.whl"))[0]
                 logger.info("repairing %s for manylinux1", file)
                 auditwheel_cmd = ["auditwheel", "-v", "repair", "-w", self.dist_dir, file]
-                for i in cuda_dependencies + hipsdk_dependencies + rocm_dependencies + migraphx_dependencies + tensorrt_dependencies + cann_dependencies:
+                for i in cuda_dependencies + rocm_dependencies + tensorrt_dependencies + cann_dependencies:
                     auditwheel_cmd += ["--exclude", i]
                 logger.info("Running %s", " ".join([shlex.quote(arg) for arg in auditwheel_cmd]))
                 try:
@@ -458,10 +437,13 @@ else:
     migraphx_deps = [
         "amd_comgr0602.dll",
         "amd_comgr0604.dll",
+        "amd_comgr0700.dll",
         "hiprtc0602.dll",
         "hiprtc0604.dll",
+        "hiprtc0700.dll",
         "hiprtc-builtins0602.dll",
         "hiprtc-builtins0604.dll",
+        "hiprtc-builtins0700.dll",
         "migraphx-hiprtc-driver.exe",
         "migraphx.dll",
         "migraphx_c.dll",

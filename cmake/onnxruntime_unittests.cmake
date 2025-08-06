@@ -689,8 +689,7 @@ endif()
 
 
 if(onnxruntime_USE_MIGRAPHX)
-  list(APPEND onnxruntime_test_framework_src_patterns ${TEST_SRC_DIR}/providers/migraphx/*)
-  list(APPEND onnxruntime_test_providers_dependencies onnxruntime_providers_migraphx onnxruntime_providers_shared)
+  list(APPEND onnxruntime_test_framework_src_patterns  ${TEST_SRC_DIR}/providers/migraphx/*)
 endif()
 
 if(onnxruntime_USE_NNAPI_BUILTIN)

@@ -3,16 +3,16 @@
 
 #pragma once
 
+#include <algorithm>
 #include <charconv>
-#include <fstream>
-#include <unordered_map>
-#include <string>
-#include <iostream>
 #include <filesystem>
+#include <fstream>
 #include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
 #include "flatbuffers/idl.h"
 #include "core/providers/migraphx/ort_trt_int8_cal_table.fbs.h"
-#include "core/session/onnxruntime_cxx_api.h"
 #include "core/framework/execution_provider.h"
 #include "core/common/path_string.h"
 #include "core/framework/murmurhash3.h"
@@ -56,7 +56,7 @@ inline std::size_t getNodeInputNum(const Node& node) {
 }
 
 inline bool isInputNode(const Node* node, const std::string& name) {
-  auto outputs = node->OutputDefs();
+  const auto outputs = node->OutputDefs();
   return std::any_of(outputs.begin(), outputs.end(), [&](auto out) {
     return (out->Name() == name);
   });
@@ -77,7 +77,7 @@ inline bool canEvalShapeGeneral(const GraphViewer& graph, const Node* node, std:
     return true;
   }
 
-  auto inputs = node->InputDefs();
+  const auto inputs = node->InputDefs();
   for (std::size_t i = 0; i < inputs.size(); ++i) {
     const std::string& input_name = inputs.at(i)->Name();
     // If it is an initializer, it can be constant folded
@@ -98,7 +98,7 @@ inline bool canEvalShapeGeneral(const GraphViewer& graph, const Node* node, std:
       return false;
     }
 
-    auto input_node = (*nit);
+    const auto input_node = (*nit);
     // shape node, it is OK
     if (input_node->OpType() == "Shape") {
       continue;
@@ -117,7 +117,7 @@ inline bool canEvalShapeGeneral(const GraphViewer& graph, const Node* node, std:
 
 inline bool canEvalNodeArgument(const GraphViewer& graph,
                                 const Node* node,
-                                std::vector<std::size_t> indices,
+                                const std::vector<std::size_t>& indices,
                                 std::vector<NodeIndex>& input_nodes) {
   input_nodes.clear();
   std::vector<const Node*> in_nodes;
@@ -125,8 +125,8 @@ inline bool canEvalNodeArgument(const GraphViewer& graph,
     in_nodes.push_back(&(*nit));
   }
 
-  auto inputs = node->InputDefs();
-  for (auto index : indices) {
+  const auto inputs = node->InputDefs();
+  for (const auto index : indices) {
     // an initializer itself is a constant
     auto input_name = inputs.at(index)->Name();
     if (IsGraphInitializer(graph, input_name)) {
@@ -189,8 +189,8 @@ inline float ConvertSinglePrecisionIEEE754ToFloat(uint32_t input) {
 inline bool ReadDynamicRange(const std::filesystem::path& filename,
                              const bool is_calibration_table,
                              std::unordered_map<std::string,
-                             float>& dynamic_range_map) {
-  std::ifstream infile(filename, std::ios::binary | std::ios::in);
+                                                float>& dynamic_range_map) {
+  std::ifstream infile{filename, std::ios::binary | std::ios::in};
   if (!infile.good()) {
     return false;
   }
@@ -242,8 +242,8 @@ inline bool ReadDynamicRange(const std::filesystem::path& filename,
  * Get cache by name
  *
  */
-inline std::filesystem::path GetCachePath(const std::filesystem::path& root, const std::string_view name) {
-  return root.empty() ? std::filesystem::path{name} : root / name;
+inline std::filesystem::path GetCachePath(const std::filesystem::path& root, std::string_view name) {
+  return root.empty() ? std::filesystem::path{ToPathString(name)} : root / ToPathString(name);
 }
 
 inline std::string GenerateGraphId(const GraphViewer& graph_viewer) {
@@ -320,21 +320,21 @@ inline std::string GenerateGraphId(const GraphViewer& graph_viewer) {
 
   model_hash = hash[0] | static_cast<uint64_t>(hash[1]) << 32;
 
-  std::array<char, sizeof(HashValue) << 1> s;
+  std::array<char, sizeof(HashValue) << 1> s{};
   auto [ptr, ec] = std::to_chars(s.data(), s.data() + s.size(), model_hash, 16);
   return std::string{s.data(), ptr};
 }
 
 inline std::string_view TrimLeft(std::string_view sv, int (*fn)(int) = std::isspace) {
   return sv.substr(0, sv.end() - std::find_if(sv.begin(), sv.end(), [fn](int ch) {
-    return fn(ch);
-  }));
+                        return fn(ch);
+                      }));
 }
 
 inline std::string_view TrimRight(std::string_view sv, int (*fn)(int) = std::isspace) {
   return sv.substr(sv.end() - std::find_if(sv.rbegin(), sv.rend(), [fn](int ch) {
-    return fn(ch);
-  }).base());
+                                return fn(ch);
+                              }).base());
 }
 
 inline std::string_view Trim(std::string_view sv, int (*fn)(int) = std::isspace) {
