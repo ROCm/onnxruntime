@@ -3,8 +3,10 @@
 
 #pragma once
 
-#include <core/framework/provider_options.h>
-#include <core/providers/providers.h>
+#include <memory>
+
+#include "core/providers/providers.h"
+#include "core/framework/provider_options.h"
 
 struct OrtMIGraphXProviderOptions;
 

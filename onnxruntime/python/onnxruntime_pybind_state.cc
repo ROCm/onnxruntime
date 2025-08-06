@@ -954,7 +954,7 @@ static std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory
   } else if (type == kMIGraphXExecutionProvider) {
 #if defined(USE_MIGRAPHX) || defined(USE_MIGRAPHX_PROVIDER_INTERFACE)
     std::string calibration_table;
-    std::string model_cache_path;
+    PathString model_cache_path;
     auto it = provider_options_map.find(type);
     if (it != provider_options_map.end()) {
       OrtMIGraphXProviderOptions params{
@@ -964,10 +964,18 @@ static std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory
           0,
           0,
           nullptr,
+          0,
           nullptr,
-          false,
+          0,
+          nullptr,
+          1,
           SIZE_MAX,
-          0};
+          0,
+          0,
+          nullptr,
+          nullptr,
+          nullptr,
+          nullptr};
       for (auto option : it->second) {
         if (option.first == "device_id") {
           if (!option.second.empty()) {
@@ -983,6 +991,16 @@ static std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory
           } else {
             ORT_THROW(
                 "[ERROR] [MIGraphX] The value for the key 'migraphx_fp16_enable' should be"
+                " 'True' or 'False'. Default value is 'False'.\n");
+          }
+        } else if (option.first == migraphx_provider_option::kBf16Enable) {
+          if (option.second == "True" || option.second == "true") {
+            params.migraphx_bf16_enable = true;
+          } else if (option.second == "False" || option.second == "false") {
+            params.migraphx_bf16_enable = false;
+          } else {
+            ORT_THROW(
+                "[ERROR] [MIGraphX] The value for the key 'migraphx_bf16_enable' should be"
                 " 'True' or 'False'. Default value is 'False'.\n");
           }
         } else if (option.first == migraphx_provider_option::kFp8Enable) {
@@ -1026,7 +1044,7 @@ static std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory
           }
         } else if (option.first == migraphx_provider_option::kModelCacheDir) {
           if (!option.second.empty()) {
-            model_cache_path = option.second;
+            model_cache_path = ToPathString(option.second);
             params.migraphx_cache_dir = model_cache_path.c_str();
           } else {
             ORT_THROW(
@@ -1853,8 +1871,11 @@ void addObjectMethods(py::module& m, ExecutionProviderRegistrationFn ep_registra
 #elif USE_ROCM || USE_MIGRAPHX
                vendor = OrtDevice::VendorIds::AMD;
 #endif
+             } else if (type == OrtDevice::NPU) {
+#if USE_CANN
+               vendor = OrtDevice::VendorIds::HUAWEI;
+#endif
              }
-
              return OrtDevice(type, mem_type, vendor, device_id);
            }),
            R"pbdoc(Constructor with vendor_id defaulted to 0 for backward compatibility.)pbdoc")
