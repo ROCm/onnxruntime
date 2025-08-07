@@ -18,7 +18,7 @@
 #include "core/providers/migraphx/migraphx_execution_provider_info.h"
 #include "core/providers/migraphx/migraphx_call.h"
 
-using namespace std::literals::string_view_literals; // NOLINT(build/namespaces_literals)
+using namespace std::literals::string_view_literals;  // NOLINT(build/namespaces_literals)
 
 namespace onnxruntime {
 
@@ -77,7 +77,7 @@ class MIGraphXExecutionProvider final : public IExecutionProvider {
                 IResourceAccountant* resource_accountant) const override;
 
   Status Compile(const std::vector<FusedNodeAndGraph>& fused_nodes,
-                         std::vector<NodeComputeInfo>& node_compute_funcs) override;
+                 std::vector<NodeComputeInfo>& node_compute_funcs) override;
 
   std::shared_ptr<KernelRegistry> GetKernelRegistry() const override;
   std::unique_ptr<IDataTransfer> GetDataTransfer() const override;
