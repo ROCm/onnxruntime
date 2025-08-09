@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "core/graph/onnx_protobuf.h"
-#include "core/session/inference_session.h"
 #include "core/session/onnxruntime_cxx_api.h"
+#include "core/session/inference_session.h"
 #include "test/providers/provider_test_utils.h"
 #include "test/framework/test_utils.h"
 #include "gtest/gtest.h"
