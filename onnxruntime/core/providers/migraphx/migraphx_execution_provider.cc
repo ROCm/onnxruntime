@@ -136,7 +136,6 @@ static std::string_view GetArenaExtendStrategyName(ArenaExtendStrategy strategy)
 
 MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProviderInfo& info)
     : IExecutionProvider{kMIGraphXExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, OrtDevice::VendorIds::AMD, info.device_id)},
-      device_id_{info.device_id},
       fp16_enable_{info.fp16_enable},
 #if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && (HIP_VERSION_MINOR > 4 || (HIP_VERSION_MINOR == 4 && HIP_VERSION_PATCH >= 2)))
       bf16_enable_{info.bf16_enable},
@@ -156,8 +155,8 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
 
   // Set GPU device to be used and read device properties for feature usage.
 
-  HIP_CALL_THROW(hipSetDevice(device_id_));
-  HIP_CALL_THROW(hipGetDeviceProperties(&device_prop_, device_id_));
+  HIP_CALL_THROW(hipSetDevice(info.device_id));
+  HIP_CALL_THROW(hipGetDeviceProperties(&device_prop_, info.device_id));
 
   // Overwrite initialized values with values from environment variables.
 
@@ -222,7 +221,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   // Print configured options for the session.
 
   LOGS_DEFAULT(VERBOSE) << "[MIGraphX EP] MIGraphX provider Session Options:"
-                        << "\n " << migraphx_provider_option::kDeviceId << ": " << device_id_
+                        << "\n " << migraphx_provider_option::kDeviceId << ": " << info.device_id
                         << "\n " << migraphx_provider_option::kFp16Enable << ": " << fp16_enable_
                         << "\n " << migraphx_provider_option::kBf16Enable << ": " << bf16_enable_
                         << "\n " << migraphx_provider_option::kFp8Enable << ": " << fp8_enable_
@@ -242,12 +241,12 @@ std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators()
       [](OrtDevice::DeviceId device_id) {
         return std::make_unique<MIGraphXAllocator>(device_id, CUDA);
       },
-      device_id_);
+      GetDeviceId());
   const AllocatorCreationInfo pinned_allocator_info(
       [](OrtDevice::DeviceId device_id) {
         return std::make_unique<MIGraphXPinnedAllocator>(device_id, CUDA_PINNED);
       },
-      device_id_);
+      GetDeviceId());
   return {CreateAllocator(default_memory_info), CreateAllocator(pinned_allocator_info)};
 }
 

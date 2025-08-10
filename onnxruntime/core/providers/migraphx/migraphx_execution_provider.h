@@ -87,11 +87,9 @@ class MIGraphXExecutionProvider final : public IExecutionProvider {
   OrtDevice GetOrtDeviceByMemType(OrtMemType mem_type) const override;
   std::vector<AllocatorPtr> CreatePreferredAllocators() override;
 
-  int GetDeviceId() const override { return device_id_; }
-
   ProviderOptions GetProviderOptions() const override {
     return {
-        {std::string{migraphx_provider_option::kDeviceId}, MakeStringWithClassicLocale(device_id_)},
+        {std::string{migraphx_provider_option::kDeviceId}, MakeStringWithClassicLocale(GetDeviceId())},
         {std::string{migraphx_provider_option::kFp16Enable}, MakeStringWithClassicLocale(fp16_enable_)},
         {std::string{migraphx_provider_option::kBf16Enable}, MakeStringWithClassicLocale(bf16_enable_)},
         {std::string{migraphx_provider_option::kFp8Enable}, MakeStringWithClassicLocale(fp8_enable_)},
@@ -108,7 +106,6 @@ class MIGraphXExecutionProvider final : public IExecutionProvider {
   }
 
  private:
-  OrtDevice::DeviceId device_id_{0};
   bool fp16_enable_ = false;
   bool bf16_enable_ = false;
   bool fp8_enable_ = false;
