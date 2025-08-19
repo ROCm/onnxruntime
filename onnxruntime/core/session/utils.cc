@@ -132,7 +132,7 @@ static OrtStatus* CreateSessionAndLoadModelImpl(_In_ const OrtSessionOptions* op
   const Env& os_env = Env::Default();  // OS environment (!= ORT environment)
 #ifdef USE_MIGRAPHX
 #ifdef _WIN32
-  ::SetEnvironmentVarialbe("MIGRAPHX_MLIR_USE_SPECIFIC_OPS", "attention");
+  ::SetEnvironmentVariable("MIGRAPHX_MLIR_USE_SPECIFIC_OPS", "attention");
 #else
   setenv("MIGRAPHX_MLIR_USE_SPECIFIC_OPS", "attention", 1);
 #endif
