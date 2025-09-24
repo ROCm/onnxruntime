@@ -382,7 +382,7 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
     }
   } else if (optype == "ConvInteger") {
     // only support int8 and uint8 type
-    const auto& input_type = node->InputDefs()[0]->TypeAsProto();
+    const auto& input_type = node->InputDefs().at(0)->TypeAsProto();
     if (input_type == nullptr) {
       return true;
     }
@@ -420,7 +420,7 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
     }
 
     // do not support int8 and uint8 type
-    const auto& input_type = node->InputDefs()[0]->TypeAsProto();
+    const auto& input_type = node->InputDefs().at(0)->TypeAsProto();
     if (input_type == nullptr) {
       return true;
     }
@@ -431,7 +431,7 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
     }
   } else if (optype == "MatMulInteger") {
     // only support int8 and uint8 type
-    const auto& input_type = node->InputDefs()[0]->TypeAsProto();
+    const auto& input_type = node->InputDefs().at(0)->TypeAsProto();
     if (input_type == nullptr) {
       return true;
     }
@@ -541,7 +541,7 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
     }
   } else if (optype == "Split") {
     // cannot process input dim of 0 size
-    const auto arg_s = node->InputDefs()[0]->Shape();
+    const auto arg_s = node->InputDefs().at(0)->Shape();
     if (arg_s != nullptr) {
       const auto& tensor_dims = arg_s->dim();
       std::vector<std::size_t> dims;
@@ -743,7 +743,14 @@ std::unique_ptr<IndexedSubGraph> MIGraphXExecutionProvider::GetSubGraph(const st
     if (node->GetOutputEdgesCount() > node->OutputDefs().size()) {
       for (auto it = node->OutputEdgesBegin(), end = node->OutputEdgesEnd(); it != end; ++it) {
         const auto& node_idx = it->GetNode().Index();
-        const auto& output = (it->GetNode()).InputDefs()[it->GetDstArgIndex()];
+        const auto input_defs = it->GetNode().InputDefs();
+        const size_t arg_index = it->GetDstArgIndex();
+        if (arg_index >= input_defs.size()) {
+          ORT_THROW("the index of destination argument (" + std::to_string(arg_index) + ") is outside the "
+                    "range of model input definitions ({" + std::to_string(input_defs.size()) + "}");
+          continue;
+        }
+        const auto& output = input_defs.at(arg_index);
         if (node_set.find(node_idx) != node_set.end()) {
           const auto& iter = fused_inputs.find(output);
           if (iter != fused_inputs.end()) {
@@ -1261,8 +1268,8 @@ std::string to_hex(const uint64_t v) {
 template <typename T>
 std::string make_hash(T v) {
   std::array<std::uint32_t, 4> temp{};
-  MurmurHash3::x86_128(v.data(), gsl::narrow_cast<int32_t>(v.size()), temp[0], temp.data());
-  return to_hex(temp[0] | static_cast<uint64_t>(temp[1]) << 32);
+  MurmurHash3::x86_128(v.data(), gsl::narrow_cast<int32_t>(v.size()), temp.front(), temp.data());
+  return to_hex(temp.at(0) | static_cast<uint64_t>(temp.at(1)) << 32);
 }
 
 template <>
@@ -1299,7 +1306,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     if (!model_cache_path_.empty()) {
       std::vector<std::int64_t> input_shapes;
       for (std::size_t i = 0; i < session_input_names.size(); ++i) {
-        auto tensor_shape = input_tensor[i]->Shape();
+        auto tensor_shape = input_tensor.at(i)->Shape();
         for (int j = 1; j < tensor_shape->dim_size(); ++j) {
           input_shapes.push_back(tensor_shape->dim(j).dim_value());
         }
@@ -1312,7 +1319,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     const auto& input_defs = fused_node.InputDefs();
     input_name_index.reserve(input_defs.size());
     for (std::size_t i = 0; i < input_defs.size(); ++i) {
-      input_name_index[input_defs[i]->Name()] = i;
+      input_name_index[input_defs.at(i)->Name()] = i;
     }
 
     auto model = graph_body_viewer.CreateModel(*GetLogger());
@@ -1356,7 +1363,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       auto prog_output_shapes = prog.get_output_shapes();
       for (std::size_t i = 0; i < prog_output_shapes.size(); ++i) {
         auto out_len = prog_output_shapes[i].lengths();
-        options.set_input_parameter_shape(output_names[i], out_len);
+        options.set_input_parameter_shape(output_names.at(i), out_len);
       }
     }
 
@@ -1369,9 +1376,9 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     NodeComputeInfo compute_info;
     compute_info.create_state_func = [=](ComputeContext* context, FunctionState* state) {
       std::unique_ptr<MIGraphXFuncState> p = std::make_unique<MIGraphXFuncState>();
-      *p = {context->allocate_func, context->release_func, context->allocator_handle, map_progs_[context->node_name],
-            map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_mu_,
-            map_no_input_shape_[context->node_name], fp16_enable_, bf16_enable_, fp8_enable_, int8_enable_,
+      *p = {context->allocate_func, context->release_func, context->allocator_handle, map_progs_.at(context->node_name),
+            map_onnx_string_.at(context->node_name), options, t_, map_input_index_.at(context->node_name), &mgx_mu_,
+            map_no_input_shape_.at(context->node_name), fp16_enable_, bf16_enable_, fp8_enable_, int8_enable_,
             int8_calibration_cache_available_, dynamic_range_map_,
             model_cache_path_.string(), dump_model_ops_};
       *state = p.release();
@@ -1428,7 +1435,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         if (param_shapes.size() > 0) {
           for (auto&& name : param_shapes.names()) {
             if (map_input_name_index.count(name) > 0) {
-              auto input_tensor = ctx.GetInput(map_input_name_index[name]);
+              auto input_tensor = ctx.GetInput(map_input_name_index.at(name));
               auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
               const auto tensor_shape = tensor_info.GetShape();
               std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
@@ -1436,8 +1443,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
               auto mgx_s = param_shapes[name];
               auto mgx_lens = mgx_s.lengths();
               auto mgx_strides = mgx_s.strides();
-              if (mgx_lens.size() == 1 && mgx_lens[0] == 1 &&
-                  mgx_strides.size() == 1 && mgx_strides[0] == 0) {
+              if (mgx_lens.size() == 1 && mgx_lens.front() == 1 &&
+                  mgx_strides.size() == 1 && mgx_strides.front() == 0) {
                 mgx_lens.clear();
               }
 
@@ -1474,7 +1481,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             // Add input parameter data and the values they're set to
             for (auto&& name : local_param_shapes.names()) {
               if (map_input_name_index.count(name) > 0) {
-                auto input_tensor = ctx.GetInput(map_input_name_index[name]);
+                auto input_tensor = ctx.GetInput(map_input_name_index.at(name));
                 auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
                 const auto tensor_shape = tensor_info.GetShape();
                 const auto tensor_type = tensor_info.GetElementType();
@@ -1508,7 +1515,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         for (auto&& name : param_shapes.names()) {
           if (map_input_name_index.count(name) > 0) {
             LOGS_DEFAULT(VERBOSE) << "Setting parameters for:" << name;
-            auto input_tensor = ctx.GetInput(map_input_name_index[name]);
+            auto input_tensor = ctx.GetInput(map_input_name_index.at(name));
             auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
             const auto tensor_shape = tensor_info.GetShape();
             const auto tensor_type = tensor_info.GetElementType();
@@ -1594,7 +1601,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
 void MIGraphXExecutionProvider::RegisterStreamHandlers(IStreamCommandHandleRegistry& stream_handle_registry,
                                                        AllocatorMap& allocators) const {
-  auto allocator = allocators[GetOrtDeviceByMemType(OrtMemTypeCPU)];
+  auto allocator = allocators.at(GetOrtDeviceByMemType(OrtMemTypeCPU));
   RegisterMIGraphXStreamHandles(stream_handle_registry, OrtDevice::GPU, allocator, true, stream_, false /*TODO:external_stream_*/);
 }
 
