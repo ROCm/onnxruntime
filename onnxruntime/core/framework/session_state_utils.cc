@@ -93,13 +93,11 @@ static common::Status DeserializeTensorProto(const Env& env, const std::basic_st
   const auto& memory_info = (alloc != nullptr) ? alloc->Info() : memory_buffer->GetAllocInfo();
   const auto device = memory_info.device;
 
-#ifdef USE_MIGRAPHX
   if (device.Type() == OrtDevice::GPU && device.Vendor() == OrtDevice::VendorIds::AMD) {
-    return common::Status::OK();
+    return Status::OK();
   }
-#endif
 
-  static const auto default_cpu_device = OrtDevice();
+  static constexpr auto default_cpu_device = OrtDevice();
 
   // Get shape and type of the tensor, and allocate the empty tensor
   TensorShape tensor_shape = utils::GetTensorShapeFromTensorProto(tensor_proto);
