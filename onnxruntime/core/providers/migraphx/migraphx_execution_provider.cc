@@ -1254,7 +1254,7 @@ void compile_program(migraphx::program& prog,
                      bool exhaustive_tune) {
   LOGS_DEFAULT(WARNING) << "Model Compile: Begin";
   migraphx::compile_options co;
-  co.set_fast_math(false);
+  co.set_fast_math(true);
   co.set_exhaustive_tune_flag(exhaustive_tune);
   prog.compile(t, co);
   LOGS_DEFAULT(WARNING) << "Model Compile: Complete";

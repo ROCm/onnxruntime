@@ -34,6 +34,10 @@ constexpr auto kGpuExternalAlloc = "migraphx_external_alloc"sv;
 constexpr auto kGpuExternalFree = "migraphx_external_free"sv;
 constexpr auto kGpuExternalEmptyCache = "migraphx_external_empty_cache"sv;
 constexpr auto kModelCacheDir = "migraphx_model_cache_dir"sv;
+constexpr auto kUseFastMath = "migraphx_use_fast_math"sv;
+constexpr auto kMLIRTuneLimit = "migraphx_mlir_tune_limit"sv;
+constexpr auto kMLIRUseSpecificOps = "migraphx_mlir_use_specific_ops"sv;
+constexpr auto kDisablePasses = "migraphx_disable_passes"sv;
 }  // namespace migraphx_provider_option
 
 extern const EnumNameMapping<ArenaExtendStrategy> arena_extend_strategy_mapping;
