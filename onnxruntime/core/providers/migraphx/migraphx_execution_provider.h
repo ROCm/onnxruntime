@@ -56,6 +56,7 @@ struct MIGraphXFuncState {
   std::filesystem::path model_cache_dir;
   bool dump_model_ops = false;
   bool exhaustive_tune = false;
+  size_t mem_limit;
 };
 
 // Logical device representation.

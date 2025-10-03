@@ -1401,7 +1401,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_mu_,
             map_no_input_shape_[context->node_name], fp16_enable_, bf16_enable_, fp8_enable_, int8_enable_,
             int8_calibration_cache_available_, dynamic_range_map_,
-            model_cache_path_.string(), dump_model_ops_};
+            model_cache_path_.string(), dump_model_ops_, exhaustive_tune_, mem_limit_};
       *state = p.release();
       return 0;
     };
@@ -1427,6 +1427,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       bool fp8_enable = mgx_state->fp8_enable;
       bool int8_enable = mgx_state->int8_enable;
       bool int8_calibration_cache_available = mgx_state->int8_calibration_cache_available;
+      bool exhaustive_tune = mgx_state->exhaustive_tune;
+      size_t mem_limit = mgx_state->mem_limit;
 
       // mean no program at all, so need to get the input shape info
       // from input data
@@ -1485,7 +1487,19 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         std::filesystem::path model_cache_file;
         // empty cache path means the MXR caching is disabled - always compile
         if (!model_cache_path_.empty()) {
-          model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
+        auto get_quant_and_tune_flags = [=](){
+            std::vector<std::int64_t> data_out{};
+
+            data_out.push_back(static_cast<int64_t>(fp16_enable));
+            data_out.push_back(static_cast<int64_t>(fp8_enable));
+            data_out.push_back(static_cast<int64_t>(bf16_enable));
+            data_out.push_back(static_cast<int64_t>(int8_enable));
+            data_out.push_back(static_cast<int64_t>(mem_limit));
+            data_out.push_back(static_cast<int64_t>(exhaustive_tune));
+
+            return data_out;
+        };
+          model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + make_hash(input_shapes) +  "-" + make_hash(get_quant_and_tune_flags()) + ".mxr");
         }
         if (!load_precompiled_model(prog, model_cache_file)) {
           LOGS_DEFAULT(VERBOSE) << "Input shape mismatch detected. Recompiling";
