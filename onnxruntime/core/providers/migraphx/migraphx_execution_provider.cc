@@ -856,6 +856,13 @@ static std::vector<NodeIndex>
 GetUnsupportedNodeIndices(const GraphViewer& graph_viewer,
                           /*out*/ std::unordered_set<std::string>& mgx_required_initializers,
                           const logging::Logger& logger) {
+
+  #if (HIP_VERSION_MAJOR >= 7 && HIP_VERSION_MINOR >= 0)
+  LOGS_DEFAULT(WARNING) << "Using API operator";
+  auto op_list = migraphx::get_supported_onnx_operators();
+  static std::set<std::string> mgx_supported_ops(op_list.begin(), op_list.end());
+  #else
+
   static std::set<std::string> mgx_supported_ops = {"Abs",
                                                     "Acos",
                                                     "Acosh",
@@ -1016,6 +1023,7 @@ GetUnsupportedNodeIndices(const GraphViewer& graph_viewer,
                                                     "Upsample",
                                                     "Where",
                                                     "Xor"};
+  #endif
   std::vector<NodeIndex> unsupported_nodes_idx;
   for (const auto& node_idx : graph_viewer.GetNodesInTopologicalOrder()) {
     if (IsNodeSupported(mgx_supported_ops, graph_viewer, node_idx, logger)) {
