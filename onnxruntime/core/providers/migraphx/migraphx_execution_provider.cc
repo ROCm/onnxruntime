@@ -1316,7 +1316,23 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           input_shapes.push_back(tensor_shape->dim(j).dim_value());
         }
       }
-      model_cache_file = model_cache_path_ / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
+      // capture flags outside of name/inputs that are used when models are compiled
+      // Each of these will change the final compiled model and need to be captured to ensure
+      // hash uses the quantization flags and modes
+      auto get_quant_and_tune_flags = [=](){
+          std::vector<std::int64_t> data_out{};
+
+          data_out.push_back(static_cast<int64_t>(fp16_enable_));
+          data_out.push_back(static_cast<int64_t>(fp8_enable_));
+          data_out.push_back(static_cast<int64_t>(bf16_enable_));
+          data_out.push_back(static_cast<int64_t>(int8_enable_));
+          data_out.push_back(static_cast<int64_t>(mem_limit_));
+          data_out.push_back(static_cast<int64_t>(exhaustive_tune_));
+
+          return data_out;
+      };
+
+      model_cache_file = model_cache_path_ / (mxr_filename_prefix + make_hash(input_shapes) + "-"  + make_hash(get_quant_and_tune_flags()) +".mxr");
     }
 
     // map parameter input name to index
