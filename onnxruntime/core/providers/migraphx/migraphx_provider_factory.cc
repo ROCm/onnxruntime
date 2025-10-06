@@ -259,6 +259,10 @@ struct MIGraphXEpFactory final : OrtEpFactory {
     size_t& num_ep_devices = *p_num_ep_devices;
     auto* factory = static_cast<MIGraphXEpFactory*>(this_ptr);
 
+    int num_hip_devices = 0;
+    HIP_CALL_THROW(hipGetDeviceCount(&num_hip_devices));
+    max_ep_devices = std::min(max_ep_devices, static_cast<size_t>(num_hip_devices));
+
     for (size_t i = 0; i < num_devices && num_ep_devices < max_ep_devices; ++i) {
       const OrtHardwareDevice& device = *devices[i];
       if (factory->ort_api.HardwareDevice_Type(&device) == factory->ort_hw_device_type &&
