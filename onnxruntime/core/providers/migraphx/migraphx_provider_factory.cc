@@ -257,7 +257,7 @@ struct MIGraphXEpFactory final : OrtEpFactory {
                                             size_t max_ep_devices,
                                             size_t* p_num_ep_devices) noexcept {
     size_t& num_ep_devices = *p_num_ep_devices;
-    auto* factory = static_cast<MIGraphXEpFactory*>(this_ptr);
+    auto* factory = reinterpret_cast<MIGraphXEpFactory*>(this_ptr);
 
     int num_hip_devices = 0;
     HIP_CALL_THROW(hipGetDeviceCount(&num_hip_devices));
@@ -267,11 +267,8 @@ struct MIGraphXEpFactory final : OrtEpFactory {
       const OrtHardwareDevice& device = *devices[i];
       if (factory->ort_api.HardwareDevice_Type(&device) == factory->ort_hw_device_type &&
           factory->ort_api.HardwareDevice_VendorId(&device) == 0x1002) {
-        OrtKeyValuePairs* ep_options = nullptr;
-        factory->ort_api.CreateKeyValuePairs(&ep_options);
-        ORT_API_RETURN_IF_ERROR(
-            factory->ort_api.GetEpApi()->CreateEpDevice(factory, &device, nullptr, ep_options,
-                                                        &ep_devices[num_ep_devices++]));
+        ORT_API_RETURN_IF_ERROR(factory->ort_api.GetEpApi()->CreateEpDevice(
+          factory, &device, nullptr, {}, &ep_devices[num_ep_devices++]));
       }
     }
 
