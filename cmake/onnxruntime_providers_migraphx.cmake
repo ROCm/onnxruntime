@@ -4,7 +4,7 @@
   add_definitions(-DUSE_MIGRAPHX=1)
   include_directories(${protobuf_SOURCE_DIR} ${eigen_SOURCE_DIR} ${onnx_SOURCE_DIR})
   set(OLD_CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
-  if (CMAKE_COMPILER_IS_GNUCC)
+  if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_ID STREQUAL "GNU")
     set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -Wno-unused-parameter -Wno-missing-field-initializers")
   endif()
 
@@ -83,7 +83,7 @@
             DESTINATION ${CMAKE_INSTALL_BINDIR})
     get_property(_amdhip64_location TARGET hip::amdhip64 PROPERTY IMPORTED_LOCATION_RELEASE)
     cmake_path(GET _amdhip64_location PARENT_PATH _hipsdk_path)
-    foreach(file amd_comgr0602.dll amd_comgr0604.dll amd_comgr0700.dll hiprtc0602.dll hiprtc0604.dll hiprtc0700.dll hiprtc-builtins0602.dll hiprtc-builtins0604.dll hiprtc-builtins0700.dll)
+    foreach(file amd_comgr0604.dll amd_comgr0700.dll amd_comgr0701.dll amdhip64_6.dll amdhip64_7.dll hiprtc0604.dll hiprtc0700.dll hiprtc0701.dll hiprtc-builtins0604.dll hiprtc-builtins0700.dll hiprtc-builtins0701.dll)
       set(_source "${_hipsdk_path}/${file}")
       if(EXISTS "${_source}")
         add_custom_command(TARGET onnxruntime_providers_migraphx
