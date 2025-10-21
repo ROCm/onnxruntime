@@ -134,6 +134,11 @@ inline bool canEvalNodeArgument(const GraphViewer& graph,
       continue;
     }
 
+    const auto& optype = node->OpType();
+    if (optype == "Pad" && input_name == "" && index == 2) {
+      continue;
+    }
+
     // Input cannot be constant folded
     if (IsGraphInput(graph, input_name)) {
       return false;
