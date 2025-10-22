@@ -268,6 +268,7 @@ static bool IsTypeSupported(const NodeArg* node_arg) {
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT16:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_BFLOAT16:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT:
+    case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT4E2M1:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT8E4M3FN:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT8E4M3FNUZ:
     case ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_FLOAT8E5M2:
@@ -317,6 +318,9 @@ static bool getMIGraphXType(ONNXTensorElementDataType type,
       break;
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E5M2FNUZ:
       mgx_type = migraphx_shape_fp8e5m2fnuz_type;
+      break;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT4E2M1:
+      mgx_type = migraphx_shape_fp4x2_type;
       break;
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT4:
       mgx_type = migraphx_shape_int8_type;
@@ -694,7 +698,7 @@ static bool IsNodeSupported(const std::set<std::string>& op_set,
   return true;
 }
 
-std::unique_ptr<IndexedSubGraph> MIGraphXExecutionProvider::GetSubGraph(const std::vector<std::size_t>& graph_nodes_index, const GraphViewer& graph) const {
+std::unique_ptr<IndexedSubGraph> MIGraphXExecutionProvider::GetSubGraph(const std::vector<std::size_t>& graph_nodes_index, const GraphViewer& graph, bool is_graph_split) const {
   std::unordered_set<size_t> node_set;
   node_set.reserve(graph_nodes_index.size());
   for (const auto& index : graph_nodes_index) {
@@ -808,7 +812,13 @@ std::unique_ptr<IndexedSubGraph> MIGraphXExecutionProvider::GetSubGraph(const st
     if (output.second->Exists()) {
       auto name = output.second->Name();
       if (std::find(graph_output_names.begin(), graph_output_names.end(), name) == graph_output_names.end()) {
+          // if graph is split we dont know if output is used so we need this, otherwise if the graph isn't split
+          // then we can safely assume this output is a dangling output from a node and to discard it as part of the
+          // final graph output
+          if(is_graph_split)
+          {
         output_names.push_back(name);
+          }
       } else {
         graph_out_names.insert(name);
       }
@@ -1085,11 +1095,12 @@ MIGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
   // Example weights, reshape shape etc.
   std::unordered_set<std::string> mgx_required_initializers;
   const auto unsupported_nodes = GetUnsupportedNodeIndices(graph_viewer, mgx_required_initializers, *GetLogger());
+  bool is_graph_not_split = unsupported_nodes.empty();
 
   // If all ops are supported, no partitioning is required. Short-circuit and avoid splitting.
-  if (unsupported_nodes.empty()) {
+  if (is_graph_not_split) {
     auto node_indices = graph_viewer.GetNodesInTopologicalOrder();
-    auto sub_graph = GetSubGraph(node_indices, graph_viewer);
+    auto sub_graph = GetSubGraph(node_indices, graph_viewer, !is_graph_not_split);
     result.push_back(ComputeCapability::Create(std::move(sub_graph)));
   } else {  // unsupported_nodes_idx.empty()
     if (dump_model_ops_) {
@@ -1110,7 +1121,7 @@ MIGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
     SubgraphPostProcessing(graph_viewer, mgx_clusters, *GetLogger());
 
     for (const auto& this_cluster : mgx_clusters) {
-      auto sub_graph = GetSubGraph(this_cluster, graph_viewer);
+      auto sub_graph = GetSubGraph(this_cluster, graph_viewer, !is_graph_not_split);
       result.push_back(ComputeCapability::Create(std::move(sub_graph)));
     }
   }
@@ -1359,7 +1370,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       }
 
       auto prog_output_shapes = prog.get_output_shapes();
-      for (std::size_t i = 0; i < output_names.size(); ++i) {
+      for (std::size_t i = 0; i < prog_output_shapes.size(); ++i) {
         auto out_len = prog_output_shapes[i].lengths();
         options.set_input_parameter_shape(output_names[i], out_len);
       }
