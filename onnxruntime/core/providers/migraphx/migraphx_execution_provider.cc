@@ -472,14 +472,6 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
       return true;
     }
 
-    // input value only applied to constant mode
-    if (mode == "constant") {
-      if (args.size() == 3) {
-        if (!canEvalNodeArgument(graph_viewer, node, {2}, input_nodes)) {
-          return true;
-        }
-      }
-    }
   } else if (optype == "Range") {
     auto arg_num = node->InputDefs().size();
     std::vector<std::size_t> vec(arg_num);
