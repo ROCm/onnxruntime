@@ -461,13 +461,13 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
     }
 
     const auto& attributes = node->GetAttributes();
-    // Pad only support reflect and constant mode currently
+    // Pad only support reflect, constant and edge mode currently
     auto mode_attr = attributes.find("mode");
     std::string mode = "constant";
     if (mode_attr != attributes.end()) {
       mode = (*mode_attr).second.s();
     }
-    static const std::set<std::string> allowed_modes = {"constant", "reflect"};
+    static const std::set<std::string> allowed_modes = {"constant", "reflect", "edge"};
     if (allowed_modes.count(mode) == 0) {
       return true;
     }
