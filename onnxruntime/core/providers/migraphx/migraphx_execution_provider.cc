@@ -125,7 +125,7 @@ static std::string_view GetArenaExtendStrategyName(ArenaExtendStrategy strategy)
   const auto value##env{GetEnvironmentVar(variable)};              \
   if (!value##env.empty()) {                                       \
     __VA_ARGS__;                                                   \
-    LOGS_DEFAULT(INFO) << "\n " << variable << ": " << value##env; \
+    LOGS_DEFAULT(VERBOSE) << "\n " << variable << ": " << value##env; \
   }
 
 #define GET_ENV_BOOL(variable, value) \
@@ -160,7 +160,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
 
   // Overwrite initialized values with values from environment variables.
 
-  LOGS_DEFAULT(WARNING) << "[MIGraphX EP] MIGraphX ENV Override Variables Set:";
+  LOGS_DEFAULT(VERBOSE) << "MIGraphX ENV Override Variables Set:";
   GET_ENV_BOOL(migraphx_env_vars::kFP16Enable, fp16_enable_);
 #if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && (HIP_VERSION_MINOR > 4 || (HIP_VERSION_MINOR == 4 && HIP_VERSION_PATCH >= 2)))
   GET_ENV_BOOL(migraphx_env_vars::kBF16Enable, bf16_enable_);
@@ -186,7 +186,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   if (bf16_enable_ && fp16_enable_) {
     bf16_enable_ = false;
     fp16_enable_ = false;
-    LOGS_DEFAULT(FATAL) << "MIGraphX: BF16 and FP16 Quantization Mutually exclusive. Ignoring both Quantization flags";
+    LOGS_DEFAULT(ERROR) << "MIGraphX: BF16 and FP16 Quantization Mutually exclusive. Ignoring both Quantization flags";
   }
 
 #if HIP_VERSION_MAJOR < 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR < 4)
@@ -195,7 +195,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
 #endif
 
   if (int8_enable_ && fp8_enable_) {
-    LOGS_DEFAULT(FATAL) << "MIGraphX: FP8 and INT8 Quantization Mutually exclusive. Ignoring both Quantization flags";
+    LOGS_DEFAULT(ERROR) << "MIGraphX: FP8 and INT8 Quantization Mutually exclusive. Ignoring both Quantization flags";
   }
 
   if (int8_enable_ ^ fp8_enable_) {
@@ -219,7 +219,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   }
 
   // Print configured options for the session.
-  LOGS_DEFAULT(VERBOSE) << "[MIGraphX EP] MIGraphX provider Session Options:"
+  LOGS_DEFAULT(VERBOSE) << "MIGraphX execution provider options:"
                         << "\n " << migraphx_provider_option::kDeviceId << ": " << info.device_id
                         << "\n " << migraphx_provider_option::kFp16Enable << ": " << fp16_enable_
                         << "\n " << migraphx_provider_option::kBf16Enable << ": " << bf16_enable_
@@ -351,7 +351,7 @@ static bool getMIGraphXType(ONNXTensorElementDataType type,
       mgx_type = migraphx_shape_bool_type;
       break;
     default:
-      LOGS_DEFAULT(WARNING) << "MiGraphx: unsupported data type " << type
+      LOGS_DEFAULT(WARNING) << "unsupported data type " << type
                             << ", fallback to CPU implementation";
       return false;
   }
@@ -1100,11 +1100,11 @@ MIGraphXExecutionProvider::GetCapability(const GraphViewer& graph_viewer,
     result.push_back(ComputeCapability::Create(std::move(sub_graph)));
   } else {  // unsupported_nodes_idx.empty()
     if (dump_model_ops_) {
-      LOGS_DEFAULT(INFO) << "============= Unsupported nodes ====================";
+      LOGS_DEFAULT(VERBOSE) << "============= Unsupported nodes ====================";
       for (auto idx : unsupported_nodes) {
-        LOGS_DEFAULT(INFO) << graph_viewer.GetNode(idx)->OpType();
+        LOGS_DEFAULT(VERBOSE) << graph_viewer.GetNode(idx)->OpType();
       }
-      LOGS_DEFAULT(INFO) << "************* Unsupported nodes ********************";
+      LOGS_DEFAULT(VERBOSE) << "************* Unsupported nodes ********************";
     }
 
     if (unsupported_nodes.size() > 10) {
@@ -1207,7 +1207,7 @@ void calibrate_and_quantize(migraphx::program& prog,
                             std::unordered_map<std::string, float>& dynamic_range_map) {
   // Read in the calibration data and map it to an migraphx paramater map for the calibration ops
   if ((int8_enable ^ fp8_enable) && int8_calibration_cache_available) {
-    LOGS_DEFAULT(WARNING) << "Quantizing input program";
+    LOGS_DEFAULT(VERBOSE) << "Quantizing input program";
 
     auto param_shapes = prog.get_parameter_shapes();
 
@@ -1219,36 +1219,36 @@ void calibrate_and_quantize(migraphx::program& prog,
 
     // perform static quantization on the programs
     if (int8_enable) {
-      LOGS_DEFAULT(WARNING) << "Quantizing input program to int8";
+      LOGS_DEFAULT(VERBOSE) << "Quantizing input program to int8";
       migraphx::quantize_int8_options quant_opts;
       quant_opts.add_calibration_data(quant_params);
       // specify thing we want to int8 quantize
       quant_opts.add_op_name("convolution");
       quant_opts.add_op_name("dot");
       migraphx::quantize_int8(prog, t, quant_opts);
-      LOGS_DEFAULT(WARNING) << "Quantizing int8: Complete";
+      LOGS_DEFAULT(VERBOSE) << "Quantizing int8: Complete";
     } else if (fp8_enable) {
 #if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR >= 4)
-      LOGS_DEFAULT(WARNING) << "Quantizing input program to fp8";
+      LOGS_DEFAULT(VERBOSE) << "Quantizing input program to fp8";
       migraphx::quantize_fp8_options quant_opts;
       quant_opts.add_calibration_data(quant_params);
       migraphx::quantize_fp8(prog, t, quant_opts);
-      LOGS_DEFAULT(WARNING) << "Quantizing fp8: Complete";
+      LOGS_DEFAULT(VERBOSE) << "Quantizing fp8: Complete";
 #endif
     }
   }
 
   if (fp16_enable) {
-    LOGS_DEFAULT(WARNING) << "Quantizing input program to fp16";
+    LOGS_DEFAULT(VERBOSE) << "Quantizing input program to fp16";
     migraphx::quantize_fp16(prog);
-    LOGS_DEFAULT(WARNING) << "Quantizing fp16: Complete";
+    LOGS_DEFAULT(VERBOSE) << "Quantizing fp16: Complete";
   }
 
 #if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR >= 4 && HIP_VERSION_PATCH >= 2)
   if (bf16_enable) {
-    LOGS_DEFAULT(WARNING) << "Quantizing input program to bf16";
+    LOGS_DEFAULT(VERBOSE) << "Quantizing input program to bf16";
     migraphx::quantize_bf16(prog);
-    LOGS_DEFAULT(WARNING) << "Quantizing bf16: Complete";
+    LOGS_DEFAULT(VERBOSE) << "Quantizing bf16: Complete";
   }
 #endif
 }
@@ -1256,12 +1256,12 @@ void calibrate_and_quantize(migraphx::program& prog,
 void compile_program(migraphx::program& prog,
                      const migraphx::target& t,
                      bool exhaustive_tune) {
-  LOGS_DEFAULT(WARNING) << "Model Compile: Begin";
+  LOGS_DEFAULT(VERBOSE) << "Model Compile: Begin";
   migraphx::compile_options co;
   co.set_fast_math(false);
   co.set_exhaustive_tune_flag(exhaustive_tune);
   prog.compile(t, co);
-  LOGS_DEFAULT(WARNING) << "Model Compile: Complete";
+  LOGS_DEFAULT(VERBOSE) << "Model Compile: Complete";
 }
 
 std::string to_hex(const uint64_t v) {
