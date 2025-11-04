@@ -1181,6 +1181,19 @@ MIGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
   // Example weights, reshape shape etc.
   std::unordered_set<std::string> mgx_required_initializers;
   const auto unsupported_nodes = GetUnsupportedNodeIndices(graph_viewer, mgx_required_initializers, *GetLogger());
+
+  if (unsupported_nodes.size() > 0) {
+    LOGS_DEFAULT(WARNING) << "============= Unsupported nodes ====================";
+      for (auto idx : unsupported_nodes) {
+      LOGS_DEFAULT(WARNING) << graph_viewer.GetNode(idx)->OpType();
+      }
+    LOGS_DEFAULT(WARNING) << "************* Unsupported nodes ********************";
+    }
+
+    if (unsupported_nodes.size() > 10) {
+      return result;
+    }
+
   bool is_graph_not_split = unsupported_nodes.empty();
 
   // If all ops are supported, no partitioning is required. Short-circuit and avoid splitting.
@@ -1188,19 +1201,7 @@ MIGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
     auto node_indices = graph_viewer.GetNodesInTopologicalOrder();
     auto sub_graph = GetSubGraph(node_indices, graph_viewer, !is_graph_not_split);
     result.push_back(ComputeCapability::Create(std::move(sub_graph)));
-  } else {  // unsupported_nodes_idx.empty()
-    if (dump_model_ops_) {
-      LOGS_DEFAULT(INFO) << "============= Unsupported nodes ====================";
-      for (auto idx : unsupported_nodes) {
-        LOGS_DEFAULT(INFO) << graph_viewer.GetNode(idx)->OpType();
-      }
-      LOGS_DEFAULT(INFO) << "************* Unsupported nodes ********************";
-    }
-
-    if (unsupported_nodes.size() > 10) {
-      return result;
-    }
-
+  } else {
     auto mgx_clusters = GetPartitionedSubgraphs(graph_viewer.GetNodesInTopologicalOrder(), unsupported_nodes);
 
     // check whether a subgrap should fallback to CPU
