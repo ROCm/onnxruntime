@@ -1155,6 +1155,17 @@ GetPartitionedSubgraphs(const std::vector<NodeIndex>& topological_order,
   return mgx_subgraphx;
 }
 
+void MIGraphXExecutionProvider::dump_model_as_onnx(const std::string& onnx_buffer,
+                                                   const std::string& model_name) const
+{
+  // dump onnx file if environment var is set
+  if (dump_model_ops_) {
+    std::ofstream ofs(model_name);
+    ofs.write(onnx_buffer.c_str(), onnx_buffer.size());
+    ofs.close();
+  }
+}
+
 std::vector<std::unique_ptr<ComputeCapability>>
 MIGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_viewer,
                                          const IKernelLookup& /*kernel_lookup*/,
@@ -1169,13 +1180,7 @@ MIGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
   model_proto->SerializeToString(onnx_string_buffer);
   model_path_ = graph_viewer.ModelPath();
 
-  // dump onnx file if environment var is set
-  if (dump_model_ops_) {
-    std::string model_name = graph_viewer.Name() + ".onnx";
-    std::ofstream ofs(model_name);
-    ofs.write(onnx_string_buffer.c_str(), onnx_string_buffer.size());
-    ofs.close();
-  }
+  dump_model_as_onnx(onnx_string_buffer, graph_viewer.Name() + ".onnx");
 
   // This is a list of initializers that migraphx considers as constants.
   // Example weights, reshape shape etc.
@@ -1425,12 +1430,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     std::string onnx_string_buffer;
     model_proto->SerializeToString(onnx_string_buffer);
 
-    if (dump_model_ops_) {
-      std::string onnx_name = fused_node.Name() + ".onnx";
-      std::ofstream ofs(onnx_name);
-      ofs.write(onnx_string_buffer.data(), onnx_string_buffer.size());
-      ofs.close();
-    }
+    dump_model_as_onnx(onnx_string_buffer, std::string{fused_node.Name() + ".onnx"});
 
     std::vector<std::string> input_names, output_names;
     no_input_shape = no_input_shape || get_input_output_names(graph_body_viewer, input_names, output_names);
