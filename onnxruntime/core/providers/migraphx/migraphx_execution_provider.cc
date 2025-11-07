@@ -744,7 +744,6 @@ std::unique_ptr<IndexedSubGraph> MIGraphXExecutionProvider::GetSubGraph(const st
     // be also added to the subgraph's output list
     if (node->GetOutputEdgesCount() > node->OutputDefs().size()) {
       for (auto it = node->OutputEdgesBegin(), end = node->OutputEdgesEnd(); it != end; ++it) {
-
         const auto& target_node = it->GetNode();
         const auto& target_op_type = target_node.OpType();
 
@@ -753,7 +752,7 @@ std::unique_ptr<IndexedSubGraph> MIGraphXExecutionProvider::GetSubGraph(const st
           if (src_output_idx < node->OutputDefs().size()) {
             const auto* output_def = node->OutputDefs()[src_output_idx];
             if (output_def && fused_outputs.find(output_def) == fused_outputs.end() && erased.find(output_def) == erased.end()) {
-                    fused_outputs_to_add[output_def] = output_order++;
+              fused_outputs_to_add[output_def] = output_order++;
             }
           }
           continue;
@@ -819,13 +818,12 @@ std::unique_ptr<IndexedSubGraph> MIGraphXExecutionProvider::GetSubGraph(const st
     if (output.second->Exists()) {
       auto name = output.second->Name();
       if (std::find(graph_output_names.begin(), graph_output_names.end(), name) == graph_output_names.end()) {
-          // if graph is split we dont know if output is used so we need this, otherwise if the graph isn't split
-          // then we can safely assume this output is a dangling output from a node and to discard it as part of the
-          // final graph output
-          if(is_graph_split)
-          {
-        output_names.push_back(name);
-          }
+        // if graph is split we dont know if output is used so we need this, otherwise if the graph isn't split
+        // then we can safely assume this output is a dangling output from a node and to discard it as part of the
+        // final graph output
+        if (is_graph_split) {
+          output_names.push_back(name);
+        }
       } else {
         graph_out_names.insert(name);
       }
@@ -1078,8 +1076,7 @@ GetPartitionedSubgraphs(const std::vector<NodeIndex>& topological_order,
 }
 
 void MIGraphXExecutionProvider::dump_model_as_onnx(const std::string& onnx_buffer,
-                                                   const std::string& model_name) const
-{
+                                                   const std::string& model_name) const {
   // dump onnx file if environment var is set
   if (dump_model_ops_) {
     std::ofstream ofs(model_name, std::ios::binary);
@@ -1092,8 +1089,6 @@ void MIGraphXExecutionProvider::dump_model_as_onnx(const std::string& onnx_buffe
   }
 }
 
-
-
 std::vector<std::unique_ptr<ComputeCapability>>
 MIGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_viewer,
                                          const IKernelLookup& /*kernel_lookup*/,
@@ -1101,8 +1096,7 @@ MIGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
                                          IResourceAccountant* /* resource_accountant */) const {
   std::vector<std::unique_ptr<ComputeCapability>> result;
 
- if (graph_viewer.IsSubgraph())
- {
+  if (graph_viewer.IsSubgraph()) {
     const auto* parent_node = graph_viewer.ParentNode();
     if (parent_node) {
       const auto& parent_op_type = parent_node->OpType();
@@ -1129,15 +1123,15 @@ MIGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
 
   if (unsupported_nodes.size() > 0) {
     LOGS_DEFAULT(WARNING) << "============= Unsupported nodes ====================";
-      for (auto idx : unsupported_nodes) {
+    for (auto idx : unsupported_nodes) {
       LOGS_DEFAULT(WARNING) << graph_viewer.GetNode(idx)->OpType();
-      }
+    }
     LOGS_DEFAULT(WARNING) << "************* Unsupported nodes ********************";
-    }
+  }
 
-    if (unsupported_nodes.size() > 10) {
-      return result;
-    }
+  if (unsupported_nodes.size() > 10) {
+    return result;
+  }
 
   bool is_graph_not_split = unsupported_nodes.empty();
 
