@@ -874,7 +874,7 @@ GetUnsupportedNodeIndices(const GraphViewer& graph_viewer,
                           /*out*/ std::unordered_set<std::string>& mgx_required_initializers,
                           const logging::Logger& logger) {
 
-#if ((HIP_VERSION_MAJOR > 7) || (HIP_VERSION_MAJOR == 7 && HIP_VERSION_MINOR >= 2))
+#if (HIP_VERSION_MAJOR == 7 && HIP_VERSION_MINOR >= 2) || (HIP_VERSION_MAJOR > 7)
   // In ROCm 7.2 onward we'll query the MIGraphX API to get the supported op list
   static std::set<std::string> mgx_supported_ops{};
   auto list = migraphx::get_onnx_operators();
