@@ -1219,7 +1219,7 @@ void save_compiled_model(const migraphx::program& prog, const std::filesystem::p
     LOGS_DEFAULT(VERBOSE) << "Model Save at " << path.string() << ": Begin";
     migraphx::file_options fo;
     fo.set_file_format("msgpack");
-    save(prog, path.string().c_str(), fo);
+    migraphx::save(prog, path.string().c_str(), fo);
     LOGS_DEFAULT(VERBOSE) << "Model Save: Complete";
   }
 }
