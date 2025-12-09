@@ -1347,6 +1347,11 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         }
       }
       model_cache_file = model_cache_path_ / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
+      LOGS_DEFAULT(VERBOSE) << "File to load:" << model_cache_file;
+    }
+    else
+    {
+      LOGS_DEFAULT(VERBOSE) << "Model caching disabled";
     }
 
     // map parameter input name to index
@@ -1375,6 +1380,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
     if (!no_input_shape) {
       if (!load_precompiled_model(prog, model_cache_file)) {
+        LOGS_DEFAULT(VERBOSE) << "Failed to load:" << model_cache_file;
         LOGS_DEFAULT(VERBOSE) << "No input shapes detected quantizing model";
 #ifndef ENABLE_TRAINING_CORE
 #ifdef HAVE_MIGRAPHX_API_ONNX_OPTIONS_SET_EXTERNAL_DATA_PATH
@@ -1454,6 +1460,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
           cmp_options.set_input_parameter_shape(name, ort_lens);
           input_shape_match = false;
+          LOGS_DEFAULT(VERBOSE) << "Input shape match is false 1";
         }
       } else {
         LOGS_DEFAULT(VERBOSE) << "Assigning inputs, and parameters from compiled model";
@@ -1475,12 +1482,21 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
               auto mgx_strides = mgx_s.strides();
               if (mgx_lens.size() == 1 && mgx_lens[0] == 1 &&
                   mgx_strides.size() == 1 && mgx_strides[0] == 0) {
+                LOGS_DEFAULT(VERBOSE) << "Clearing migx lens";
                 mgx_lens.clear();
               }
 
               if (mgx_lens != ort_lens) {
+
+                for (auto & l : mgx_lens)
+                  LOGS_DEFAULT(VERBOSE) << "mgx_lens:" << l;
+
+                for (auto &l : ort_lens)
+                  LOGS_DEFAULT(VERBOSE) << " ort_lens:" << l;
+
                 cmp_options.set_input_parameter_shape(name, ort_lens);
                 input_shape_match = false;
+                LOGS_DEFAULT(VERBOSE) << "Input shape match is false 2";
               }
               input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
             }
@@ -1495,9 +1511,15 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         // empty cache path means the MXR caching is disabled - always compile
         if (!model_cache_path_.empty()) {
           model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
+          LOGS_DEFAULT(VERBOSE) << "Set to load:" << model_cache_file;
+        }
+        else
+        {
+          LOGS_DEFAULT(VERBOSE) << "Compute: model cache disabled";
         }
         if (!load_precompiled_model(prog, model_cache_file)) {
-          LOGS_DEFAULT(VERBOSE) << "Input shape mismatch detected. Recompiling";
+          LOGS_DEFAULT(VERBOSE) << "Compute: Failed to load:" << model_cache_file;
+          LOGS_DEFAULT(VERBOSE) << "Compute: Input shape mismatch detected. Recompiling";
 #ifndef ENABLE_TRAINING_CORE
 #ifdef HAVE_MIGRAPHX_API_ONNX_OPTIONS_SET_EXTERNAL_DATA_PATH
           cmp_options.set_external_data_path(model_path_.parent_path().string());
