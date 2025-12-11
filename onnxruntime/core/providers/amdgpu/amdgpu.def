@@ -1,0 +1,4 @@
+LIBRARY amdgpu
+EXPORTS
+    CreateEpFactories
+    ReleaseEpFactory

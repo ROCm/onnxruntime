@@ -58,7 +58,9 @@ function(add_op_reduction_include_dirs target)
   target_include_directories(${target} BEFORE PRIVATE ${op_reduction_include_dirs})
 endfunction()
 
-
+if(onnxruntime_USE_AMDGPU)
+  set(PROVIDERS_AMDGPU onnxruntime_providers_amdgpu)
+endif()
 if(onnxruntime_USE_VITISAI)
   set(PROVIDERS_VITISAI onnxruntime_providers_vitisai)
 endif()
@@ -112,12 +114,15 @@ if (onnxruntime_USE_AZURE)
   set(PROVIDERS_AZURE onnxruntime_providers_azure)
 endif()
 
-
 if(onnxruntime_USE_SNPE)
   include(onnxruntime_snpe_provider.cmake)
 endif()
 
 include(onnxruntime_providers_cpu.cmake)
+
+if(onnxruntime_USE_AMDGPU)
+  include(onnxruntime_providers_amdgpu.cmake)
+endif()
 if (onnxruntime_USE_CUDA)
   include(onnxruntime_providers_cuda.cmake)
 endif()

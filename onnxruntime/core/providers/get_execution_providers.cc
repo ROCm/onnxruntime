@@ -45,6 +45,14 @@ constexpr ProviderInfo kProvidersInPriorityOrder[] =
 #endif
         },
         {
+          kAMDGPUExecutionProvider,
+#ifdef USE_AMDGPU
+          true,
+#else
+          false,
+#endif
+        },
+        {
             kMIGraphXExecutionProvider,
 #ifdef USE_MIGRAPHX
             true,
