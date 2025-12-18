@@ -99,6 +99,12 @@ struct ProviderInfo_MIGraphX_Impl final : ProviderInfo_MIGraphX {
 struct MIGraphX_Provider final : Provider {
   void* GetInfo() override { return &g_info; }
 
+  MIGraphX_Provider() {
+#ifdef _WIN32
+    ::SetEnvironmentVariable("MIGRAPHX_MLIR_USE_SPECIFIC_OPS", "dot,convolution,fused,attention");
+#endif
+  }
+
   virtual ~MIGraphX_Provider() = default;
 
   std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory(int device_id) override {
