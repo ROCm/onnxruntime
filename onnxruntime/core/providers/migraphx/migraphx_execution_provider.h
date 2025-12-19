@@ -33,6 +33,7 @@ constexpr auto kCachePath = "ORT_MIGRAPHX_CACHE_PATH"sv;
 constexpr auto kINT8UseNativeMIGraphXCalibrationTable = "ORT_MIGRAPHX_INT8_USE_NATIVE_CALIBRATION_TABLE"sv;
 constexpr auto kExhaustiveTune = "ORT_MIGRAPHX_EXHAUSTIVE_TUNE"sv;
 constexpr auto kModelCachePath = "ORT_MIGRAPHX_MODEL_CACHE_PATH"sv;
+constexpr auto kModelMaxDynamicBatch = "ORT_MIGRAPHX_MAX_DYNAMIC_BATCH"sv;
 }  // namespace migraphx_env_vars
 
 // Information to construct kernel function state.
@@ -56,6 +57,7 @@ struct MIGraphXFuncState {
   std::filesystem::path model_cache_dir;
   bool dump_model_ops = false;
   bool exhaustive_tune = false;
+  size_t max_dynamic_batch;
 };
 
 // Logical device representation.
@@ -107,6 +109,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
         {std::string{migraphx_provider_option::kGpuExternalFree}, MakeStringWithClassicLocale(external_free_)},
         {std::string{migraphx_provider_option::kGpuExternalEmptyCache}, MakeStringWithClassicLocale(external_empty_cache_)},
         {std::string{migraphx_provider_option::kModelCacheDir}, MakeStringWithClassicLocale(model_cache_path_)}};
+        {std::string{migraphx_provider_option::kModelMaxDynamicBatch}, MakeStringWithClassicLocale(model_max_dynamic_batch_)}};
   }
 
  private:

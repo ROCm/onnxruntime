@@ -34,6 +34,7 @@ constexpr auto kGpuExternalAlloc = "migraphx_external_alloc"sv;
 constexpr auto kGpuExternalFree = "migraphx_external_free"sv;
 constexpr auto kGpuExternalEmptyCache = "migraphx_external_empty_cache"sv;
 constexpr auto kModelCacheDir = "migraphx_model_cache_dir"sv;
+constexpr auto kModelMaxDynamicBatch = "migraphx_max_dynamic_batch"sv;
 }  // namespace migraphx_provider_option
 
 extern const EnumNameMapping<ArenaExtendStrategy> arena_extend_strategy_mapping;
@@ -50,6 +51,7 @@ struct MIGraphXExecutionProviderInfo {
   bool int8_use_native_calibration_table{false};
   std::filesystem::path model_cache_dir{};
   bool exhaustive_tune{false};
+  sizt_t max_dynamic_batch{0};
 
   size_t mem_limit{std::numeric_limits<size_t>::max()};
   ArenaExtendStrategy arena_extend_strategy{ArenaExtendStrategy::kNextPowerOfTwo};
@@ -100,6 +102,7 @@ struct std::hash<::onnxruntime::MIGraphXExecutionProviderInfo> {
     onnxruntime::HashCombine(reinterpret_cast<size_t>(info.external_free), value);
     onnxruntime::HashCombine(reinterpret_cast<size_t>(info.external_empty_cache), value);
 
+    onnxruntime::HashCombine(info.max_dynamic_batch, value);
     // The default memory arena cfg is not used in hashing right now.
     return value;
   }
