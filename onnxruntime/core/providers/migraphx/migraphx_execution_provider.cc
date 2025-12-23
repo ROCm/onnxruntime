@@ -1346,6 +1346,11 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           input_shapes.push_back(tensor_shape->dim(j).dim_value());
         }
       }
+
+      if(input_shapes.empty())
+      {
+        LOGS_DEFAULT(WARNING) << "Input shapes are empty, skipping model caching";
+      }
       model_cache_file = model_cache_path_ / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
       LOGS_DEFAULT(VERBOSE) << "File to load:" << model_cache_file;
     }
