@@ -110,7 +110,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
         {std::string{migraphx_provider_option::kGpuExternalEmptyCache}, MakeStringWithClassicLocale(external_empty_cache_)},
         {std::string{migraphx_provider_option::kModelCacheDir}, MakeStringWithClassicLocale(model_cache_path_)}};
         {std::string{migraphx_provider_option::kModelMaxDynamicBatch}, MakeStringWithClassicLocale(model_max_dynamic_batch_)}};
-  }
+
 
  private:
   OrtDevice::DeviceId device_id_{0};
