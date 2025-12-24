@@ -145,6 +145,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   void* external_alloc_{nullptr};
   void* external_free_{nullptr};
   void* external_empty_cache_{nullptr};
+  bool first_start_ = true;
 };
 
 }  // namespace onnxruntime

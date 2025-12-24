@@ -1338,7 +1338,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     }
 
     // empty cache path means the MXR caching is disabled - always compile
-    if (!model_cache_path_.empty()) {
+    if (!model_cache_path_.empty() or first_start_) {
       std::vector<std::int64_t> input_shapes;
 
       // Use input_tensor directly, not session_input_names.size()
@@ -1365,9 +1365,10 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
       if(input_shapes.empty())
       {
-        LOGS_DEFAULT(WARNING) << "Input shapes are empty, skipping model caching";
+        LOGS_DEFAULT(ERROR) << "Input shapes are empty, skipping model caching";
       }
       model_cache_file = model_cache_path_ / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
+      first_start_ = false;
     }
 
     // map parameter input name to index
