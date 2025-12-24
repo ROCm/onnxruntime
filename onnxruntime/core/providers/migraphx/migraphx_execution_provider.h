@@ -108,9 +108,9 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
         {std::string{migraphx_provider_option::kGpuExternalAlloc}, MakeStringWithClassicLocale(external_alloc_)},
         {std::string{migraphx_provider_option::kGpuExternalFree}, MakeStringWithClassicLocale(external_free_)},
         {std::string{migraphx_provider_option::kGpuExternalEmptyCache}, MakeStringWithClassicLocale(external_empty_cache_)},
-        {std::string{migraphx_provider_option::kModelCacheDir}, MakeStringWithClassicLocale(model_cache_path_)}};
-        {std::string{migraphx_provider_option::kModelMaxDynamicBatch}, MakeStringWithClassicLocale(model_max_dynamic_batch_)}};
-
+        {std::string{migraphx_provider_option::kModelCacheDir}, MakeStringWithClassicLocale(model_cache_path_)},
+        {std::string{migraphx_provider_option::kModelMaxDynamicBatch}, MakeStringWithClassicLocale(max_dynamic_batch_)}};
+   }
 
  private:
   OrtDevice::DeviceId device_id_{0};
@@ -146,6 +146,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   void* external_free_{nullptr};
   void* external_empty_cache_{nullptr};
   bool first_start_ = true;
+  size_t max_dynamic_batch_{0};
 };
 
-}  // namespace onnxruntime
+}; // namespace onnxruntime
