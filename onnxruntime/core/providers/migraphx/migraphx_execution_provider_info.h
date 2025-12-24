@@ -51,12 +51,12 @@ struct MIGraphXExecutionProviderInfo {
   bool int8_use_native_calibration_table{false};
   std::filesystem::path model_cache_dir{};
   bool exhaustive_tune{false};
-  size_t max_dynamic_batch{0};
 
   size_t mem_limit{std::numeric_limits<size_t>::max()};
   ArenaExtendStrategy arena_extend_strategy{ArenaExtendStrategy::kNextPowerOfTwo};
 
   OrtArenaCfg* default_memory_arena_cfg{nullptr};
+  size_t max_dynamic_batch{static_cast<size_t>(0)};
 
   void* external_alloc{nullptr};
   void* external_free{nullptr};
