@@ -1352,6 +1352,13 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           break;
         }
 
+        // Log batch size (first dimension) for tracking
+        if (tensor_shape->dim_size() > 0 && tensor_shape->dim(0).has_dim_value()) {
+          auto batch_size = tensor_shape->dim(0).dim_value();
+          LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                                << ") batch size: " << batch_size;
+        }
+
         // Include ALL dimensions (including batch), or skip only if dim_value is 0
         for (int j = 0; j < tensor_shape->dim_size(); ++j) {
           if (tensor_shape->dim(j).has_dim_value()) {
@@ -1476,6 +1483,11 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
           cmp_options.set_input_parameter_shape(name, ort_lens);
           input_shape_match = false;
+
+          // Log batch size for tracking
+          if (!tensor_shape.empty()) {
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name << "' batch size: " << tensor_shape[0];
+          }
         }
       } else {
         LOGS_DEFAULT(VERBOSE) << "Assigning inputs, and parameters from compiled model";
@@ -1505,6 +1517,11 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
                 input_shape_match = false;
               }
               input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
+
+              // Log batch size for tracking
+              if (!tensor_shape.empty()) {
+                LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name << "' batch size: " << tensor_shape[0];
+              }
             }
           }
         }
@@ -1606,6 +1623,12 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
               auto output_tensor = ctx.GetOutput(output_index, ort_output_shape.data(), ort_output_shape.size());
               void* output_data = output_tensor.GetTensorMutableRawData();
 
+              // Log output batch size for tracking
+              if (!ort_output_shape.empty()) {
+                LOGS_DEFAULT(VERBOSE) << "[Compute] Output " << output_index << " ('" << name
+                                      << "') batch size: " << ort_output_shape[0];
+              }
+
               // argument shape
               auto mgx_arg_shape = param_shapes[name];
               m.add(name, migraphx::argument(mgx_arg_shape, output_data));
@@ -1634,6 +1657,12 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
             auto output_tensor = ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
             void* output_data = output_tensor.GetTensorMutableRawData();
+
+            // Log output batch size for tracking
+            if (!ort_shape.empty()) {
+              LOGS_DEFAULT(VERBOSE) << "[Compute] Output " << i << " batch size: " << ort_shape[0];
+            }
+
             HIP_CALL_THROW(hipMemcpyWithStream(output_data,
                                                gpu_res.data(),
                                                res_shape.bytes(),
