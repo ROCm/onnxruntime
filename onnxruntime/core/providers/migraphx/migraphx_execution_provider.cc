@@ -1340,16 +1340,10 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     // empty cache path means the MXR caching is disabled - always compile
     if (!model_cache_path_.empty() or first_start_) {
       std::vector<std::int64_t> input_shapes;
-
-      // Use input_tensor directly, not session_input_names.size()
-      for (std::size_t i = 0; i < input_tensor.size(); ++i) {
+      for (std::size_t i = 0; i < session_input_names.size(); ++i) {
         auto tensor_shape = input_tensor[i]->Shape();
-
-        // Check if shape is valid
-        if (tensor_shape == nullptr || tensor_shape->dim_size() == 0) {
-          LOGS_DEFAULT(WARNING) << "Input " << i << " has no shape information";
-          input_shapes.clear();
-          break;
+        for (int j = 1; j < tensor_shape->dim_size(); ++j) {
+          input_shapes.push_back(tensor_shape->dim(j).dim_value());
         }
 
         // Log batch size (first dimension) for tracking
@@ -1358,21 +1352,6 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
                                 << ") batch size: " << batch_size;
         }
-
-        // Include ALL dimensions (including batch), or skip only if dim_value is 0
-        for (int j = 0; j < tensor_shape->dim_size(); ++j) {
-          if (tensor_shape->dim(j).has_dim_value()) {
-            auto dim_val = tensor_shape->dim(j).dim_value();
-            if (dim_val > 0) {  // Only add valid dimensions
-              input_shapes.push_back(dim_val);
-            }
-          }
-        }
-      }
-
-      if(input_shapes.empty())
-      {
-        LOGS_DEFAULT(ERROR) << "Input shapes are empty, skipping model caching";
       }
       model_cache_file = model_cache_path_ / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
       first_start_ = false;
