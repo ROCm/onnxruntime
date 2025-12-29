@@ -1340,20 +1340,69 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     // empty cache path means the MXR caching is disabled - always compile
     if (!model_cache_path_.empty() or first_start_) {
       std::vector<std::int64_t> input_shapes;
+      bool has_symbolic_dims = false;
+
       for (std::size_t i = 0; i < session_input_names.size(); ++i) {
         auto tensor_shape = input_tensor[i]->Shape();
+
+        // Check for symbolic dimensions and handle them
+        if (tensor_shape == nullptr || tensor_shape->dim_size() == 0) {
+          LOGS_DEFAULT(WARNING) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                                << ") has no shape information";
+          has_symbolic_dims = true;
+          continue;
+        }
+
+        // Process all dimensions (skip batch dimension at j=0, start at j=1)
         for (int j = 1; j < tensor_shape->dim_size(); ++j) {
-          input_shapes.push_back(tensor_shape->dim(j).dim_value());
+          const auto& dim = tensor_shape->dim(j);
+
+          // Handle symbolic dimensions
+          if (dim.has_dim_param()) {
+            LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                                  << ") dimension " << j << " is symbolic: " << dim.dim_param();
+            has_symbolic_dims = true;
+            // Use -1 as placeholder for symbolic dimensions in hash calculation
+            input_shapes.push_back(-1);
+          } else if (dim.has_dim_value()) {
+            auto dim_val = dim.dim_value();
+            input_shapes.push_back(dim_val);
+            LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                                  << ") dimension " << j << " value: " << dim_val;
+          } else {
+            LOGS_DEFAULT(WARNING) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                                  << ") dimension " << j << " has no value or param";
+            has_symbolic_dims = true;
+          }
         }
 
         // Log batch size (first dimension) for tracking
-        if (tensor_shape->dim_size() > 0 && tensor_shape->dim(0).has_dim_value()) {
-          auto batch_size = tensor_shape->dim(0).dim_value();
-          LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                                << ") batch size: " << batch_size;
+        if (tensor_shape->dim_size() > 0) {
+          const auto& batch_dim = tensor_shape->dim(0);
+          if (batch_dim.has_dim_value()) {
+            auto batch_size = batch_dim.dim_value();
+            LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                                  << ") batch size: " << batch_size;
+          } else if (batch_dim.has_dim_param()) {
+            LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                                  << ") batch size is symbolic: " << batch_dim.dim_param();
+          } else {
+            LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                                  << ") batch size is unknown";
+          }
         }
       }
-      model_cache_file = model_cache_path_ / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
+
+      if (has_symbolic_dims) {
+        LOGS_DEFAULT(WARNING) << "[Compile] Model has symbolic dimensions, cache file may not be unique for all shapes";
+      }
+
+      if (!input_shapes.empty()) {
+        model_cache_file = model_cache_path_ / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
+      } else {
+        LOGS_DEFAULT(WARNING) << "[Compile] Input shapes are empty, skipping model cache file hash generation";
+      }
+
       first_start_ = false;
     }
 
@@ -1463,9 +1512,18 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           cmp_options.set_input_parameter_shape(name, ort_lens);
           input_shape_match = false;
 
-          // Log batch size for tracking
+          // Log batch size and full shape for tracking dynamic shapes
           if (!tensor_shape.empty()) {
             LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name << "' batch size: " << tensor_shape[0];
+
+            std::ostringstream shape_str;
+            shape_str << "[";
+            for (size_t i = 0; i < tensor_shape.size(); ++i) {
+              if (i > 0) shape_str << ", ";
+              shape_str << tensor_shape[i];
+            }
+            shape_str << "]";
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name << "' shape (dynamic): " << shape_str.str();
           }
         }
       } else {
@@ -1486,20 +1544,36 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
               auto mgx_s = param_shapes[name];
               auto mgx_lens = mgx_s.lengths();
               auto mgx_strides = mgx_s.strides();
+
+              // Handle scalar tensors (rank-0 tensors)
               if (mgx_lens.size() == 1 && mgx_lens[0] == 1 &&
                   mgx_strides.size() == 1 && mgx_strides[0] == 0) {
                 mgx_lens.clear();
               }
 
+              // Check if shapes match
               if (mgx_lens != ort_lens) {
+                LOGS_DEFAULT(VERBOSE) << "[Compute] Shape mismatch for input '" << name
+                                      << "': MIGraphX expects [" << mgx_lens.size() << " dims], "
+                                      << "got [" << ort_lens.size() << " dims]";
                 cmp_options.set_input_parameter_shape(name, ort_lens);
                 input_shape_match = false;
               }
               input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
 
-              // Log batch size for tracking
+              // Log batch size and full shape for tracking
               if (!tensor_shape.empty()) {
                 LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name << "' batch size: " << tensor_shape[0];
+
+                // Log full shape for debugging symbolic dimensions
+                std::ostringstream shape_str;
+                shape_str << "[";
+                for (size_t i = 0; i < tensor_shape.size(); ++i) {
+                  if (i > 0) shape_str << ", ";
+                  shape_str << tensor_shape[i];
+                }
+                shape_str << "]";
+                LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name << "' full shape: " << shape_str.str();
               }
             }
           }
@@ -1509,11 +1583,25 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       // input shapes are different, needs to re-parse onnx and
       // re-compile the program
       if (!input_shape_match) {
+        LOGS_DEFAULT(VERBOSE) << "[Compute] Input shape mismatch detected, initiating recompilation";
+
         std::filesystem::path model_cache_file;
         // empty cache path means the MXR caching is disabled - always compile
         if (!model_cache_path_.empty()) {
+          // Log the shapes being used for cache key generation
+          std::ostringstream shapes_str;
+          shapes_str << "[";
+          for (size_t i = 0; i < input_shapes.size(); ++i) {
+            if (i > 0) shapes_str << ", ";
+            shapes_str << input_shapes[i];
+          }
+          shapes_str << "]";
+          LOGS_DEFAULT(VERBOSE) << "[Compute] Cache key input shapes: " << shapes_str.str();
+
           model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
+          LOGS_DEFAULT(VERBOSE) << "[Compute] Looking for cached model at: " << model_cache_file.string();
         }
+
         if (!load_precompiled_model(prog, model_cache_file)) {
           LOGS_DEFAULT(VERBOSE) << "Input shape mismatch detected. Recompiling";
 #ifndef ENABLE_TRAINING_CORE
