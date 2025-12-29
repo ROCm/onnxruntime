@@ -1341,6 +1341,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     if (!model_cache_path_.empty() or first_start_) {
       std::vector<std::int64_t> input_shapes;
       bool has_symbolic_dims = false;
+      constexpr int64_t default_batch_size = 1;
 
       for (std::size_t i = 0; i < session_input_names.size(); ++i) {
         auto tensor_shape = input_tensor[i]->Shape();
@@ -1351,6 +1352,32 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
                                 << ") has no shape information";
           has_symbolic_dims = true;
           continue;
+        }
+
+        // Handle batch dimension (first dimension) specially
+        if (tensor_shape->dim_size() > 0) {
+          const auto& batch_dim = tensor_shape->dim(0);
+          int64_t batch_size_to_use = default_batch_size;
+
+          if (batch_dim.has_dim_value()) {
+            batch_size_to_use = batch_dim.dim_value();
+            LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                                  << ") batch size: " << batch_size_to_use;
+          } else if (batch_dim.has_dim_param()) {
+            // Symbolic batch dimension - default to 1
+            has_symbolic_dims = true;
+            LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                                  << ") batch size is symbolic: " << batch_dim.dim_param()
+                                  << ", defaulting to " << default_batch_size;
+          } else {
+            // Unknown batch dimension - default to 1
+            has_symbolic_dims = true;
+            LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                                  << ") batch size is unknown, defaulting to " << default_batch_size;
+          }
+
+          // Add batch size to input shapes for hash calculation
+          input_shapes.push_back(batch_size_to_use);
         }
 
         // Process all dimensions (skip batch dimension at j=0, start at j=1)
@@ -1375,26 +1402,12 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             has_symbolic_dims = true;
           }
         }
-
-        // Log batch size (first dimension) for tracking
-        if (tensor_shape->dim_size() > 0) {
-          const auto& batch_dim = tensor_shape->dim(0);
-          if (batch_dim.has_dim_value()) {
-            auto batch_size = batch_dim.dim_value();
-            LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                                  << ") batch size: " << batch_size;
-          } else if (batch_dim.has_dim_param()) {
-            LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                                  << ") batch size is symbolic: " << batch_dim.dim_param();
-          } else {
-            LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                                  << ") batch size is unknown";
-          }
-        }
       }
 
       if (has_symbolic_dims) {
-        LOGS_DEFAULT(WARNING) << "[Compile] Model has symbolic dimensions, cache file may not be unique for all shapes";
+        LOGS_DEFAULT(WARNING) << "[Compile] Model has symbolic dimensions, "
+                              << "dynamic batch dimensions defaulted to " << default_batch_size
+                              << " (will be overridden at runtime if needed)";
       }
 
       if (!input_shapes.empty()) {
@@ -1425,6 +1438,40 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
     std::vector<std::string> input_names, output_names;
     no_input_shape = no_input_shape || get_input_output_names(graph_body_viewer, input_names, output_names);
+
+    // Set default batch size for symbolic dimensions in onnx_options
+    constexpr std::size_t default_batch_size = 1;
+    if (no_input_shape) {
+      LOGS_DEFAULT(VERBOSE) << "[Compile] Setting default batch size of " << default_batch_size
+                            << " for inputs with symbolic dimensions";
+      for (std::size_t i = 0; i < input_names.size(); ++i) {
+        if (i < input_tensor.size()) {
+          auto tensor_shape = input_tensor[i]->Shape();
+          if (tensor_shape != nullptr && tensor_shape->dim_size() > 0) {
+            std::vector<std::size_t> default_shape;
+            bool has_symbolic = false;
+
+            for (int j = 0; j < tensor_shape->dim_size(); ++j) {
+              const auto& dim = tensor_shape->dim(j);
+              if (dim.has_dim_value()) {
+                default_shape.push_back(static_cast<std::size_t>(dim.dim_value()));
+              } else if (dim.has_dim_param() || !dim.has_dim_value()) {
+                // Symbolic or unknown dimension - use default batch size for dim 0, 1 for others
+                has_symbolic = true;
+                default_shape.push_back(j == 0 ? default_batch_size : 1);
+                LOGS_DEFAULT(VERBOSE) << "[Compile] Input '" << input_names[i]
+                                      << "' dimension " << j << " is symbolic, using default";
+              }
+            }
+
+            if (has_symbolic && !default_shape.empty()) {
+              options.set_input_parameter_shape(input_names[i], default_shape);
+              LOGS_DEFAULT(VERBOSE) << "[Compile] Set default shape for '" << input_names[i] << "'";
+            }
+          }
+        }
+      }
+    }
 
     // by parsing the model_proto, create a program corresponding to
     // the input fused_node
@@ -1501,7 +1548,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       std::vector<std::int64_t> input_shapes;
 
       if (no_input_shape) {
-        LOGS_DEFAULT(VERBOSE) << "Missing input shape setting input parameters again";
+        LOGS_DEFAULT(VERBOSE) << "[Compute] Missing input shape, overriding with runtime input shapes";
         for (auto& it : map_input_name_index) {
           auto& name = it.first;
           auto& index = it.second;
@@ -1509,12 +1556,15 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
           const auto tensor_shape = tensor_info.GetShape();
           std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
+
+          // Override default batch size with incoming batch size
           cmp_options.set_input_parameter_shape(name, ort_lens);
           input_shape_match = false;
 
           // Log batch size and full shape for tracking dynamic shapes
           if (!tensor_shape.empty()) {
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name << "' batch size: " << tensor_shape[0];
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name
+                                  << "' batch size (overriding default): " << tensor_shape[0];
 
             std::ostringstream shape_str;
             shape_str << "[";
@@ -1556,6 +1606,13 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
                 LOGS_DEFAULT(VERBOSE) << "[Compute] Shape mismatch for input '" << name
                                       << "': MIGraphX expects [" << mgx_lens.size() << " dims], "
                                       << "got [" << ort_lens.size() << " dims]";
+
+                // Check if it's specifically a batch size change
+                if (mgx_lens.size() == ort_lens.size() && mgx_lens.size() > 0 && mgx_lens[0] != ort_lens[0]) {
+                  LOGS_DEFAULT(VERBOSE) << "[Compute] Batch size changed from " << mgx_lens[0]
+                                        << " to " << ort_lens[0] << " for input '" << name << "'";
+                }
+
                 cmp_options.set_input_parameter_shape(name, ort_lens);
                 input_shape_match = false;
               }
