@@ -1479,7 +1479,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
     if (!no_input_shape) {
       if (!load_precompiled_model(prog, model_cache_file)) {
-        LOGS_DEFAULT(VERBOSE) << "No input shapes detected quantizing model";
+        LOGS_DEFAULT(VERBOSE) << "[Compile] Cache miss. Compiling model with batch size included in shapes";
+        LOGS_DEFAULT(VERBOSE) << "[Compile] Model cache file will be: " << model_cache_file.string();
 #ifndef ENABLE_TRAINING_CORE
 #ifdef HAVE_MIGRAPHX_API_ONNX_OPTIONS_SET_EXTERNAL_DATA_PATH
         options.set_external_data_path(model_path_.parent_path().string());
@@ -1491,7 +1492,12 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         calibrate_and_quantize(prog, t_, quant_params, fp16_enable_, bf16_enable_, int8_enable_,
                                fp8_enable_, int8_calibration_cache_available_, dynamic_range_map_);
         compile_program(prog, t_, exhaustive_tune_);
+
+        LOGS_DEFAULT(VERBOSE) << "[Compile] Saving compiled model to cache: " << model_cache_file.string();
         save_compiled_model(prog, model_cache_file);
+        LOGS_DEFAULT(VERBOSE) << "[Compile] Model saved successfully with batch-aware filename";
+      } else {
+        LOGS_DEFAULT(VERBOSE) << "[Compile] Cache hit! Loaded precompiled model from: " << model_cache_file.string();
       }
 
       auto prog_output_shapes = prog.get_output_shapes();
@@ -1499,6 +1505,9 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         auto out_len = prog_output_shapes[i].lengths();
         options.set_input_parameter_shape(output_names[i], out_len);
       }
+    } else {
+      LOGS_DEFAULT(VERBOSE) << "[Compile] Deferring compilation until runtime (no static input shapes available)";
+      LOGS_DEFAULT(VERBOSE) << "[Compile] Will use default batch size of 1, then recompile with actual batch at runtime";
     }
 
     // compile the program
@@ -1561,6 +1570,9 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           cmp_options.set_input_parameter_shape(name, ort_lens);
           input_shape_match = false;
 
+          // Collect all shape dimensions including updated batch size for cache key
+          input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
+
           // Log batch size and full shape for tracking dynamic shapes
           if (!tensor_shape.empty()) {
             LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name
@@ -1576,6 +1588,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name << "' shape (dynamic): " << shape_str.str();
           }
         }
+        LOGS_DEFAULT(VERBOSE) << "[Compute] All runtime shapes collected for cache key generation";
       } else {
         LOGS_DEFAULT(VERBOSE) << "Assigning inputs, and parameters from compiled model";
         param_shapes = prog.get_parameter_shapes();
@@ -1645,6 +1658,19 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         std::filesystem::path model_cache_file;
         // empty cache path means the MXR caching is disabled - always compile
         if (!model_cache_path_.empty()) {
+          // Ensure input_shapes has all updated dimensions including new batch sizes
+          if (input_shapes.empty()) {
+            LOGS_DEFAULT(WARNING) << "[Compute] Input shapes vector is empty, rebuilding from current inputs";
+            for (auto&& name : param_shapes.names()) {
+              if (map_input_name_index.count(name) > 0) {
+                auto input_tensor = ctx.GetInput(map_input_name_index[name]);
+                auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+                const auto tensor_shape = tensor_info.GetShape();
+                input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
+              }
+            }
+          }
+
           // Log the shapes being used for cache key generation
           std::ostringstream shapes_str;
           shapes_str << "[";
@@ -1653,14 +1679,15 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             shapes_str << input_shapes[i];
           }
           shapes_str << "]";
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Cache key input shapes: " << shapes_str.str();
+          LOGS_DEFAULT(VERBOSE) << "[Compute] Cache key input shapes (including updated batch): " << shapes_str.str();
 
-          model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Looking for cached model at: " << model_cache_file.string();
+          auto cache_hash = make_hash(input_shapes);
+          model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + cache_hash + ".mxr");
+          LOGS_DEFAULT(VERBOSE) << "[Compute] Cache file with batch-aware hash: " << model_cache_file.string();
         }
 
         if (!load_precompiled_model(prog, model_cache_file)) {
-          LOGS_DEFAULT(VERBOSE) << "Input shape mismatch detected. Recompiling";
+          LOGS_DEFAULT(VERBOSE) << "[Compute] Cache miss. Compiling model with updated batch size";
 #ifndef ENABLE_TRAINING_CORE
 #ifdef HAVE_MIGRAPHX_API_ONNX_OPTIONS_SET_EXTERNAL_DATA_PATH
           cmp_options.set_external_data_path(model_path_.parent_path().string());
@@ -1693,7 +1720,13 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           calibrate_and_quantize(prog, t, quant_params, fp16_enable, bf16_enable, int8_enable,
                                  fp8_enable, int8_calibration_cache_available, map_dynamic_range);
           compile_program(prog, t, exhaustive_tune_);
+
+          // Save compiled model with batch-aware filename
+          LOGS_DEFAULT(VERBOSE) << "[Compute] Saving compiled model with updated batch size to: "
+                                << model_cache_file.string();
           save_compiled_model(prog, model_cache_file);
+        } else {
+          LOGS_DEFAULT(VERBOSE) << "[Compute] Cache hit! Loaded precompiled model with matching batch size";
         }
 
         mgx_state->prog = prog;
