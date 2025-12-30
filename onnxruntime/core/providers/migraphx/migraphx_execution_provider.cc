@@ -1513,11 +1513,23 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         LOGS_DEFAULT(VERBOSE) << "[Compile] Cache hit! Loaded precompiled model from: " << model_cache_file.string();
       }
 
+      // Log output shapes to verify they match the input batch size
       auto prog_output_shapes = prog.get_output_shapes();
+      LOGS_DEFAULT(VERBOSE) << "[Compile] Compiled model has " << prog_output_shapes.size() << " outputs:";
       for (std::size_t i = 0; i < prog_output_shapes.size(); ++i) {
-        auto out_len = prog_output_shapes[i].lengths();
-        options.set_input_parameter_shape(output_names[i], out_len);
+        auto out_lens = prog_output_shapes[i].lengths();
+        std::ostringstream ss;
+        ss << "[";
+        for (size_t j = 0; j < out_lens.size(); ++j) {
+          if (j > 0) ss << ", ";
+          ss << out_lens[j];
+        }
+        ss << "]";
+        LOGS_DEFAULT(VERBOSE) << "[Compile] Output " << i << " shape: " << ss.str()
+                              << (out_lens.size() > 0 ? " (batch=" + std::to_string(out_lens[0]) + ")" : "");
       }
+      // NOTE: DO NOT set output shapes as input parameters!
+      // Outputs are dynamically inferred by MIGraphX based on input shapes
     } else {
       LOGS_DEFAULT(VERBOSE) << "[Compile] Deferring compilation until runtime (no static input shapes available)";
       LOGS_DEFAULT(VERBOSE) << "[Compile] Will use default batch size of 1, then recompile with actual batch at runtime";
@@ -1814,6 +1826,21 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       migraphx::program_parameters m;
       auto prog_output_shapes = prog.get_output_shapes();
       std::vector<std::size_t> prog_output_indices;
+
+      // Log the output shapes from the compiled program to verify they match input batch
+      LOGS_DEFAULT(VERBOSE) << "[Compute] Program has " << prog_output_shapes.size() << " outputs:";
+      for (std::size_t i = 0; i < prog_output_shapes.size(); ++i) {
+        auto out_lens = prog_output_shapes[i].lengths();
+        std::ostringstream ss;
+        ss << "[";
+        for (size_t j = 0; j < out_lens.size(); ++j) {
+          if (j > 0) ss << ", ";
+          ss << out_lens[j];
+        }
+        ss << "]";
+        LOGS_DEFAULT(VERBOSE) << "[Compute] Program output " << i << " shape: " << ss.str();
+      }
+
       if (param_shapes.size() > 0) {
         for (auto&& name : param_shapes.names()) {
           if (map_input_name_index.count(name) > 0) {
@@ -1860,7 +1887,16 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
               // Log output batch size for tracking
               if (!ort_output_shape.empty()) {
                 LOGS_DEFAULT(VERBOSE) << "[Compute] Output " << output_index << " ('" << name
-                                      << "') batch size: " << ort_output_shape[0];
+                                      << "') allocated with shape: ["
+                                      << [&]() {
+                                          std::ostringstream ss;
+                                          for (size_t j = 0; j < ort_output_shape.size(); ++j) {
+                                            if (j > 0) ss << ", ";
+                                            ss << ort_output_shape[j];
+                                          }
+                                          return ss.str();
+                                        }() << "]";
+                LOGS_DEFAULT(VERBOSE) << "[Compute] Output " << output_index << " batch size: " << ort_output_shape[0];
               }
 
               // argument shape
@@ -1877,7 +1913,24 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
         void* rocm_stream;
         Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream));
+        LOGS_DEFAULT(VERBOSE) << "[Compute] Executing MIGraphX program...";
         auto prog_outputs = prog.run_async(m, static_cast<hipStream_t>(rocm_stream));
+        LOGS_DEFAULT(VERBOSE) << "[Compute] Execution complete, got " << prog_outputs.size() << " outputs";
+
+        // Verify actual output shapes match expectations
+        for (std::size_t i = 0; i < prog_outputs.size(); ++i) {
+          auto actual_shape = prog_outputs[i].get_shape();
+          auto actual_lens = actual_shape.lengths();
+          std::ostringstream ss;
+          ss << "[";
+          for (size_t j = 0; j < actual_lens.size(); ++j) {
+            if (j > 0) ss << ", ";
+            ss << actual_lens[j];
+          }
+          ss << "]";
+          LOGS_DEFAULT(VERBOSE) << "[Compute] Actual output " << i << " shape after execution: " << ss.str()
+                                << (actual_lens.size() > 0 ? " (batch=" + std::to_string(actual_lens[0]) + ")" : "");
+        }
 
         // In case of input parameters are reused as output parameter call hipMemcpy
         auto output_num = prog_outputs.size();
