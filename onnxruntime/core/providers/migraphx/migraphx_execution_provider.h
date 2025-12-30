@@ -58,6 +58,9 @@ struct MIGraphXFuncState {
   bool dump_model_ops = false;
   bool exhaustive_tune = false;
   size_t max_dynamic_batch;
+  std::map<size_t, migraphx::program>* batch_program_cache_ptr = nullptr;
+  std::mutex* batch_cache_mutex_ptr = nullptr;
+  std::string node_name;
 };
 
 // Logical device representation.
@@ -139,6 +142,12 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   std::unordered_map<std::string, std::string> map_onnx_string_;
   std::unordered_map<std::string, std::unordered_map<std::string, std::size_t>> map_input_index_;
   std::unordered_map<std::string, bool> map_no_input_shape_;
+
+  // Cache of compiled programs indexed by batch size for each node
+  // Key: node_name, Value: map of batch_size -> program
+  std::unordered_map<std::string, std::map<size_t, migraphx::program>> batch_program_cache_;
+  std::mutex batch_cache_mutex_;  // Protect batch_program_cache_
+  bool precompile_done_ = false;  // Track if we've done initial precompilation
 
   AllocatorPtr allocator_;
   std::unique_ptr<ModelMetadefIdGenerator> metadef_id_generator_;
