@@ -1701,7 +1701,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             map_no_input_shape_[context->node_name], fp16_enable_, bf16_enable_, fp8_enable_, int8_enable_,
             int8_calibration_cache_available_, dynamic_range_map_,
             model_cache_path_.string(), dump_model_ops_, exhaustive_tune_, max_dynamic_batch_,
-            &batch_program_cache_[context->node_name], &batch_cache_mutex_, std::string(context->node_name)};
+            &batch_program_cache_[context->node_name], &batch_cache_mutex_, std::string(context->node_name),
+            session_input_names};
       *state = p.release();
       return 0;
     };
@@ -1840,14 +1841,47 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       if (!input_shape_match) {
         LOGS_DEFAULT(VERBOSE) << "[Compute] Input shape mismatch detected";
 
-        // Extract batch size from first input
+        // Extract batch size from first ACTUAL runtime input (not constants/weights)
+        // We need to find an input that varies with batch size
         size_t requested_batch = 0;
-        if (!map_input_name_index.empty()) {
-          auto first_input = ctx.GetInput(map_input_name_index.begin()->second);
-          auto tensor_info = first_input.GetTensorTypeAndShapeInfo();
+        bool found_batch_input = false;
+
+        // First, try to get batch from actual model inputs (session-level inputs)
+        for (auto& it : map_input_name_index) {
+          auto& name = it.first;
+          auto& index = it.second;
+
+          // Skip if this looks like a weight/constant (session_input_names contains only real inputs)
+          if (mgx_state->session_input_names.count(name) == 0) {
+            continue;  // This is likely a constant/weight, skip it
+          }
+
+          auto input_tensor = ctx.GetInput(index);
+          auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
           const auto tensor_shape = tensor_info.GetShape();
+
           if (!tensor_shape.empty()) {
             requested_batch = static_cast<size_t>(tensor_shape[0]);
+            found_batch_input = true;
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Extracted batch size " << requested_batch
+                                  << " from session input '" << name << "'";
+            break;
+          }
+        }
+
+        // Fallback: if no session input found, use first available input
+        if (!found_batch_input && !map_input_name_index.empty()) {
+          for (auto& it : map_input_name_index) {
+            auto input_tensor = ctx.GetInput(it.second);
+            auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+            const auto tensor_shape = tensor_info.GetShape();
+
+            if (!tensor_shape.empty()) {
+              requested_batch = static_cast<size_t>(tensor_shape[0]);
+              LOGS_DEFAULT(WARNING) << "[Compute] Extracted batch size " << requested_batch
+                                    << " from input '" << it.first << "' (no session input found)";
+              break;
+            }
           }
         }
 

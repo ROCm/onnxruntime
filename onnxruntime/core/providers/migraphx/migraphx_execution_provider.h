@@ -61,6 +61,7 @@ struct MIGraphXFuncState {
   std::map<size_t, migraphx::program>* batch_program_cache_ptr = nullptr;
   std::mutex* batch_cache_mutex_ptr = nullptr;
   std::string node_name;
+  std::set<std::string> session_input_names;  // Track actual model inputs vs constants
 };
 
 // Logical device representation.
