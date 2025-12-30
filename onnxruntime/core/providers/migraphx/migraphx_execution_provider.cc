@@ -1440,11 +1440,23 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     no_input_shape = no_input_shape || get_input_output_names(graph_body_viewer, input_names, output_names);
 
     // Set default batch size for symbolic dimensions in onnx_options
+    // NOTE: Only set shapes for actual model inputs, NOT for constants or initializers
+    // MIGraphX will automatically infer shapes for constants and intermediate tensors
     constexpr std::size_t default_batch_size = 1;
     if (no_input_shape) {
       LOGS_DEFAULT(VERBOSE) << "[Compile] Setting default batch size of " << default_batch_size
-                            << " for inputs with symbolic dimensions";
+                            << " for model input parameters (excluding constants)";
+
+      // Get initializers to filter them out
+      const auto& initializers = graph_body_viewer.GetAllInitializedTensors();
+
       for (std::size_t i = 0; i < input_names.size(); ++i) {
+        // Skip if this is an initializer/constant - let MIGraphX infer its shape
+        if (initializers.count(input_names[i]) > 0) {
+          LOGS_DEFAULT(VERBOSE) << "[Compile] Skipping '" << input_names[i] << "' (initializer/constant)";
+          continue;
+        }
+
         if (i < input_tensor.size()) {
           auto tensor_shape = input_tensor[i]->Shape();
           if (tensor_shape != nullptr && tensor_shape->dim_size() > 0) {
@@ -1459,18 +1471,19 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
                 // Symbolic or unknown dimension - use default batch size for dim 0, 1 for others
                 has_symbolic = true;
                 default_shape.push_back(j == 0 ? default_batch_size : 1);
-                LOGS_DEFAULT(VERBOSE) << "[Compile] Input '" << input_names[i]
+                LOGS_DEFAULT(VERBOSE) << "[Compile] Input parameter '" << input_names[i]
                                       << "' dimension " << j << " is symbolic, using default";
               }
             }
 
             if (has_symbolic && !default_shape.empty()) {
               options.set_input_parameter_shape(input_names[i], default_shape);
-              LOGS_DEFAULT(VERBOSE) << "[Compile] Set default shape for '" << input_names[i] << "'";
+              LOGS_DEFAULT(VERBOSE) << "[Compile] Set default shape for input parameter '" << input_names[i] << "'";
             }
           }
         }
       }
+      LOGS_DEFAULT(VERBOSE) << "[Compile] Constants and initializers will have shapes inferred by MIGraphX";
     }
 
     // by parsing the model_proto, create a program corresponding to
@@ -1558,6 +1571,11 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
       if (no_input_shape) {
         LOGS_DEFAULT(VERBOSE) << "[Compute] No static input shapes available, setting from runtime inputs";
+        // NOTE: map_input_name_index only contains actual runtime inputs, not constants/initializers
+        // Constants and initializers are embedded in the graph and MIGraphX infers their shapes
+        LOGS_DEFAULT(VERBOSE) << "[Compute] Setting shapes for " << map_input_name_index.size()
+                              << " runtime input parameters (excluding constants)";
+
         for (auto& it : map_input_name_index) {
           auto& name = it.first;
           auto& index = it.second;
@@ -1567,6 +1585,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
 
           // Override default batch size with incoming batch size and treat as static
+          // Only for actual input parameters - constants are handled by MIGraphX
           cmp_options.set_input_parameter_shape(name, ort_lens);
           input_shape_match = false;
 
@@ -1575,7 +1594,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
           // Log batch size and full shape for tracking dynamic shapes
           if (!tensor_shape.empty()) {
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Input parameter '" << name
                                   << "' batch size (runtime override): " << tensor_shape[0];
 
             std::ostringstream shape_str;
@@ -1585,10 +1604,11 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
               shape_str << tensor_shape[i];
             }
             shape_str << "]";
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name << "' set as static shape: " << shape_str.str();
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Input parameter '" << name << "' set as static shape: " << shape_str.str();
           }
         }
-        LOGS_DEFAULT(VERBOSE) << "[Compute] All runtime shapes set as static parameters in MIGraphX options";
+        LOGS_DEFAULT(VERBOSE) << "[Compute] All runtime input shapes set as static parameters in MIGraphX options";
+        LOGS_DEFAULT(VERBOSE) << "[Compute] MIGraphX will infer shapes for constants and intermediate tensors";
       } else {
         LOGS_DEFAULT(VERBOSE) << "Assigning inputs, and parameters from compiled model";
         param_shapes = prog.get_parameter_shapes();
@@ -1689,9 +1709,13 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         if (!load_precompiled_model(prog, model_cache_file)) {
           LOGS_DEFAULT(VERBOSE) << "[Compute] Cache miss. Compiling model with updated batch size";
 
-          // CRITICAL: Ensure ALL input shapes are explicitly set as static shapes in cmp_options
+          // CRITICAL: Ensure ALL input parameter shapes are explicitly set as static shapes in cmp_options
           // This must be done BEFORE parsing to treat dynamic shapes as static for compilation
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Setting all input shapes as static in MIGraphX options";
+          // NOTE: Only set shapes for actual runtime input parameters, NOT for constants/initializers
+          // MIGraphX will automatically infer shapes for constants and intermediate tensors
+          LOGS_DEFAULT(VERBOSE) << "[Compute] Setting " << map_input_name_index.size()
+                                << " input parameter shapes as static in MIGraphX options (excluding constants)";
+
           for (auto& it : map_input_name_index) {
             auto& name = it.first;
             auto& index = it.second;
@@ -1701,9 +1725,10 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
 
             // Set shape as static parameter for MIGraphX compilation
+            // Only for actual input parameters - constants/initializers are handled by MIGraphX
             cmp_options.set_input_parameter_shape(name, ort_lens);
 
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Set static shape for '" << name << "': ["
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Set static shape for input parameter '" << name << "': ["
                                   << [&]() {
                                       std::ostringstream ss;
                                       for (size_t i = 0; i < ort_lens.size(); ++i) {
@@ -1713,20 +1738,22 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
                                       return ss.str();
                                     }() << "]";
           }
-          LOGS_DEFAULT(VERBOSE) << "[Compute] All input shapes set as static parameters";
+          LOGS_DEFAULT(VERBOSE) << "[Compute] All input parameter shapes set as static";
+          LOGS_DEFAULT(VERBOSE) << "[Compute] MIGraphX will infer shapes for constants and intermediate tensors";
 
 #ifndef ENABLE_TRAINING_CORE
 #ifdef HAVE_MIGRAPHX_API_ONNX_OPTIONS_SET_EXTERNAL_DATA_PATH
           cmp_options.set_external_data_path(model_path_.parent_path().string());
 #endif
 #endif
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Parsing ONNX buffer with static shapes";
+          LOGS_DEFAULT(VERBOSE) << "[Compute] Parsing ONNX buffer with static input shapes";
           prog = migraphx::parse_onnx_buffer(onnx_string, cmp_options);
           LOGS_DEFAULT(VERBOSE) << "[Compute] ONNX parsing complete";
 
-          // Verify that MIGraphX parsed with correct shapes
+          // Verify that MIGraphX parsed with correct shapes for input parameters
           auto parsed_param_shapes = prog.get_parameter_shapes();
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Verifying parsed parameter shapes:";
+          LOGS_DEFAULT(VERBOSE) << "[Compute] Verifying parsed parameter shapes ("
+                                << parsed_param_shapes.size() << " total parameters):";
           for (auto&& param_name : parsed_param_shapes.names()) {
             auto shape = parsed_param_shapes[param_name];
             auto lens = shape.lengths();
@@ -1737,7 +1764,11 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
               ss << lens[i];
             }
             ss << "]";
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Parameter '" << param_name << "' parsed shape: " << ss.str();
+
+            // Distinguish between input parameters we set and constants MIGraphX inferred
+            bool is_input_param = (map_input_name_index.count(param_name) > 0);
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Parameter '" << param_name << "' parsed shape: " << ss.str()
+                                  << (is_input_param ? " (input parameter)" : " (constant/internal)");
           }
 
           migraphx::program_parameters quant_params;
