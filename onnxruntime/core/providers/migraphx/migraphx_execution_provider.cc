@@ -1615,8 +1615,20 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       // NOTE: DO NOT set output shapes as input parameters!
       // Outputs are dynamically inferred by MIGraphX based on input shapes
     } else {
-      LOGS_DEFAULT(VERBOSE) << "[Compile] Deferring compilation until runtime (no static input shapes available)";
-      LOGS_DEFAULT(VERBOSE) << "[Compile] Will use default batch size of 1, then recompile with actual batch at runtime";
+      LOGS_DEFAULT(INFO) << "[Compile] No static input shapes available, compiling with default batch size 1";
+      // Still compile with default shapes so we have something in the batch cache
+#ifndef ENABLE_TRAINING_CORE
+#ifdef HAVE_MIGRAPHX_API_ONNX_OPTIONS_SET_EXTERNAL_DATA_PATH
+      options.set_external_data_path(model_path_.parent_path().string());
+#endif
+#endif
+      prog = migraphx::parse_onnx_buffer(onnx_string_buffer, options);
+      migraphx::program_parameters quant_params;
+
+      calibrate_and_quantize(prog, t_, quant_params, fp16_enable_, bf16_enable_, int8_enable_,
+                             fp8_enable_, int8_calibration_cache_available_, dynamic_range_map_);
+      compile_program(prog, t_, exhaustive_tune_);
+      LOGS_DEFAULT(INFO) << "[Compile] Compiled model with default shapes";
     }
 
     // compile the program
@@ -1662,7 +1674,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
     // Always store the main compiled program in the batch cache
     // This ensures at least one batch size is always available
-    if (!no_input_shape) {
+    {
       std::lock_guard<std::mutex> lock(batch_cache_mutex_);
       batch_program_cache_[fused_node.Name()][main_prog_batch_size] = prog;
       LOGS_DEFAULT(INFO) << "[Compile] Stored main program in batch cache for batch size: " << main_prog_batch_size;
