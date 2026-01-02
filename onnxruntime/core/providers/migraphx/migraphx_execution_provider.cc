@@ -2201,19 +2201,21 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         auto prog_outputs = prog.run_async(m, static_cast<hipStream_t>(rocm_stream));
         LOGS_DEFAULT(VERBOSE) << "[Compute] Execution complete, got " << prog_outputs.size() << " outputs";
 
-        // Verify actual output shapes match expectations
-        for (std::size_t i = 0; i < prog_outputs.size(); ++i) {
-          auto actual_shape = prog_outputs[i].get_shape();
-          auto actual_lens = actual_shape.lengths();
-          std::ostringstream ss;
-          ss << "[";
-          for (size_t j = 0; j < actual_lens.size(); ++j) {
-            if (j > 0) ss << ", ";
-            ss << actual_lens[j];
+        // Verify actual output shapes match expectations (only in verbose mode)
+        if (logging::LoggingManager::DefaultLogger().GetSeverity() <= logging::Severity::kVERBOSE) {
+          for (std::size_t i = 0; i < prog_outputs.size(); ++i) {
+            auto actual_shape = prog_outputs[i].get_shape();
+            auto actual_lens = actual_shape.lengths();
+            std::ostringstream ss;
+            ss << "[";
+            for (size_t j = 0; j < actual_lens.size(); ++j) {
+              if (j > 0) ss << ", ";
+              ss << actual_lens[j];
+            }
+            ss << "]";
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Actual output " << i << " shape after execution: " << ss.str()
+                                  << (actual_lens.size() > 0 ? " (batch=" + std::to_string(actual_lens[0]) + ")" : "");
           }
-          ss << "]";
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Actual output " << i << " shape after execution: " << ss.str()
-                                << (actual_lens.size() > 0 ? " (batch=" + std::to_string(actual_lens[0]) + ")" : "");
         }
 
         // In case of input parameters are reused as output parameter call hipMemcpy
