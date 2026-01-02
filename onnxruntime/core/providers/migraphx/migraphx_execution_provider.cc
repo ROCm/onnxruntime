@@ -1240,22 +1240,22 @@ void save_compiled_model(const migraphx::program& prog, const std::filesystem::p
 std::vector<std::pair<size_t, size_t>> decompose_batch_size(
     size_t requested_batch,
     const std::map<size_t, migraphx::program>& batch_cache) {
-  
+
   std::vector<std::pair<size_t, size_t>> decomposition;
-  
+
   if (batch_cache.empty() || requested_batch == 0) {
     return decomposition;  // Empty - cannot decompose
   }
-  
+
   // Get available batch sizes in descending order
   std::vector<size_t> available_batches;
   for (const auto& kv : batch_cache) {
     available_batches.push_back(kv.first);
   }
   std::sort(available_batches.rbegin(), available_batches.rend());  // Descending
-  
+
   size_t remaining = requested_batch;
-  
+
   // Greedy: use largest batches first
   for (size_t batch_sz : available_batches) {
     if (batch_sz <= remaining) {
@@ -1267,14 +1267,14 @@ std::vector<std::pair<size_t, size_t>> decompose_batch_size(
     }
     if (remaining == 0) break;
   }
-  
+
   // If we couldn't fully decompose, return empty (failure)
   if (remaining > 0) {
-    LOGS_DEFAULT(WARNING) << "[Compute] Cannot decompose batch size " << requested_batch 
+    LOGS_DEFAULT(WARNING) << "[Compute] Cannot decompose batch size " << requested_batch
                           << " with available cached sizes. Remaining: " << remaining;
     return {};  // Cannot decompose - need batch size 1 at minimum
   }
-  
+
   // Log the decomposition
   std::ostringstream ss;
   ss << "[Compute] Decomposed batch " << requested_batch << " into: ";
@@ -1283,7 +1283,7 @@ std::vector<std::pair<size_t, size_t>> decompose_batch_size(
     ss << decomposition[i].second << "x" << decomposition[i].first;
   }
   LOGS_DEFAULT(VERBOSE) << ss.str();
-  
+
   return decomposition;
 }
 
@@ -2015,49 +2015,49 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
         if (!found_in_cache) {
           LOGS_DEFAULT(VERBOSE) << "[Compute] Batch size " << requested_batch << " not in cache";
-          
+
           // Try to decompose the batch into available cached batch sizes
           std::vector<std::pair<size_t, size_t>> decomposition;
           {
             std::lock_guard<std::mutex> lock(*mgx_state->batch_cache_mutex_ptr);
             decomposition = decompose_batch_size(requested_batch, *mgx_state->batch_program_cache_ptr);
           }
-          
+
           if (decomposition.empty()) {
             // Cannot decompose - need to have at least batch size 1 pre-compiled
-            LOGS_DEFAULT(ERROR) << "[Compute] Cannot handle batch size " << requested_batch 
+            LOGS_DEFAULT(ERROR) << "[Compute] Cannot handle batch size " << requested_batch
                                 << ". No valid decomposition found. Ensure batch size 1 is pre-compiled.";
-            return ORT_MAKE_STATUS(ONNXRUNTIME, EP_FAIL, 
-                "MIGraphX: Cannot handle batch size ", requested_batch, 
+            return ORT_MAKE_STATUS(ONNXRUNTIME, EP_FAIL,
+                "MIGraphX: Cannot handle batch size ", requested_batch,
                 ". Pre-compile required batch sizes or ensure batch size 1 is available.");
           }
-          
+
           LOGS_DEFAULT(INFO) << "[Compute] Using batch decomposition for batch size " << requested_batch;
-          
+
           // Get GPU stream for execution
           void* rocm_stream;
           Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream));
           hipStream_t hip_stream = static_cast<hipStream_t>(rocm_stream);
-          
+
           // Lock for the entire decomposed execution
           std::lock_guard<std::mutex> lock(*(mgx_state->mgx_mu_ptr));
-          
+
           // We need to track the current batch offset for slicing
           size_t batch_offset = 0;
-          
+
           // Get a reference cached program to determine output structure
           auto& batch_cache = *mgx_state->batch_program_cache_ptr;
           migraphx::program& ref_prog = batch_cache.begin()->second;
           auto ref_output_shapes = ref_prog.get_output_shapes();
           size_t num_outputs = ref_output_shapes.size();
-          
+
           // Allocate output tensors with the full requested batch size
           // First, determine output shapes with the requested batch size
           std::vector<Ort::Value> output_tensors;
           std::vector<void*> output_data_ptrs;
           std::vector<std::vector<int64_t>> output_shapes_with_batch;
           std::vector<size_t> output_element_sizes;
-          
+
           for (size_t out_idx = 0; out_idx < num_outputs; ++out_idx) {
             auto ref_shape = ref_output_shapes[out_idx];
             auto ref_lens = ref_shape.lengths();
@@ -2066,10 +2066,10 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
               full_shape[0] = static_cast<int64_t>(requested_batch);  // Set full batch size
             }
             output_shapes_with_batch.push_back(full_shape);
-            
+
             auto output_tensor = ctx.GetOutput(out_idx, full_shape.data(), full_shape.size());
             output_data_ptrs.push_back(output_tensor.GetTensorMutableRawData());
-            
+
             // Calculate element size (bytes per element excluding batch dimension)
             size_t elements_per_batch = 1;
             for (size_t d = 1; d < full_shape.size(); ++d) {
@@ -2077,23 +2077,23 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             }
             size_t element_byte_size = ref_shape.bytes() / (ref_lens.empty() ? 1 : ref_lens[0]);
             output_element_sizes.push_back(element_byte_size);
-            
+
             LOGS_DEFAULT(VERBOSE) << "[Compute] Allocated output " << out_idx << " with full batch shape";
           }
-          
+
           // Execute each sub-batch using cached programs
           for (const auto& [sub_batch_size, count] : decomposition) {
             migraphx::program& sub_prog = batch_cache[sub_batch_size];
             auto sub_param_shapes = sub_prog.get_parameter_shapes();
             auto sub_output_shapes = sub_prog.get_output_shapes();
-            
+
             for (size_t rep = 0; rep < count; ++rep) {
-              LOGS_DEFAULT(VERBOSE) << "[Compute] Running sub-batch " << sub_batch_size 
-                                    << " (rep " << (rep + 1) << "/" << count 
+              LOGS_DEFAULT(VERBOSE) << "[Compute] Running sub-batch " << sub_batch_size
+                                    << " (rep " << (rep + 1) << "/" << count
                                     << "), offset=" << batch_offset;
-              
+
               migraphx::program_parameters sub_params;
-              
+
               // Set up input parameters with sliced data
               for (auto&& param_name : sub_param_shapes.names()) {
                 if (map_input_name_index.count(param_name) > 0) {
@@ -2101,65 +2101,65 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
                   auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
                   const auto tensor_shape = tensor_info.GetShape();
                   const auto tensor_type = tensor_info.GetElementType();
-                  
+
                   // Calculate offset into input data
                   size_t input_elements_per_batch = 1;
                   for (size_t d = 1; d < tensor_shape.size(); ++d) {
                     input_elements_per_batch *= static_cast<size_t>(tensor_shape[d]);
                   }
-                  
+
                   // Get element size from MIGraphX shape
                   auto mgx_shape = sub_param_shapes[param_name];
-                  size_t bytes_per_element = mgx_shape.bytes() / 
-                      (mgx_shape.lengths().empty() ? 1 : 
-                       std::accumulate(mgx_shape.lengths().begin(), mgx_shape.lengths().end(), 
+                  size_t bytes_per_element = mgx_shape.bytes() /
+                      (mgx_shape.lengths().empty() ? 1 :
+                       std::accumulate(mgx_shape.lengths().begin(), mgx_shape.lengths().end(),
                                        size_t{1}, std::multiplies<size_t>()));
-                  
+
                   size_t byte_offset = batch_offset * input_elements_per_batch * bytes_per_element;
-                  
+
                   const char* input_ptr = static_cast<const char*>(input_tensor.GetTensorRawData());
                   void* sliced_input = const_cast<void*>(static_cast<const void*>(input_ptr + byte_offset));
-                  
+
                   sub_params.add(param_name, migraphx::argument(mgx_shape, sliced_input));
                 }
               }
-              
+
               // Run the sub-batch
               auto sub_outputs = sub_prog.run_async(sub_params, hip_stream);
-              
+
               // Copy sub-batch outputs to the correct position in the full output
               for (size_t out_idx = 0; out_idx < sub_outputs.size(); ++out_idx) {
                 auto sub_output = sub_outputs[out_idx];
                 auto sub_shape = sub_output.get_shape();
                 size_t sub_bytes = sub_shape.bytes();
-                
+
                 // Calculate destination offset
                 size_t output_elements_per_batch = 1;
                 auto& full_shape = output_shapes_with_batch[out_idx];
                 for (size_t d = 1; d < full_shape.size(); ++d) {
                   output_elements_per_batch *= static_cast<size_t>(full_shape[d]);
                 }
-                
-                size_t bytes_per_element = sub_bytes / 
-                    (sub_shape.lengths().empty() ? 1 : 
+
+                size_t bytes_per_element = sub_bytes /
+                    (sub_shape.lengths().empty() ? 1 :
                      std::accumulate(sub_shape.lengths().begin(), sub_shape.lengths().end(),
                                      size_t{1}, std::multiplies<size_t>()));
-                
+
                 size_t dest_byte_offset = batch_offset * output_elements_per_batch * bytes_per_element;
-                
+
                 char* dest_ptr = static_cast<char*>(output_data_ptrs[out_idx]) + dest_byte_offset;
-                
+
                 HIP_CALL_THROW(hipMemcpyWithStream(dest_ptr,
                                                    sub_output.data(),
                                                    sub_bytes,
                                                    hipMemcpyDeviceToDevice,
                                                    hip_stream));
               }
-              
+
               batch_offset += sub_batch_size;
             }
           }
-          
+
           LOGS_DEFAULT(VERBOSE) << "[Compute] Batch decomposition execution complete";
           return Status::OK();
         }
