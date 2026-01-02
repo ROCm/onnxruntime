@@ -1582,10 +1582,10 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       std::vector<std::int64_t> input_shapes;
 
       if (no_input_shape) {
-        LOGS_DEFAULT(VERBOSE) << "[Compute] No static input shapes available, setting from runtime inputs";
+        LOGS_DEFAULT(INFO) << "[Compute] No static input shapes available, setting from runtime inputs";
         // NOTE: map_input_name_index only contains actual runtime inputs, not constants/initializers
         // Constants and initializers are embedded in the graph and MIGraphX infers their shapes
-        LOGS_DEFAULT(VERBOSE) << "[Compute] Setting shapes for " << map_input_name_index.size()
+        LOGS_DEFAULT(INFO) << "[Compute] Setting shapes for " << map_input_name_index.size()
                               << " runtime input parameters (excluding constants)";
 
         for (auto& it : map_input_name_index) {
@@ -1606,7 +1606,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
           // Log batch size and full shape for tracking dynamic shapes
           if (!tensor_shape.empty()) {
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Input parameter '" << name
+            LOGS_DEFAULT(INFO) << "[Compute] Input parameter '" << name
                                   << "' batch size (runtime override): " << tensor_shape[0];
 
             std::ostringstream shape_str;
@@ -1616,11 +1616,11 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
               shape_str << tensor_shape[i];
             }
             shape_str << "]";
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Input parameter '" << name << "' set as static shape: " << shape_str.str();
+            LOGS_DEFAULT(INFO) << "[Compute] Input parameter '" << name << "' set as static shape: " << shape_str.str();
           }
         }
-        LOGS_DEFAULT(VERBOSE) << "[Compute] All runtime input shapes set as static parameters in MIGraphX options";
-        LOGS_DEFAULT(VERBOSE) << "[Compute] MIGraphX will infer shapes for constants and intermediate tensors";
+        LOGS_DEFAULT(INFO) << "[Compute] All runtime input shapes set as static parameters in MIGraphX options";
+        LOGS_DEFAULT(INFO) << "[Compute] MIGraphX will infer shapes for constants and intermediate tensors";
       } else {
         LOGS_DEFAULT(VERBOSE) << "Assigning inputs, and parameters from compiled model";
         param_shapes = prog.get_parameter_shapes();
@@ -1648,13 +1648,13 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
               // Check if shapes match
               if (mgx_lens != ort_lens) {
-                LOGS_DEFAULT(VERBOSE) << "[Compute] Shape mismatch for input '" << name
+                LOGS_DEFAULT(INFO) << "[Compute] Shape mismatch for input '" << name
                                       << "': MIGraphX expects [" << mgx_lens.size() << " dims], "
                                       << "got [" << ort_lens.size() << " dims]";
 
                 // Check if it's specifically a batch size change
                 if (mgx_lens.size() == ort_lens.size() && mgx_lens.size() > 0 && mgx_lens[0] != ort_lens[0]) {
-                  LOGS_DEFAULT(VERBOSE) << "[Compute] Batch size changed from " << mgx_lens[0]
+                  LOGS_DEFAULT(INFO) << "[Compute] Batch size changed from " << mgx_lens[0]
                                         << " to " << ort_lens[0] << " for input '" << name << "'";
                 }
 
@@ -1665,7 +1665,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
               // Log batch size and full shape for tracking
               if (!tensor_shape.empty()) {
-                LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name << "' batch size: " << tensor_shape[0];
+                LOGS_DEFAULT(INFO) << "[Compute] Input '" << name << "' batch size: " << tensor_shape[0];
 
                 // Log full shape for debugging symbolic dimensions
                 std::ostringstream shape_str;
@@ -1675,7 +1675,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
                   shape_str << tensor_shape[i];
                 }
                 shape_str << "]";
-                LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name << "' full shape: " << shape_str.str();
+                LOGS_DEFAULT(INFO) << "[Compute] Input '" << name << "' full shape: " << shape_str.str();
               }
             }
           }
@@ -1685,7 +1685,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       // input shapes are different, needs to re-parse onnx and
       // re-compile the program
       if (!input_shape_match) {
-        LOGS_DEFAULT(VERBOSE) << "[Compute] Input shape mismatch detected, initiating recompilation";
+        LOGS_DEFAULT(INFO) << "[Compute] Input shape mismatch detected, initiating recompilation";
 
         std::filesystem::path model_cache_file;
         // empty cache path means the MXR caching is disabled - always compile
@@ -1711,21 +1711,21 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             shapes_str << input_shapes[i];
           }
           shapes_str << "]";
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Cache key input shapes (including updated batch): " << shapes_str.str();
+          LOGS_DEFAULT(INFO) << "[Compute] Cache key input shapes (including updated batch): " << shapes_str.str();
 
           auto cache_hash = make_hash(input_shapes);
           model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + cache_hash + ".mxr");
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Cache file with batch-aware hash: " << model_cache_file.string();
+          LOGS_DEFAULT(INFO) << "[Compute] Cache file with batch-aware hash: " << model_cache_file.string();
         }
 
         if (!load_precompiled_model(prog, model_cache_file)) {
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Cache miss. Compiling model with updated batch size";
+          LOGS_DEFAULT(INFO) << "[Compute] Cache miss. Compiling model with updated batch size";
 
           // CRITICAL: Ensure ALL input parameter shapes are explicitly set as static shapes in cmp_options
           // This must be done BEFORE parsing to treat dynamic shapes as static for compilation
           // NOTE: Only set shapes for actual runtime input parameters, NOT for constants/initializers
           // MIGraphX will automatically infer shapes for constants and intermediate tensors
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Setting " << map_input_name_index.size()
+          LOGS_DEFAULT(INFO) << "[Compute] Setting " << map_input_name_index.size()
                                 << " input parameter shapes as static in MIGraphX options (excluding constants)";
 
           for (auto& it : map_input_name_index) {
@@ -1740,7 +1740,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             // Only for actual input parameters - constants/initializers are handled by MIGraphX
             cmp_options.set_input_parameter_shape(name, ort_lens);
 
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Set static shape for input parameter '" << name << "': ["
+            LOGS_DEFAULT(INFO) << "[Compute] Set static shape for input parameter '" << name << "': ["
                                   << [&]() {
                                       std::ostringstream ss;
                                       for (size_t i = 0; i < ort_lens.size(); ++i) {
@@ -1750,21 +1750,21 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
                                       return ss.str();
                                     }() << "]";
           }
-          LOGS_DEFAULT(VERBOSE) << "[Compute] All input parameter shapes set as static";
-          LOGS_DEFAULT(VERBOSE) << "[Compute] MIGraphX will infer shapes for constants and intermediate tensors";
+          LOGS_DEFAULT(INFO) << "[Compute] All input parameter shapes set as static";
+          LOGS_DEFAULT(INFO) << "[Compute] MIGraphX will infer shapes for constants and intermediate tensors";
 
 #ifndef ENABLE_TRAINING_CORE
 #ifdef HAVE_MIGRAPHX_API_ONNX_OPTIONS_SET_EXTERNAL_DATA_PATH
           cmp_options.set_external_data_path(model_path_.parent_path().string());
 #endif
 #endif
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Parsing ONNX buffer with static input shapes";
+          LOGS_DEFAULT(INFO) << "[Compute] Parsing ONNX buffer with static input shapes";
           prog = migraphx::parse_onnx_buffer(onnx_string, cmp_options);
-          LOGS_DEFAULT(VERBOSE) << "[Compute] ONNX parsing complete";
+          LOGS_DEFAULT(INFO) << "[Compute] ONNX parsing complete";
 
           // Verify that MIGraphX parsed with correct shapes for input parameters
           auto parsed_param_shapes = prog.get_parameter_shapes();
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Verifying parsed parameter shapes ("
+          LOGS_DEFAULT(INFO) << "[Compute] Verifying parsed parameter shapes ("
                                 << parsed_param_shapes.size() << " total parameters):";
           for (auto&& param_name : parsed_param_shapes.names()) {
             auto shape = parsed_param_shapes[param_name];
@@ -1779,7 +1779,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
             // Distinguish between input parameters we set and constants MIGraphX inferred
             bool is_input_param = (map_input_name_index.count(param_name) > 0);
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Parameter '" << param_name << "' parsed shape: " << ss.str()
+            LOGS_DEFAULT(INFO) << "[Compute] Parameter '" << param_name << "' parsed shape: " << ss.str()
                                   << (is_input_param ? " (input parameter)" : " (constant/internal)");
           }
 
@@ -1811,11 +1811,11 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           compile_program(prog, t, exhaustive_tune_);
 
           // Save compiled model with batch-aware filename
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Saving compiled model with updated batch size to: "
+          LOGS_DEFAULT(INFO) << "[Compute] Saving compiled model with updated batch size to: "
                                 << model_cache_file.string();
           save_compiled_model(prog, model_cache_file);
         } else {
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Cache hit! Loaded precompiled model with matching batch size";
+          LOGS_DEFAULT(INFO) << "[Compute] Cache hit! Loaded precompiled model with matching batch size";
         }
 
         mgx_state->prog = prog;
@@ -1828,7 +1828,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       std::vector<std::size_t> prog_output_indices;
 
       // Log the output shapes from the compiled program to verify they match input batch
-      LOGS_DEFAULT(VERBOSE) << "[Compute] Program has " << prog_output_shapes.size() << " outputs:";
+      LOGS_DEFAULT(INFO) << "[Compute] Program has " << prog_output_shapes.size() << " outputs:";
       for (std::size_t i = 0; i < prog_output_shapes.size(); ++i) {
         auto out_lens = prog_output_shapes[i].lengths();
         std::ostringstream ss;
@@ -1838,7 +1838,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           ss << out_lens[j];
         }
         ss << "]";
-        LOGS_DEFAULT(VERBOSE) << "[Compute] Program output " << i << " shape: " << ss.str();
+        LOGS_DEFAULT(INFO) << "[Compute] Program output " << i << " shape: " << ss.str();
       }
 
       if (param_shapes.size() > 0) {
@@ -1886,7 +1886,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
               // Log output batch size for tracking
               if (!ort_output_shape.empty()) {
-                LOGS_DEFAULT(VERBOSE) << "[Compute] Output " << output_index << " ('" << name
+                LOGS_DEFAULT(INFO) << "[Compute] Output " << output_index << " ('" << name
                                       << "') allocated with shape: ["
                                       << [&]() {
                                           std::ostringstream ss;
@@ -1896,7 +1896,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
                                           }
                                           return ss.str();
                                         }() << "]";
-                LOGS_DEFAULT(VERBOSE) << "[Compute] Output " << output_index << " batch size: " << ort_output_shape[0];
+                LOGS_DEFAULT(INFO) << "[Compute] Output " << output_index << " batch size: " << ort_output_shape[0];
               }
 
               // argument shape
@@ -1913,9 +1913,9 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
         void* rocm_stream;
         Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream));
-        LOGS_DEFAULT(VERBOSE) << "[Compute] Executing MIGraphX program...";
+        LOGS_DEFAULT(INFO) << "[Compute] Executing MIGraphX program...";
         auto prog_outputs = prog.run_async(m, static_cast<hipStream_t>(rocm_stream));
-        LOGS_DEFAULT(VERBOSE) << "[Compute] Execution complete, got " << prog_outputs.size() << " outputs";
+        LOGS_DEFAULT(INFO) << "[Compute] Execution complete, got " << prog_outputs.size() << " outputs";
 
         // Verify actual output shapes match expectations
         for (std::size_t i = 0; i < prog_outputs.size(); ++i) {
@@ -1928,7 +1928,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             ss << actual_lens[j];
           }
           ss << "]";
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Actual output " << i << " shape after execution: " << ss.str()
+          LOGS_DEFAULT(INFO) << "[Compute] Actual output " << i << " shape after execution: " << ss.str()
                                 << (actual_lens.size() > 0 ? " (batch=" + std::to_string(actual_lens[0]) + ")" : "");
         }
 
@@ -1947,7 +1947,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
             // Log output batch size for tracking
             if (!ort_shape.empty()) {
-              LOGS_DEFAULT(VERBOSE) << "[Compute] Output " << i << " batch size: " << ort_shape[0];
+              LOGS_DEFAULT(INFO) << "[Compute] Output " << i << " batch size: " << ort_shape[0];
             }
 
             HIP_CALL_THROW(hipMemcpyWithStream(output_data,
