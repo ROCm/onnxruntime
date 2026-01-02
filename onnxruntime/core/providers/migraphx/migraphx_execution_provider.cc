@@ -1341,6 +1341,63 @@ std::vector<size_t> GetPowerOf2BatchSizes(size_t max_batch) {
   return batch_sizes;
 }
 
+// Helper: Compile a single program with specific batch size for all inputs
+migraphx::program CompileProgramWithBatch(
+    const std::string& onnx_string,
+    const std::vector<std::string>& input_names,
+    const std::vector<std::vector<std::int64_t>>& all_input_base_shapes,
+    size_t batch_size,
+    migraphx::onnx_options options,
+    const migraphx::target& t,
+    bool fp16_enable,
+    bool bf16_enable,
+    bool int8_enable,
+    bool fp8_enable,
+    bool int8_calibration_cache_available,
+    std::unordered_map<std::string, float>& dynamic_range_map,
+    bool exhaustive_tune,
+    const std::filesystem::path& model_path) {
+
+  LOGS_DEFAULT(VERBOSE) << "[CompileBatch] Compiling for batch size: " << batch_size;
+
+  // Set input shapes with the specified batch size for ALL inputs
+  for (size_t i = 0; i < input_names.size() && i < all_input_base_shapes.size(); ++i) {
+    std::vector<std::size_t> shape_with_batch;
+    shape_with_batch.push_back(batch_size);
+    for (auto dim : all_input_base_shapes[i]) {
+      shape_with_batch.push_back(static_cast<std::size_t>(dim));
+    }
+    options.set_input_parameter_shape(input_names[i], shape_with_batch);
+
+    std::ostringstream ss;
+    ss << "[";
+    for (size_t j = 0; j < shape_with_batch.size(); ++j) {
+      if (j > 0) ss << ", ";
+      ss << shape_with_batch[j];
+    }
+    ss << "]";
+    LOGS_DEFAULT(VERBOSE) << "[CompileBatch] Input '" << input_names[i] << "' shape: " << ss.str();
+  }
+
+#ifndef ENABLE_TRAINING_CORE
+#ifdef HAVE_MIGRAPHX_API_ONNX_OPTIONS_SET_EXTERNAL_DATA_PATH
+  if (!model_path.empty()) {
+    options.set_external_data_path(model_path.parent_path().string());
+  }
+#endif
+#endif
+
+  migraphx::program prog = migraphx::parse_onnx_buffer(onnx_string, options);
+  migraphx::program_parameters quant_params;
+
+  calibrate_and_quantize(prog, t, quant_params, fp16_enable, bf16_enable, int8_enable,
+                         fp8_enable, int8_calibration_cache_available, dynamic_range_map);
+  compile_program(prog, t, exhaustive_tune);
+
+  LOGS_DEFAULT(VERBOSE) << "[CompileBatch] Compilation complete for batch size: " << batch_size;
+  return prog;
+}
+
 Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& fused_nodes,
                                           std::vector<NodeComputeInfo>& node_compute_funcs) {
   migraphx::onnx_options options;
@@ -1574,32 +1631,54 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       batch_program_cache_[fused_node.Name()] = std::map<size_t, migraphx::program>();
     }
 
-    // Pre-compile/load programs for all batch sizes if max_dynamic_batch_ > 1
-    // This ensures all batch sizes are available in memory before compute threads start
-    if (max_dynamic_batch_ > 1 && !model_cache_path_.empty() && !no_input_shape) {
-      LOGS_DEFAULT(INFO) << "[Compile] Ensuring all batch sizes up to " << max_dynamic_batch_ << " are compiled and cached...";
+    // Build base shapes for ALL inputs (excluding batch dimension)
+    // This is needed for both single batch and multi-batch compilation
+    std::vector<std::vector<std::int64_t>> all_input_base_shapes;
+    for (size_t i = 0; i < input_tensor.size(); ++i) {
+      std::vector<std::int64_t> base_shape;
+      if (input_tensor[i]->Shape() != nullptr) {
+        auto tensor_shape = input_tensor[i]->Shape();
+        for (int j = 1; j < tensor_shape->dim_size(); ++j) {
+          const auto& dim = tensor_shape->dim(j);
+          if (dim.has_dim_value()) {
+            base_shape.push_back(dim.dim_value());
+          } else {
+            base_shape.push_back(1);  // Default for symbolic dims
+          }
+        }
+      }
+      all_input_base_shapes.push_back(base_shape);
+    }
+
+    // Pre-compile/load programs for batch sizes
+    // If max_dynamic_batch_ > 0: compile power-of-2 batch sizes up to max_dynamic_batch_
+    // If max_dynamic_batch_ == 0: only compile the single batch size from the model input
+    if (!model_cache_path_.empty() && !no_input_shape) {
       std::lock_guard<std::mutex> lock(batch_cache_mutex_);
 
-      // Generate batch sizes to compile (powers of 2 up to max_dynamic_batch_)
-      auto batch_sizes_to_compile = GetPowerOf2BatchSizes(max_dynamic_batch_);
-
-      // Build base shapes for ALL inputs (excluding batch dimension)
-      // This ensures hash is calculated correctly for multi-input models
-      std::vector<std::vector<std::int64_t>> all_input_base_shapes;
-      for (size_t i = 0; i < input_tensor.size(); ++i) {
-        std::vector<std::int64_t> base_shape;
-        if (input_tensor[i]->Shape() != nullptr) {
-          auto tensor_shape = input_tensor[i]->Shape();
-          for (int j = 1; j < tensor_shape->dim_size(); ++j) {
-            const auto& dim = tensor_shape->dim(j);
-            if (dim.has_dim_value()) {
-              base_shape.push_back(dim.dim_value());
-            } else {
-              base_shape.push_back(1);  // Default for symbolic dims
+      // Determine which batch sizes to compile
+      std::vector<size_t> batch_sizes_to_compile;
+      if (max_dynamic_batch_ > 0) {
+        // Compile power-of-2 batch sizes up to max_dynamic_batch_
+        batch_sizes_to_compile = GetPowerOf2BatchSizes(max_dynamic_batch_);
+        LOGS_DEFAULT(INFO) << "[Compile] Compiling " << batch_sizes_to_compile.size() 
+                           << " batch sizes (powers of 2 up to " << max_dynamic_batch_ << ")";
+      } else {
+        // Only compile the single batch size from the model's input shape
+        // Extract the batch size from the first input tensor
+        size_t single_batch = 1;  // Default
+        if (!input_tensor.empty() && input_tensor[0]->Shape() != nullptr) {
+          auto tensor_shape = input_tensor[0]->Shape();
+          if (tensor_shape->dim_size() > 0) {
+            const auto& batch_dim = tensor_shape->dim(0);
+            if (batch_dim.has_dim_value()) {
+              single_batch = static_cast<size_t>(batch_dim.dim_value());
             }
           }
         }
-        all_input_base_shapes.push_back(base_shape);
+        batch_sizes_to_compile.push_back(single_batch);
+        LOGS_DEFAULT(INFO) << "[Compile] Compiling single batch size: " << single_batch 
+                           << " (max_dynamic_batch not set)";
       }
 
       int compiled_count = 0;
@@ -1615,8 +1694,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         std::vector<std::int64_t> batch_input_shapes;
         for (size_t i = 0; i < all_input_base_shapes.size(); ++i) {
           batch_input_shapes.push_back(static_cast<std::int64_t>(batch));  // Batch dimension
-          batch_input_shapes.insert(batch_input_shapes.end(), 
-                                    all_input_base_shapes[i].begin(), 
+          batch_input_shapes.insert(batch_input_shapes.end(),
+                                    all_input_base_shapes[i].begin(),
                                     all_input_base_shapes[i].end());
         }
 
@@ -1633,36 +1712,14 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             loaded_count++;
             LOGS_DEFAULT(INFO) << "[Compile] Loaded cached model for batch size " << batch;
           } else {
-            // Cache miss - compile the program
+            // Cache miss - compile the program using CompileProgramWithBatch
             LOGS_DEFAULT(INFO) << "[Compile] Compiling model for batch size " << batch << "...";
-            
+
             try {
-              // Set input shapes for ALL inputs with the new batch size
-              migraphx::onnx_options batch_options = options;
-              for (size_t i = 0; i < input_names.size() && i < all_input_base_shapes.size(); ++i) {
-                std::vector<std::size_t> shape_with_batch;
-                shape_with_batch.push_back(batch);
-                for (auto dim : all_input_base_shapes[i]) {
-                  shape_with_batch.push_back(static_cast<std::size_t>(dim));
-                }
-                batch_options.set_input_parameter_shape(input_names[i], shape_with_batch);
-                
-                LOGS_DEFAULT(VERBOSE) << "[Compile] Set input '" << input_names[i] << "' shape for batch " << batch;
-              }
-
-#ifndef ENABLE_TRAINING_CORE
-#ifdef HAVE_MIGRAPHX_API_ONNX_OPTIONS_SET_EXTERNAL_DATA_PATH
-              if (!model_path_.empty()) {
-                batch_options.set_external_data_path(model_path_.parent_path().string());
-              }
-#endif
-#endif
-              batch_prog = migraphx::parse_onnx_buffer(onnx_string_buffer, batch_options);
-              migraphx::program_parameters quant_params;
-
-              calibrate_and_quantize(batch_prog, t_, quant_params, fp16_enable_, bf16_enable_, int8_enable_,
-                                     fp8_enable_, int8_calibration_cache_available_, dynamic_range_map_);
-              compile_program(batch_prog, t_, exhaustive_tune_);
+              batch_prog = CompileProgramWithBatch(
+                  onnx_string_buffer, input_names, all_input_base_shapes, batch,
+                  options, t_, fp16_enable_, bf16_enable_, int8_enable_, fp8_enable_,
+                  int8_calibration_cache_available_, dynamic_range_map_, exhaustive_tune_, model_path_);
 
               // Save to disk for future runs
               save_compiled_model(batch_prog, batch_cache_file);
@@ -1679,7 +1736,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         }
       }
 
-      LOGS_DEFAULT(INFO) << "[Compile] Batch cache ready: " << loaded_count << " loaded from disk, " 
+      LOGS_DEFAULT(INFO) << "[Compile] Batch cache ready: " << loaded_count << " loaded from disk, "
                          << compiled_count << " newly compiled, "
                          << batch_program_cache_[fused_node.Name()].size() << " total batch sizes available";
     }
