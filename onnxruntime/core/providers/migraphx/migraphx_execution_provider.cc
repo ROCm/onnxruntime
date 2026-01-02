@@ -1626,10 +1626,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     map_input_index_[fused_node.Name()] = input_name_index;
     map_no_input_shape_[fused_node.Name()] = no_input_shape;
 
-    // Initialize batch program cache for this node (only if not already initialized)
-    if (batch_program_cache_.find(fused_node.Name()) == batch_program_cache_.end()) {
-      batch_program_cache_[fused_node.Name()] = std::map<size_t, migraphx::program>();
-    }
+    // Initialize batch program cache for this node
+    batch_program_cache_[fused_node.Name()] = std::map<size_t, migraphx::program>();
 
     // Build base shapes for ALL inputs (excluding batch dimension)
     // This is needed for both single batch and multi-batch compilation
@@ -1650,36 +1648,35 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       all_input_base_shapes.push_back(base_shape);
     }
 
-    // Pre-compile/load programs for batch sizes
-    // If max_dynamic_batch_ > 0: compile power-of-2 batch sizes up to max_dynamic_batch_
-    // If max_dynamic_batch_ == 0: only compile the single batch size from the model input
-    if (!model_cache_path_.empty() && !no_input_shape) {
+    // Extract the batch size from the main compiled program (from first input)
+    size_t main_prog_batch_size = 1;  // Default
+    if (!input_tensor.empty() && input_tensor[0]->Shape() != nullptr) {
+      auto tensor_shape = input_tensor[0]->Shape();
+      if (tensor_shape->dim_size() > 0) {
+        const auto& batch_dim = tensor_shape->dim(0);
+        if (batch_dim.has_dim_value()) {
+          main_prog_batch_size = static_cast<size_t>(batch_dim.dim_value());
+        }
+      }
+    }
+
+    // Always store the main compiled program in the batch cache
+    // This ensures at least one batch size is always available
+    if (!no_input_shape) {
+      std::lock_guard<std::mutex> lock(batch_cache_mutex_);
+      batch_program_cache_[fused_node.Name()][main_prog_batch_size] = prog;
+      LOGS_DEFAULT(INFO) << "[Compile] Stored main program in batch cache for batch size: " << main_prog_batch_size;
+    }
+
+    // Pre-compile/load additional programs for other batch sizes when max_dynamic_batch_ > 0
+    // This compiles power-of-2 batch sizes up to max_dynamic_batch_
+    if (!model_cache_path_.empty() && !no_input_shape && max_dynamic_batch_ > 0) {
       std::lock_guard<std::mutex> lock(batch_cache_mutex_);
 
-      // Determine which batch sizes to compile
-      std::vector<size_t> batch_sizes_to_compile;
-      if (max_dynamic_batch_ > 0) {
-        // Compile power-of-2 batch sizes up to max_dynamic_batch_
-        batch_sizes_to_compile = GetPowerOf2BatchSizes(max_dynamic_batch_);
-        LOGS_DEFAULT(INFO) << "[Compile] Compiling " << batch_sizes_to_compile.size()
-                           << " batch sizes (powers of 2 up to " << max_dynamic_batch_ << ")";
-      } else {
-        // Only compile the single batch size from the model's input shape
-        // Extract the batch size from the first input tensor
-        size_t single_batch = 1;  // Default
-        if (!input_tensor.empty() && input_tensor[0]->Shape() != nullptr) {
-          auto tensor_shape = input_tensor[0]->Shape();
-          if (tensor_shape->dim_size() > 0) {
-            const auto& batch_dim = tensor_shape->dim(0);
-            if (batch_dim.has_dim_value()) {
-              single_batch = static_cast<size_t>(batch_dim.dim_value());
-            }
-          }
-        }
-        batch_sizes_to_compile.push_back(single_batch);
-        LOGS_DEFAULT(INFO) << "[Compile] Compiling single batch size: " << single_batch
-                           << " (max_dynamic_batch not set)";
-      }
+      // Compile power-of-2 batch sizes up to max_dynamic_batch_
+      auto batch_sizes_to_compile = GetPowerOf2BatchSizes(max_dynamic_batch_);
+      LOGS_DEFAULT(INFO) << "[Compile] Pre-compiling " << batch_sizes_to_compile.size()
+                         << " batch sizes (powers of 2 up to " << max_dynamic_batch_ << ")";
 
       int compiled_count = 0;
       int loaded_count = 0;
