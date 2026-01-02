@@ -1661,7 +1661,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       if (max_dynamic_batch_ > 0) {
         // Compile power-of-2 batch sizes up to max_dynamic_batch_
         batch_sizes_to_compile = GetPowerOf2BatchSizes(max_dynamic_batch_);
-        LOGS_DEFAULT(INFO) << "[Compile] Compiling " << batch_sizes_to_compile.size() 
+        LOGS_DEFAULT(INFO) << "[Compile] Compiling " << batch_sizes_to_compile.size()
                            << " batch sizes (powers of 2 up to " << max_dynamic_batch_ << ")";
       } else {
         // Only compile the single batch size from the model's input shape
@@ -1677,7 +1677,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           }
         }
         batch_sizes_to_compile.push_back(single_batch);
-        LOGS_DEFAULT(INFO) << "[Compile] Compiling single batch size: " << single_batch 
+        LOGS_DEFAULT(INFO) << "[Compile] Compiling single batch size: " << single_batch
                            << " (max_dynamic_batch not set)";
       }
 
@@ -1690,13 +1690,13 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           continue;
         }
 
-        // Build input shapes with this batch size for ALL inputs (for correct hash)
+        // Build input shapes with this batch size (using first input's shape for hash)
         std::vector<std::int64_t> batch_input_shapes;
-        for (size_t i = 0; i < all_input_base_shapes.size(); ++i) {
-          batch_input_shapes.push_back(static_cast<std::int64_t>(batch));  // Batch dimension
+        batch_input_shapes.push_back(static_cast<std::int64_t>(batch));  // Batch dimension
+        if (!all_input_base_shapes.empty()) {
           batch_input_shapes.insert(batch_input_shapes.end(),
-                                    all_input_base_shapes[i].begin(),
-                                    all_input_base_shapes[i].end());
+                                    all_input_base_shapes[0].begin(),
+                                    all_input_base_shapes[0].end());
         }
 
         if (!batch_input_shapes.empty()) {
