@@ -1312,6 +1312,86 @@ std::string make_hash(const char* v) {
   return make_hash(std::string_view{v});
 }
 
+// Helper: Compile a single program with specific batch size for all inputs
+migraphx::program CompileProgramWithBatch(
+  const std::string& onnx_string,
+  const std::vector<std::string>& input_names,
+  const std::vector<std::vector<std::int64_t>>& all_input_base_shapes,
+  size_t batch_size,
+  migraphx::onnx_options options,
+  const migraphx::target& t,
+  bool fp16_enable,
+  bool bf16_enable,
+  bool int8_enable,
+  bool fp8_enable,
+  bool int8_calibration_cache_available,
+  std::unordered_map<std::string, float>& dynamic_range_map,
+  bool exhaustive_tune,
+  const std::filesystem::path& model_path)
+{
+
+  LOGS_DEFAULT(VERBOSE) << "[CompileBatch] Compiling for batch size: " << batch_size;
+
+  // Set input shapes with the specified batch size for ALL inputs
+  for (size_t i = 0; i < input_names.size() && i < all_input_base_shapes.size(); ++i) {
+    std::vector<std::size_t> shape_with_batch;
+    shape_with_batch.push_back(batch_size);
+    for (auto dim : all_input_base_shapes[i]) {
+      shape_with_batch.push_back(static_cast<std::size_t>(dim));
+    }
+    options.set_input_parameter_shape(input_names[i], shape_with_batch);
+
+    std::ostringstream ss;
+    ss << "[";
+    for (size_t j = 0; j < shape_with_batch.size(); ++j) {
+      if (j > 0) ss << ", ";
+      ss << shape_with_batch[j];
+    }
+    ss << "]";
+    LOGS_DEFAULT(VERBOSE) << "[CompileBatch] Input '" << input_names[i] << "' shape: " << ss.str();
+  }
+
+  #ifndef ENABLE_TRAINING_CORE
+  #ifdef HAVE_MIGRAPHX_API_ONNX_OPTIONS_SET_EXTERNAL_DATA_PATH
+  if (!model_path.empty()) {
+    options.set_external_data_path(model_path.parent_path().string());
+  }
+  #endif
+  #endif
+
+  migraphx::program prog = migraphx::parse_onnx_buffer(onnx_string, options);
+  migraphx::program_parameters quant_params;
+
+  if ((int8_enable ^ fp8_enable) && int8_calibration_cache_available) {
+    auto local_param_shapes = prog.get_parameter_shapes();
+    // Add input parameter data and the values they're set to
+    for (auto&& name : local_param_shapes.names()) {
+      if (map_input_name_index.count(name) > 0) {
+        auto input_tensor = ctx.GetInput(map_input_name_index[name]);
+        auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+        const auto tensor_shape = tensor_info.GetShape();
+        const auto tensor_type = tensor_info.GetElementType();
+
+        migraphx_shape_datatype_t mgx_type;
+        getMIGraphXType(tensor_type, mgx_type);
+        auto mgx_s = local_param_shapes[name];
+
+        if (mgx_type != mgx_s.type()) {
+          LOGS_DEFAULT(FATAL) << "MIGraphX: param type mismatch";
+        }
+        quant_params.add(name, migraphx::argument(local_param_shapes[name], const_cast<void*>(input_tensor.GetTensorRawData())));
+      }
+    }
+  }
+
+  calibrate_and_quantize(prog, t, quant_params, fp16_enable, bf16_enable, int8_enable,
+                        fp8_enable, int8_calibration_cache_available, dynamic_range_map);
+  compile_program(prog, t, exhaustive_tune);
+
+  LOGS_DEFAULT(VERBOSE) << "[CompileBatch] Compilation complete for batch size: " << batch_size;
+  return prog;
+}
+
 constexpr std::uint64_t MIGraphX_Version =
     ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
 
