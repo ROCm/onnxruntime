@@ -148,7 +148,6 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   // Key: node_name, Value: map of batch_size -> program
   std::unordered_map<std::string, std::map<size_t, migraphx::program>> batch_program_cache_;
   std::mutex batch_cache_mutex_;  // Protect batch_program_cache_
-  bool precompile_done_ = false;  // Track if we've done initial precompilation
 
   AllocatorPtr allocator_;
   std::unique_ptr<ModelMetadefIdGenerator> metadef_id_generator_;
