@@ -1392,6 +1392,71 @@ migraphx::program CompileProgramWithBatch(
   return prog;
 }
 
+// Helper: Run the MIGraphX program and handle outputs
+// This function executes the compiled MIGraphX program and copies outputs that
+// were not pre-allocated (input parameters reused as outputs) to the ORT output tensors
+static void run_migraphx_program(
+    std::mutex* mgx_mu_ptr,
+    const OrtApi* api,
+    OrtKernelContext* context,
+    Ort::KernelContext& ctx,
+    migraphx::program& prog,
+    migraphx::program_parameters& m,
+    const std::vector<std::size_t>& prog_output_indices)
+{
+
+  // lock to avoid race condition
+  std::lock_guard<std::mutex> lock(*mgx_mu_ptr);
+
+  void* rocm_stream;
+  Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream));
+  LOGS_DEFAULT(INFO) << "[Compute] Executing MIGraphX program...";
+  auto prog_outputs = prog.run_async(m, static_cast<hipStream_t>(rocm_stream));
+  LOGS_DEFAULT(INFO) << "[Compute] Execution complete, got " << prog_outputs.size() << " outputs";
+
+  // Verify actual output shapes match expectations
+  for (std::size_t i = 0; i < prog_outputs.size(); ++i) {
+    auto actual_shape = prog_outputs[i].get_shape();
+    auto actual_lens = actual_shape.lengths();
+    std::ostringstream ss;
+    ss << "[";
+    for (size_t j = 0; j < actual_lens.size(); ++j) {
+      if (j > 0) ss << ", ";
+      ss << actual_lens[j];
+    }
+    ss << "]";
+    LOGS_DEFAULT(INFO) << "[Compute] Actual output " << i << " shape after execution: " << ss.str()
+                          << (actual_lens.size() > 0 ? " (batch=" + std::to_string(actual_lens[0]) + ")" : "");
+  }
+
+  // In case of input parameters are reused as output parameter call hipMemcpy
+  auto output_num = prog_outputs.size();
+  if (prog_output_indices.size() < output_num) {
+    for (std::size_t i = 0; i < output_num; ++i) {
+      if (std::find(prog_output_indices.begin(), prog_output_indices.end(), static_cast<int>(i)) != prog_output_indices.end())
+        continue;
+      auto gpu_res = prog_outputs[i];
+      migraphx::shape res_shape = gpu_res.get_shape();
+      auto res_lens = res_shape.lengths();
+      std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
+      auto output_tensor = ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
+      void* output_data = output_tensor.GetTensorMutableRawData();
+
+      // Log output batch size for tracking
+      if (!ort_shape.empty()) {
+        LOGS_DEFAULT(INFO) << "[Compute] Output " << i << " batch size: " << ort_shape[0];
+      }
+
+      HIP_CALL_THROW(hipMemcpyWithStream(output_data,
+                                         gpu_res.data(),
+                                         res_shape.bytes(),
+                                         hipMemcpyDeviceToDevice,
+                                         static_cast<hipStream_t>(rocm_stream)));
+    }
+  }
+
+}
+
 constexpr std::uint64_t MIGraphX_Version =
     ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
 
@@ -1987,57 +2052,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         }
       }
 
-      {
-        // lock to avoid race condition
-        std::lock_guard<std::mutex> lock(*(mgx_state->mgx_mu_ptr));
-
-        void* rocm_stream;
-        Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream));
-        LOGS_DEFAULT(INFO) << "[Compute] Executing MIGraphX program...";
-        auto prog_outputs = prog.run_async(m, static_cast<hipStream_t>(rocm_stream));
-        LOGS_DEFAULT(INFO) << "[Compute] Execution complete, got " << prog_outputs.size() << " outputs";
-
-        // Verify actual output shapes match expectations
-        for (std::size_t i = 0; i < prog_outputs.size(); ++i) {
-          auto actual_shape = prog_outputs[i].get_shape();
-          auto actual_lens = actual_shape.lengths();
-          std::ostringstream ss;
-          ss << "[";
-          for (size_t j = 0; j < actual_lens.size(); ++j) {
-            if (j > 0) ss << ", ";
-            ss << actual_lens[j];
-          }
-          ss << "]";
-          LOGS_DEFAULT(INFO) << "[Compute] Actual output " << i << " shape after execution: " << ss.str()
-                                << (actual_lens.size() > 0 ? " (batch=" + std::to_string(actual_lens[0]) + ")" : "");
-        }
-
-        // In case of input parameters are reused as output parameter call hipMemcpy
-        auto output_num = prog_outputs.size();
-        if (prog_output_indices.size() < output_num) {
-          for (std::size_t i = 0; i < output_num; ++i) {
-            if (std::find(prog_output_indices.begin(), prog_output_indices.end(), i) != prog_output_indices.end())
-              continue;
-            auto gpu_res = prog_outputs[i];
-            migraphx::shape res_shape = gpu_res.get_shape();
-            auto res_lens = res_shape.lengths();
-            std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
-            auto output_tensor = ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
-            void* output_data = output_tensor.GetTensorMutableRawData();
-
-            // Log output batch size for tracking
-            if (!ort_shape.empty()) {
-              LOGS_DEFAULT(INFO) << "[Compute] Output " << i << " batch size: " << ort_shape[0];
-            }
-
-            HIP_CALL_THROW(hipMemcpyWithStream(output_data,
-                                               gpu_res.data(),
-                                               res_shape.bytes(),
-                                               hipMemcpyDeviceToDevice,
-                                               static_cast<hipStream_t>(rocm_stream)));
-          }
-        }
-      }
+      // Run the MIGraphX program and handle outputs
+      run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, prog_output_indices);
 
       return Status::OK();
     };
