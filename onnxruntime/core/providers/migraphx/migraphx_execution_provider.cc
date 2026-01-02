@@ -1693,6 +1693,65 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     // Initialize batch program cache for this node
     batch_program_cache_[fused_node.Name()] = std::map<size_t, migraphx::program>();
 
+    // Pre-load existing cached .mxr files into batch_program_cache_ if max_dynamic_batch_ > 1
+    // This eliminates repeated disk lookups during inference
+    if (max_dynamic_batch_ > 1 && !model_cache_path_.empty() && !no_input_shape) {
+      LOGS_DEFAULT(INFO) << "[Compile] Pre-loading existing cached models for fast lookup...";
+      std::lock_guard<std::mutex> lock(batch_cache_mutex_);
+
+      // Generate batch sizes to check (powers of 2 up to max_dynamic_batch_)
+      std::vector<size_t> batch_sizes_to_check;
+      for (size_t batch = 1; batch <= max_dynamic_batch_; batch *= 2) {
+        batch_sizes_to_check.push_back(batch);
+      }
+      // Add max_dynamic_batch_ if it's not a power of 2
+      if (batch_sizes_to_check.empty() || batch_sizes_to_check.back() != max_dynamic_batch_) {
+        batch_sizes_to_check.push_back(max_dynamic_batch_);
+      }
+
+      // Get base shape from first input tensor (excluding batch dimension)
+      std::vector<std::int64_t> base_shape;
+      if (!input_tensor.empty() && input_tensor[0]->Shape() != nullptr) {
+        auto tensor_shape = input_tensor[0]->Shape();
+        for (int j = 1; j < tensor_shape->dim_size(); ++j) {
+          const auto& dim = tensor_shape->dim(j);
+          if (dim.has_dim_value()) {
+            base_shape.push_back(dim.dim_value());
+          } else {
+            base_shape.push_back(1);  // Default for symbolic dims
+          }
+        }
+      }
+
+      int loaded_count = 0;
+      for (size_t batch : batch_sizes_to_check) {
+        // Build input shapes with this batch size
+        std::vector<std::int64_t> batch_input_shapes;
+        batch_input_shapes.push_back(static_cast<std::int64_t>(batch));
+        batch_input_shapes.insert(batch_input_shapes.end(), base_shape.begin(), base_shape.end());
+
+        if (!batch_input_shapes.empty()) {
+          auto batch_cache_hash = make_hash(batch_input_shapes);
+          auto batch_cache_file = model_cache_path_ / (mxr_filename_prefix + batch_cache_hash + ".mxr");
+
+          migraphx::program batch_prog;
+          if (load_precompiled_model(batch_prog, batch_cache_file)) {
+            batch_program_cache_[fused_node.Name()][batch] = std::move(batch_prog);
+            loaded_count++;
+            LOGS_DEFAULT(INFO) << "[Compile] Pre-loaded cached model for batch size " << batch;
+          } else {
+            LOGS_DEFAULT(VERBOSE) << "[Compile] No cached model found for batch size " << batch;
+          }
+        }
+      }
+
+      if (loaded_count > 0) {
+        LOGS_DEFAULT(INFO) << "[Compile] Pre-loaded " << loaded_count << " cached models into memory";
+      } else {
+        LOGS_DEFAULT(INFO) << "[Compile] No pre-existing cached models found";
+      }
+    }
+
     NodeComputeInfo compute_info;
     compute_info.create_state_func = [=](ComputeContext* context, FunctionState* state) {
       std::unique_ptr<MIGraphXFuncState> p = std::make_unique<MIGraphXFuncState>();
