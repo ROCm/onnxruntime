@@ -10,6 +10,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <numeric>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -1233,6 +1234,59 @@ void save_compiled_model(const migraphx::program& prog, const std::filesystem::p
   }
 }
 
+// Decompose a batch size into a combination of available cached batch sizes
+// Uses a greedy algorithm: picks largest available batch sizes first
+// Returns a vector of (batch_size, count) pairs, or empty if decomposition impossible
+std::vector<std::pair<size_t, size_t>> decompose_batch_size(
+    size_t requested_batch,
+    const std::map<size_t, migraphx::program>& batch_cache) {
+  
+  std::vector<std::pair<size_t, size_t>> decomposition;
+  
+  if (batch_cache.empty() || requested_batch == 0) {
+    return decomposition;  // Empty - cannot decompose
+  }
+  
+  // Get available batch sizes in descending order
+  std::vector<size_t> available_batches;
+  for (const auto& kv : batch_cache) {
+    available_batches.push_back(kv.first);
+  }
+  std::sort(available_batches.rbegin(), available_batches.rend());  // Descending
+  
+  size_t remaining = requested_batch;
+  
+  // Greedy: use largest batches first
+  for (size_t batch_sz : available_batches) {
+    if (batch_sz <= remaining) {
+      size_t count = remaining / batch_sz;
+      if (count > 0) {
+        decomposition.push_back({batch_sz, count});
+        remaining -= batch_sz * count;
+      }
+    }
+    if (remaining == 0) break;
+  }
+  
+  // If we couldn't fully decompose, return empty (failure)
+  if (remaining > 0) {
+    LOGS_DEFAULT(WARNING) << "[Compute] Cannot decompose batch size " << requested_batch 
+                          << " with available cached sizes. Remaining: " << remaining;
+    return {};  // Cannot decompose - need batch size 1 at minimum
+  }
+  
+  // Log the decomposition
+  std::ostringstream ss;
+  ss << "[Compute] Decomposed batch " << requested_batch << " into: ";
+  for (size_t i = 0; i < decomposition.size(); ++i) {
+    if (i > 0) ss << " + ";
+    ss << decomposition[i].second << "x" << decomposition[i].first;
+  }
+  LOGS_DEFAULT(VERBOSE) << ss.str();
+  
+  return decomposition;
+}
+
 // Order matters here especially if the program uses mixed quantization
 // Calibrate on full precision for int8/fp8 and then quantize down to fp16
 void calibrate_and_quantize(migraphx::program& prog,
@@ -1960,147 +2014,155 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         }
 
         if (!found_in_cache) {
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Batch size " << requested_batch << " not in cache, need to compile";
-
-          std::filesystem::path model_cache_file;
-          // empty cache path means the MXR caching is disabled - always compile
-          if (!model_cache_path_.empty()) {
-            // Ensure input_shapes has all updated dimensions including new batch sizes
-            if (input_shapes.empty()) {
-              LOGS_DEFAULT(WARNING) << "[Compute] Input shapes vector is empty, rebuilding from current inputs";
-              for (auto&& name : param_shapes.names()) {
-                if (map_input_name_index.count(name) > 0) {
-                  auto input_tensor = ctx.GetInput(map_input_name_index[name]);
+          LOGS_DEFAULT(VERBOSE) << "[Compute] Batch size " << requested_batch << " not in cache";
+          
+          // Try to decompose the batch into available cached batch sizes
+          std::vector<std::pair<size_t, size_t>> decomposition;
+          {
+            std::lock_guard<std::mutex> lock(*mgx_state->batch_cache_mutex_ptr);
+            decomposition = decompose_batch_size(requested_batch, *mgx_state->batch_program_cache_ptr);
+          }
+          
+          if (decomposition.empty()) {
+            // Cannot decompose - need to have at least batch size 1 pre-compiled
+            LOGS_DEFAULT(ERROR) << "[Compute] Cannot handle batch size " << requested_batch 
+                                << ". No valid decomposition found. Ensure batch size 1 is pre-compiled.";
+            return ORT_MAKE_STATUS(ONNXRUNTIME, EP_FAIL, 
+                "MIGraphX: Cannot handle batch size ", requested_batch, 
+                ". Pre-compile required batch sizes or ensure batch size 1 is available.");
+          }
+          
+          LOGS_DEFAULT(INFO) << "[Compute] Using batch decomposition for batch size " << requested_batch;
+          
+          // Get GPU stream for execution
+          void* rocm_stream;
+          Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream));
+          hipStream_t hip_stream = static_cast<hipStream_t>(rocm_stream);
+          
+          // Lock for the entire decomposed execution
+          std::lock_guard<std::mutex> lock(*(mgx_state->mgx_mu_ptr));
+          
+          // We need to track the current batch offset for slicing
+          size_t batch_offset = 0;
+          
+          // Get a reference cached program to determine output structure
+          auto& batch_cache = *mgx_state->batch_program_cache_ptr;
+          migraphx::program& ref_prog = batch_cache.begin()->second;
+          auto ref_output_shapes = ref_prog.get_output_shapes();
+          size_t num_outputs = ref_output_shapes.size();
+          
+          // Allocate output tensors with the full requested batch size
+          // First, determine output shapes with the requested batch size
+          std::vector<Ort::Value> output_tensors;
+          std::vector<void*> output_data_ptrs;
+          std::vector<std::vector<int64_t>> output_shapes_with_batch;
+          std::vector<size_t> output_element_sizes;
+          
+          for (size_t out_idx = 0; out_idx < num_outputs; ++out_idx) {
+            auto ref_shape = ref_output_shapes[out_idx];
+            auto ref_lens = ref_shape.lengths();
+            std::vector<int64_t> full_shape(ref_lens.begin(), ref_lens.end());
+            if (!full_shape.empty()) {
+              full_shape[0] = static_cast<int64_t>(requested_batch);  // Set full batch size
+            }
+            output_shapes_with_batch.push_back(full_shape);
+            
+            auto output_tensor = ctx.GetOutput(out_idx, full_shape.data(), full_shape.size());
+            output_data_ptrs.push_back(output_tensor.GetTensorMutableRawData());
+            
+            // Calculate element size (bytes per element excluding batch dimension)
+            size_t elements_per_batch = 1;
+            for (size_t d = 1; d < full_shape.size(); ++d) {
+              elements_per_batch *= static_cast<size_t>(full_shape[d]);
+            }
+            size_t element_byte_size = ref_shape.bytes() / (ref_lens.empty() ? 1 : ref_lens[0]);
+            output_element_sizes.push_back(element_byte_size);
+            
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Allocated output " << out_idx << " with full batch shape";
+          }
+          
+          // Execute each sub-batch using cached programs
+          for (const auto& [sub_batch_size, count] : decomposition) {
+            migraphx::program& sub_prog = batch_cache[sub_batch_size];
+            auto sub_param_shapes = sub_prog.get_parameter_shapes();
+            auto sub_output_shapes = sub_prog.get_output_shapes();
+            
+            for (size_t rep = 0; rep < count; ++rep) {
+              LOGS_DEFAULT(VERBOSE) << "[Compute] Running sub-batch " << sub_batch_size 
+                                    << " (rep " << (rep + 1) << "/" << count 
+                                    << "), offset=" << batch_offset;
+              
+              migraphx::program_parameters sub_params;
+              
+              // Set up input parameters with sliced data
+              for (auto&& param_name : sub_param_shapes.names()) {
+                if (map_input_name_index.count(param_name) > 0) {
+                  auto input_tensor = ctx.GetInput(map_input_name_index[param_name]);
                   auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
                   const auto tensor_shape = tensor_info.GetShape();
-                  input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
+                  const auto tensor_type = tensor_info.GetElementType();
+                  
+                  // Calculate offset into input data
+                  size_t input_elements_per_batch = 1;
+                  for (size_t d = 1; d < tensor_shape.size(); ++d) {
+                    input_elements_per_batch *= static_cast<size_t>(tensor_shape[d]);
+                  }
+                  
+                  // Get element size from MIGraphX shape
+                  auto mgx_shape = sub_param_shapes[param_name];
+                  size_t bytes_per_element = mgx_shape.bytes() / 
+                      (mgx_shape.lengths().empty() ? 1 : 
+                       std::accumulate(mgx_shape.lengths().begin(), mgx_shape.lengths().end(), 
+                                       size_t{1}, std::multiplies<size_t>()));
+                  
+                  size_t byte_offset = batch_offset * input_elements_per_batch * bytes_per_element;
+                  
+                  const char* input_ptr = static_cast<const char*>(input_tensor.GetTensorRawData());
+                  void* sliced_input = const_cast<void*>(static_cast<const void*>(input_ptr + byte_offset));
+                  
+                  sub_params.add(param_name, migraphx::argument(mgx_shape, sliced_input));
                 }
               }
-            }
-
-            // Log the shapes being used for cache key generation
-            std::ostringstream shapes_str;
-            shapes_str << "[";
-            for (size_t i = 0; i < input_shapes.size(); ++i) {
-              if (i > 0) shapes_str << ", ";
-              shapes_str << input_shapes[i];
-            }
-            shapes_str << "]";
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Cache key input shapes (including updated batch): " << shapes_str.str();
-
-            auto cache_hash = make_hash(input_shapes);
-            model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + cache_hash + ".mxr");
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Looking for MXR file: " << model_cache_file.string();
-          }
-
-          if (!load_precompiled_model(prog, model_cache_file)) {
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Cache miss. Compiling model with updated batch size";
-
-            // CRITICAL: Ensure ALL input parameter shapes are explicitly set as static shapes in cmp_options
-            // This must be done BEFORE parsing to treat dynamic shapes as static for compilation
-            // NOTE: Only set shapes for actual runtime input parameters, NOT for constants/initializers
-            // MIGraphX will automatically infer shapes for constants and intermediate tensors
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Setting " << map_input_name_index.size()
-                                  << " input parameter shapes as static in MIGraphX options (excluding constants)";
-
-            for (auto& it : map_input_name_index) {
-              auto& name = it.first;
-              auto& index = it.second;
-              auto input_tensor = ctx.GetInput(index);
-              auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
-              const auto tensor_shape = tensor_info.GetShape();
-              std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
-
-              // Set shape as static parameter for MIGraphX compilation
-              // Only for actual input parameters - constants/initializers are handled by MIGraphX
-              cmp_options.set_input_parameter_shape(name, ort_lens);
-
-              LOGS_DEFAULT(VERBOSE) << "[Compute] Set static shape for input parameter '" << name << "': ["
-                                    << [&]() {
-                                        std::ostringstream ss;
-                                        for (size_t i = 0; i < ort_lens.size(); ++i) {
-                                          if (i > 0) ss << ", ";
-                                          ss << ort_lens[i];
-                                        }
-                                        return ss.str();
-                                      }() << "]";
-            }
-            LOGS_DEFAULT(VERBOSE) << "[Compute] All input parameter shapes set as static";
-            LOGS_DEFAULT(VERBOSE) << "[Compute] MIGraphX will infer shapes for constants and intermediate tensors";
-
-#ifndef ENABLE_TRAINING_CORE
-#ifdef HAVE_MIGRAPHX_API_ONNX_OPTIONS_SET_EXTERNAL_DATA_PATH
-            cmp_options.set_external_data_path(model_path_.parent_path().string());
-#endif
-#endif
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Parsing ONNX buffer with static input shapes";
-            prog = migraphx::parse_onnx_buffer(onnx_string, cmp_options);
-            LOGS_DEFAULT(VERBOSE) << "[Compute] ONNX parsing complete";
-
-            // Verify that MIGraphX parsed with correct shapes for input parameters
-            auto parsed_param_shapes = prog.get_parameter_shapes();
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Verifying parsed parameter shapes ("
-                                  << parsed_param_shapes.size() << " total parameters):";
-            for (auto&& param_name : parsed_param_shapes.names()) {
-              auto shape = parsed_param_shapes[param_name];
-              auto lens = shape.lengths();
-              std::ostringstream ss;
-              ss << "[";
-              for (size_t i = 0; i < lens.size(); ++i) {
-                if (i > 0) ss << ", ";
-                ss << lens[i];
-              }
-              ss << "]";
-
-              // Distinguish between input parameters we set and constants MIGraphX inferred
-              bool is_input_param = (map_input_name_index.count(param_name) > 0);
-              LOGS_DEFAULT(VERBOSE) << "[Compute] Parameter '" << param_name << "' parsed shape: " << ss.str()
-                                    << (is_input_param ? " (input parameter)" : " (constant/internal)");
-            }
-
-            migraphx::program_parameters quant_params;
-
-          if ((int8_enable ^ fp8_enable) && int8_calibration_cache_available) {
-            auto local_param_shapes = prog.get_parameter_shapes();
-            // Add input parameter data and the values they're set to
-            for (auto&& name : local_param_shapes.names()) {
-              if (map_input_name_index.count(name) > 0) {
-                auto input_tensor = ctx.GetInput(map_input_name_index[name]);
-                auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
-                const auto tensor_shape = tensor_info.GetShape();
-                const auto tensor_type = tensor_info.GetElementType();
-
-                migraphx_shape_datatype_t mgx_type;
-                getMIGraphXType(tensor_type, mgx_type);
-                auto mgx_s = local_param_shapes[name];
-
-                if (mgx_type != mgx_s.type()) {
-                  LOGS_DEFAULT(FATAL) << "MIGraphX: param type mismatch";
+              
+              // Run the sub-batch
+              auto sub_outputs = sub_prog.run_async(sub_params, hip_stream);
+              
+              // Copy sub-batch outputs to the correct position in the full output
+              for (size_t out_idx = 0; out_idx < sub_outputs.size(); ++out_idx) {
+                auto sub_output = sub_outputs[out_idx];
+                auto sub_shape = sub_output.get_shape();
+                size_t sub_bytes = sub_shape.bytes();
+                
+                // Calculate destination offset
+                size_t output_elements_per_batch = 1;
+                auto& full_shape = output_shapes_with_batch[out_idx];
+                for (size_t d = 1; d < full_shape.size(); ++d) {
+                  output_elements_per_batch *= static_cast<size_t>(full_shape[d]);
                 }
-                quant_params.add(name, migraphx::argument(local_param_shapes[name], const_cast<void*>(input_tensor.GetTensorRawData())));
+                
+                size_t bytes_per_element = sub_bytes / 
+                    (sub_shape.lengths().empty() ? 1 : 
+                     std::accumulate(sub_shape.lengths().begin(), sub_shape.lengths().end(),
+                                     size_t{1}, std::multiplies<size_t>()));
+                
+                size_t dest_byte_offset = batch_offset * output_elements_per_batch * bytes_per_element;
+                
+                char* dest_ptr = static_cast<char*>(output_data_ptrs[out_idx]) + dest_byte_offset;
+                
+                HIP_CALL_THROW(hipMemcpyWithStream(dest_ptr,
+                                                   sub_output.data(),
+                                                   sub_bytes,
+                                                   hipMemcpyDeviceToDevice,
+                                                   hip_stream));
               }
+              
+              batch_offset += sub_batch_size;
             }
           }
-          calibrate_and_quantize(prog, t, quant_params, fp16_enable, bf16_enable, int8_enable,
-                                 fp8_enable, int8_calibration_cache_available, map_dynamic_range);
-          compile_program(prog, t, exhaustive_tune_);
-
-          // Save compiled model with batch-aware filename
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Saving compiled model with updated batch size to: "
-                                << model_cache_file.string();
-          save_compiled_model(prog, model_cache_file);
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Model saved to disk";
-        } else {
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Loaded MXR from disk: " << model_cache_file.string();
+          
+          LOGS_DEFAULT(VERBOSE) << "[Compute] Batch decomposition execution complete";
+          return Status::OK();
         }
-
-        // Store in batch cache for future use
-        {
-          std::lock_guard<std::mutex> lock(*mgx_state->batch_cache_mutex_ptr);
-          (*mgx_state->batch_program_cache_ptr)[requested_batch] = prog;
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Stored program in batch cache for batch size: " << requested_batch;
-        }
-      }
 
         mgx_state->prog = prog;
         param_shapes = prog.get_parameter_shapes();
