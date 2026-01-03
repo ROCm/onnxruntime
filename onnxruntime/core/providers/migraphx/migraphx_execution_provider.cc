@@ -1461,28 +1461,23 @@ static void run_migraphx_program(
 // Helper: Handle input shape mismatch by recompiling the model with new input shapes
 // This function is called when runtime input shapes differ from compiled shapes
 static void handle_input_shape_mismatch(
+    MIGraphXFuncState* mgx_state,
     const std::filesystem::path& model_cache_path,
-    const std::filesystem::path& model_cache_dir,
-    const std::string& mxr_filename_prefix,
     const std::filesystem::path& model_path,
-    bool exhaustive_tune,
-    bool fp16_enable,
-    bool bf16_enable,
-    bool fp8_enable,
-    bool int8_enable,
-    bool int8_calibration_cache_available,
-    const migraphx::target& t,
+    const std::string& mxr_filename_prefix,
     Ort::KernelContext& ctx,
-    const std::unordered_map<std::string, std::size_t>& map_input_name_index,
-    std::unordered_map<std::string, float>& map_dynamic_range,
-    const std::string& onnx_string,
-    migraphx::onnx_options& cmp_options,
-    migraphx::program& prog,
     migraphx::program_parameter_shapes& param_shapes,
-    std::vector<std::int64_t>& input_shapes,
-    bool& no_input_shape)
+    std::vector<std::int64_t>& input_shapes)
 {
   LOGS_DEFAULT(INFO) << "[Compute] Input shape mismatch detected, initiating recompilation";
+
+  // Extract references from mgx_state for convenience
+  auto& prog = mgx_state->prog;
+  auto& cmp_options = mgx_state->options;
+  auto& onnx_string = mgx_state->onnx_string;
+  const auto& map_input_name_index = mgx_state->input_name_indexes;
+  auto& map_dynamic_range = mgx_state->dynamic_range_map;
+  const auto& t = mgx_state->t;
 
   std::filesystem::path model_cache_file;
   // empty cache path means the MXR caching is disabled - always compile
@@ -1511,7 +1506,7 @@ static void handle_input_shape_mismatch(
     LOGS_DEFAULT(INFO) << "[Compute] Cache key input shapes (including updated batch): " << shapes_str.str();
 
     auto cache_hash = make_hash(input_shapes);
-    model_cache_file = model_cache_dir / (mxr_filename_prefix + cache_hash + ".mxr");
+    model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + cache_hash + ".mxr");
     LOGS_DEFAULT(INFO) << "[Compute] Cache file with batch-aware hash: " << model_cache_file.string();
   }
 
@@ -1582,7 +1577,7 @@ static void handle_input_shape_mismatch(
 
     migraphx::program_parameters quant_params;
 
-    if ((int8_enable ^ fp8_enable) && int8_calibration_cache_available) {
+    if ((mgx_state->int8_enable ^ mgx_state->fp8_enable) && mgx_state->int8_calibration_cache_available) {
       auto local_param_shapes = prog.get_parameter_shapes();
       // Add input parameter data and the values they're set to
       for (auto&& name : local_param_shapes.names()) {
@@ -1603,9 +1598,10 @@ static void handle_input_shape_mismatch(
         }
       }
     }
-    calibrate_and_quantize(prog, t, quant_params, fp16_enable, bf16_enable, int8_enable,
-                           fp8_enable, int8_calibration_cache_available, map_dynamic_range);
-    compile_program(prog, t, exhaustive_tune);
+    calibrate_and_quantize(prog, t, quant_params, mgx_state->fp16_enable, mgx_state->bf16_enable,
+                           mgx_state->int8_enable, mgx_state->fp8_enable,
+                           mgx_state->int8_calibration_cache_available, map_dynamic_range);
+    compile_program(prog, t, mgx_state->exhaustive_tune);
 
     // Save compiled model with batch-aware filename
     LOGS_DEFAULT(INFO) << "[Compute] Saving compiled model with updated batch size to: "
@@ -1616,7 +1612,7 @@ static void handle_input_shape_mismatch(
   }
 
   param_shapes = prog.get_parameter_shapes();
-  no_input_shape = false;
+  mgx_state->no_input_shape = false;
 }
 
 // Helper: Handle program inputs and outputs binding
@@ -2074,17 +2070,9 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       MIGraphXFuncState* mgx_state = reinterpret_cast<MIGraphXFuncState*>(state);
 
       std::unordered_map<std::string, std::size_t>& map_input_name_index = mgx_state->input_name_indexes;
-      std::unordered_map<std::string, float>& map_dynamic_range = mgx_state->dynamic_range_map;
-      migraphx::target t = mgx_state->t;
       migraphx::program& prog = mgx_state->prog;
-      std::string& onnx_string = mgx_state->onnx_string;
       migraphx::onnx_options& cmp_options = mgx_state->options;
       bool& no_input_shape = mgx_state->no_input_shape;
-      bool fp16_enable = mgx_state->fp16_enable;
-      bool bf16_enable = mgx_state->bf16_enable;
-      bool fp8_enable = mgx_state->fp8_enable;
-      bool int8_enable = mgx_state->int8_enable;
-      bool int8_calibration_cache_available = mgx_state->int8_calibration_cache_available;
 
       // Process input shapes and determine if recompilation is needed
       auto [input_shape_match, param_shapes, input_shapes] = handle_input_shape(
@@ -2094,26 +2082,13 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       // re-compile the program
       if (!input_shape_match) {
         handle_input_shape_mismatch(
+            mgx_state,
             model_cache_path_,
-            mgx_state->model_cache_dir,
-            mxr_filename_prefix,
             model_path_,
-            exhaustive_tune_,
-            fp16_enable,
-            bf16_enable,
-            fp8_enable,
-            int8_enable,
-            int8_calibration_cache_available,
-            t,
+            mxr_filename_prefix,
             ctx,
-            map_input_name_index,
-            map_dynamic_range,
-            onnx_string,
-            cmp_options,
-            prog,
             param_shapes,
-            input_shapes,
-            no_input_shape);
+            input_shapes);
       }
 
       // Bind inputs and allocate outputs for the MIGraphX program
