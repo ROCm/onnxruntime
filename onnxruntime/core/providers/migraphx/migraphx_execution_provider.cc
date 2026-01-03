@@ -1487,6 +1487,34 @@ static void handle_input_shape_mismatch(
   auto& cmp_options = mgx_state->options;
   const auto& map_input_name_index = mgx_state->input_name_indexes;
 
+  // Determine batch size from the first input tensor
+  std::size_t current_batch_size = 0;
+  if (!map_input_name_index.empty()) {
+    auto first_it = map_input_name_index.begin();
+    auto input_tensor = ctx.GetInput(first_it->second);
+          auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+          const auto tensor_shape = tensor_info.GetShape();
+    if (!tensor_shape.empty()) {
+      current_batch_size = static_cast<std::size_t>(tensor_shape[0]);
+    }
+  }
+
+  // Check in-memory batched_programs cache first (before disk cache)
+  if (mgx_state->batched_programs_ref.has_value() && current_batch_size > 0) {
+    auto& batched_progs = mgx_state->batched_programs_ref.value().get();
+    auto it = batched_progs.find(current_batch_size);
+    if (it != batched_progs.end()) {
+      LOGS_DEFAULT(INFO) << "[Compute] Found batch size " << current_batch_size
+                         << " in in-memory batched_programs cache - using cached program";
+      prog = it->second;
+        param_shapes = prog.get_parameter_shapes();
+      return;  // Early exit - no need to load from disk or compile
+    } else {
+      LOGS_DEFAULT(INFO) << "[Compute] Batch size " << current_batch_size
+                         << " not in in-memory cache, checking disk cache";
+    }
+  }
+
   std::filesystem::path model_cache_file;
   // empty cache path means the MXR caching is disabled - always compile
   if (!model_cache_path.empty()) {
@@ -1568,6 +1596,13 @@ static void handle_input_shape_mismatch(
     save_compiled_model(prog, model_cache_file);
   } else {
     LOGS_DEFAULT(INFO) << "[Compute] Cache hit! Loaded precompiled model with matching batch size";
+  }
+
+  // Store the compiled/loaded program in the in-memory batched_programs cache
+  if (mgx_state->batched_programs_ref.has_value() && current_batch_size > 0) {
+    mgx_state->batched_programs_ref.value().get()[current_batch_size] = prog;
+    LOGS_DEFAULT(INFO) << "[Compute] Stored program for batch size " << current_batch_size
+                       << " in in-memory batched_programs cache";
   }
 
   param_shapes = prog.get_parameter_shapes();
@@ -2000,6 +2035,23 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       }
       // NOTE: DO NOT set output shapes as input parameters!
       // Outputs are dynamically inferred by MIGraphX based on input shapes
+
+      // Store the compiled/loaded program in batched_programs_ indexed by batch size
+      auto param_shapes = prog.get_parameter_shapes();
+      if (param_shapes.size() > 0) {
+        // Extract batch size from first input parameter
+        for (auto&& name : param_shapes.names()) {
+          auto shape = param_shapes[name];
+          auto lens = shape.lengths();
+          if (!lens.empty()) {
+            std::size_t batch_size = lens[0];
+            batched_programs_[fused_node.Name()][batch_size] = prog;
+            LOGS_DEFAULT(VERBOSE) << "[Compile] Stored program for batch size " << batch_size
+                                  << " in batched_programs cache";
+            break;  // Only need batch size from first input
+          }
+        }
+      }
     } else {
       LOGS_DEFAULT(VERBOSE) << "[Compile] Deferring compilation until runtime (no static input shapes available)";
       LOGS_DEFAULT(VERBOSE) << "[Compile] Will use default batch size of 1, then recompile with actual batch at runtime";
@@ -2011,6 +2063,12 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     map_onnx_string_[fused_node.Name()] = onnx_string_buffer;
     map_input_index_[fused_node.Name()] = input_name_index;
     map_no_input_shape_[fused_node.Name()] = no_input_shape;
+
+    // Initialize the batched_programs map for this node if not already done
+    if (batched_programs_.find(fused_node.Name()) == batched_programs_.end()) {
+      batched_programs_[fused_node.Name()] = std::unordered_map<std::size_t, migraphx::program>();
+    }
+
     NodeComputeInfo compute_info;
     compute_info.create_state_func = [=](ComputeContext* context, FunctionState* state) {
       std::unique_ptr<MIGraphXFuncState> p = std::make_unique<MIGraphXFuncState>();
@@ -2018,7 +2076,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_mu_,
             map_no_input_shape_[context->node_name], fp16_enable_, bf16_enable_, fp8_enable_, int8_enable_,
             int8_calibration_cache_available_, dynamic_range_map_,
-            model_cache_path_.string(), dump_model_ops_};
+            model_cache_path_.string(), dump_model_ops_, exhaustive_tune_, max_dynamic_batch_,
+            std::ref(batched_programs_[context->node_name])};
       *state = p.release();
       return 0;
     };

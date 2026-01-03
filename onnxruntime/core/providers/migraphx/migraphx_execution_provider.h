@@ -4,9 +4,11 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -58,6 +60,8 @@ struct MIGraphXFuncState {
   bool dump_model_ops = false;
   bool exhaustive_tune = false;
   size_t max_dynamic_batch;
+  // Reference to the batched programs map for this node (keyed by batch size)
+  std::optional<std::reference_wrapper<std::unordered_map<std::size_t, migraphx::program>>> batched_programs_ref = std::nullopt;
 };
 
 // Logical device representation.
@@ -139,6 +143,8 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   std::unordered_map<std::string, std::string> map_onnx_string_;
   std::unordered_map<std::string, std::unordered_map<std::string, std::size_t>> map_input_index_;
   std::unordered_map<std::string, bool> map_no_input_shape_;
+  // Map of batched programs per node: node_name -> (batch_size -> program)
+  std::unordered_map<std::string, std::unordered_map<std::size_t, migraphx::program>> batched_programs_;
 
   AllocatorPtr allocator_;
   std::unique_ptr<ModelMetadefIdGenerator> metadef_id_generator_;
