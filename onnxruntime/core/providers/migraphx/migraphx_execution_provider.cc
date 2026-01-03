@@ -1419,27 +1419,9 @@ static void run_migraphx_program(
 
   // lock to avoid race condition
   std::lock_guard<std::mutex> lock(*mgx_mu_ptr);
-
   void* rocm_stream;
   Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream));
-  LOGS_DEFAULT(INFO) << "[Compute] Executing MIGraphX program...";
   auto prog_outputs = prog.run_async(m, static_cast<hipStream_t>(rocm_stream));
-  LOGS_DEFAULT(INFO) << "[Compute] Execution complete, got " << prog_outputs.size() << " outputs";
-
-  // Verify actual output shapes match expectations
-  for (std::size_t i = 0; i < prog_outputs.size(); ++i) {
-    auto actual_shape = prog_outputs[i].get_shape();
-    auto actual_lens = actual_shape.lengths();
-    std::ostringstream ss;
-    ss << "[";
-    for (size_t j = 0; j < actual_lens.size(); ++j) {
-      if (j > 0) ss << ", ";
-      ss << actual_lens[j];
-    }
-    ss << "]";
-    LOGS_DEFAULT(INFO) << "[Compute] Actual output " << i << " shape after execution: " << ss.str()
-                          << (actual_lens.size() > 0 ? " (batch=" + std::to_string(actual_lens[0]) + ")" : "");
-  }
 
   // In case of input parameters are reused as output parameter call hipMemcpy
   auto output_num = prog_outputs.size();
@@ -1480,7 +1462,7 @@ static void handle_input_shape_mismatch(
     migraphx::program_parameter_shapes& param_shapes,
     std::vector<std::int64_t>& input_shapes)
 {
-  LOGS_DEFAULT(INFO) << "[Compute] Input shape mismatch detected, initiating recompilation";
+  LOGS_DEFAULT(VERBOSE) << "[Compute] Input shape mismatch detected, initiating recompilation";
 
   // Extract references from mgx_state for convenience
   auto& prog = mgx_state->prog;
@@ -1504,13 +1486,13 @@ static void handle_input_shape_mismatch(
     auto& batched_progs = mgx_state->batched_programs_ref.value().get();
     auto it = batched_progs.find(current_batch_size);
     if (it != batched_progs.end()) {
-      LOGS_DEFAULT(INFO) << "[Compute] Found batch size " << current_batch_size
+      LOGS_DEFAULT(VERBOSE) << "[Compute] Found batch size " << current_batch_size
                          << " in in-memory batched_programs cache - using cached program";
       prog = it->second;
         param_shapes = prog.get_parameter_shapes();
       return;  // Early exit - no need to load from disk or compile
     } else {
-      LOGS_DEFAULT(INFO) << "[Compute] Batch size " << current_batch_size
+      LOGS_DEFAULT(VERBOSE) << "[Compute] Batch size " << current_batch_size
                          << " not in in-memory cache, checking disk cache";
     }
   }
@@ -1539,18 +1521,18 @@ static void handle_input_shape_mismatch(
       shapes_str << input_shapes[i];
     }
     shapes_str << "]";
-    LOGS_DEFAULT(INFO) << "[Compute] Cache key input shapes (including updated batch): " << shapes_str.str();
+    LOGS_DEFAULT(VERBOSE) << "[Compute] Cache key input shapes (including updated batch): " << shapes_str.str();
 
     auto cache_hash = make_hash(input_shapes);
     model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + cache_hash + ".mxr");
-    LOGS_DEFAULT(INFO) << "[Compute] Cache file with batch-aware hash: " << model_cache_file.string();
+    LOGS_DEFAULT(VERBOSE) << "[Compute] Cache file with batch-aware hash: " << model_cache_file.string();
   }
 
   if (!load_precompiled_model(prog, model_cache_file)) {
-    LOGS_DEFAULT(INFO) << "[Compute] Cache miss. Compiling model with updated batch size";
+    LOGS_DEFAULT(VERBOSE) << "[Compute] Cache miss. Compiling model with updated batch size";
 
     // Set input parameter shapes from runtime tensors before compilation
-    LOGS_DEFAULT(INFO) << "[Compute] Setting " << map_input_name_index.size()
+    LOGS_DEFAULT(VERBOSE) << "[Compute] Setting " << map_input_name_index.size()
                           << " input parameter shapes as static in MIGraphX options (excluding constants)";
 
     for (const auto& it : map_input_name_index) {
@@ -1562,7 +1544,7 @@ static void handle_input_shape_mismatch(
       std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
       cmp_options.set_input_parameter_shape(name, ort_lens);
 
-      LOGS_DEFAULT(INFO) << "[Compute] Set static shape for input parameter '" << name << "': ["
+      LOGS_DEFAULT(VERBOSE) << "[Compute] Set static shape for input parameter '" << name << "': ["
                             << [&]() {
                                 std::ostringstream ss;
                                 for (size_t i = 0; i < ort_lens.size(); ++i) {
@@ -1591,17 +1573,17 @@ static void handle_input_shape_mismatch(
         &map_input_name_index);
 
     // Save compiled model with batch-aware filename
-    LOGS_DEFAULT(INFO) << "[Compute] Saving compiled model with updated batch size to: "
+    LOGS_DEFAULT(VERBOSE) << "[Compute] Saving compiled model with updated batch size to: "
                           << model_cache_file.string();
     save_compiled_model(prog, model_cache_file);
   } else {
-    LOGS_DEFAULT(INFO) << "[Compute] Cache hit! Loaded precompiled model with matching batch size";
+    LOGS_DEFAULT(VERBOSE) << "[Compute] Cache hit! Loaded precompiled model with matching batch size";
   }
 
   // Store the compiled/loaded program in the in-memory batched_programs cache
   if (mgx_state->batched_programs_ref.has_value() && current_batch_size > 0) {
     mgx_state->batched_programs_ref.value().get()[current_batch_size] = prog;
-    LOGS_DEFAULT(INFO) << "[Compute] Stored program for batch size " << current_batch_size
+    LOGS_DEFAULT(VERBOSE) << "[Compute] Stored program for batch size " << current_batch_size
                        << " in in-memory batched_programs cache";
   }
 
@@ -1667,7 +1649,7 @@ std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program
 
           // Log output batch size for tracking
           if (!ort_output_shape.empty()) {
-            LOGS_DEFAULT(INFO) << "[Compute] Output " << output_index << " ('" << name
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Output " << output_index << " ('" << name
                                   << "') allocated with shape: ["
                                   << [&]() {
                                       std::ostringstream ss;
@@ -1677,7 +1659,7 @@ std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program
                                       }
                                       return ss.str();
                                     }() << "]";
-            LOGS_DEFAULT(INFO) << "[Compute] Output " << output_index << " batch size: " << ort_output_shape[0];
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Output " << output_index << " batch size: " << ort_output_shape[0];
           }
 
           // argument shape
@@ -1711,10 +1693,10 @@ static InputShapeResult handle_input_shape(
   std::vector<std::int64_t> input_shapes;
 
   if (no_input_shape) {
-    LOGS_DEFAULT(INFO) << "[Compute] No static input shapes available, setting from runtime inputs";
+    LOGS_DEFAULT(VERBOSE) << "[Compute] No static input shapes available, setting from runtime inputs";
     // NOTE: map_input_name_index only contains actual runtime inputs, not constants/initializers
     // Constants and initializers are embedded in the graph and MIGraphX infers their shapes
-    LOGS_DEFAULT(INFO) << "[Compute] Setting shapes for " << map_input_name_index.size()
+    LOGS_DEFAULT(VERBOSE) << "[Compute] Setting shapes for " << map_input_name_index.size()
                           << " runtime input parameters (excluding constants)";
 
     for (const auto& it : map_input_name_index) {
@@ -1735,7 +1717,7 @@ static InputShapeResult handle_input_shape(
 
       // Log batch size and full shape for tracking dynamic shapes
       if (!tensor_shape.empty()) {
-        LOGS_DEFAULT(INFO) << "[Compute] Input parameter '" << name
+        LOGS_DEFAULT(VERBOSE) << "[Compute] Input parameter '" << name
                               << "' batch size (runtime override): " << tensor_shape[0];
 
         std::ostringstream shape_str;
@@ -1745,11 +1727,11 @@ static InputShapeResult handle_input_shape(
           shape_str << tensor_shape[i];
         }
         shape_str << "]";
-        LOGS_DEFAULT(INFO) << "[Compute] Input parameter '" << name << "' set as static shape: " << shape_str.str();
+        LOGS_DEFAULT(VERBOSE) << "[Compute] Input parameter '" << name << "' set as static shape: " << shape_str.str();
       }
     }
-    LOGS_DEFAULT(INFO) << "[Compute] All runtime input shapes set as static parameters in MIGraphX options";
-    LOGS_DEFAULT(INFO) << "[Compute] MIGraphX will infer shapes for constants and intermediate tensors";
+    LOGS_DEFAULT(VERBOSE) << "[Compute] All runtime input shapes set as static parameters in MIGraphX options";
+    LOGS_DEFAULT(VERBOSE) << "[Compute] MIGraphX will infer shapes for constants and intermediate tensors";
   } else {
     LOGS_DEFAULT(VERBOSE) << "Assigning inputs, and parameters from compiled model";
     param_shapes = prog.get_parameter_shapes();
@@ -1776,13 +1758,13 @@ static InputShapeResult handle_input_shape(
 
           // Check if shapes match
           if (mgx_lens != ort_lens) {
-            LOGS_DEFAULT(INFO) << "[Compute] Shape mismatch for input '" << name
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Shape mismatch for input '" << name
                                   << "': MIGraphX expects [" << mgx_lens.size() << " dims], "
                                   << "got [" << ort_lens.size() << " dims]";
 
             // Check if it's specifically a batch size change
             if (mgx_lens.size() == ort_lens.size() && mgx_lens.size() > 0 && mgx_lens[0] != ort_lens[0]) {
-              LOGS_DEFAULT(INFO) << "[Compute] Batch size changed from " << mgx_lens[0]
+              LOGS_DEFAULT(VERBOSE) << "[Compute] Batch size changed from " << mgx_lens[0]
                                     << " to " << ort_lens[0] << " for input '" << name << "'";
             }
 
@@ -1793,7 +1775,7 @@ static InputShapeResult handle_input_shape(
 
           // Log batch size and full shape for tracking
           if (!tensor_shape.empty()) {
-            LOGS_DEFAULT(INFO) << "[Compute] Input '" << name << "' batch size: " << tensor_shape[0];
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name << "' batch size: " << tensor_shape[0];
 
             // Log full shape for debugging symbolic dimensions
             std::ostringstream shape_str;
@@ -1803,7 +1785,7 @@ static InputShapeResult handle_input_shape(
               shape_str << tensor_shape[i];
             }
             shape_str << "]";
-            LOGS_DEFAULT(INFO) << "[Compute] Input '" << name << "' full shape: " << shape_str.str();
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name << "' full shape: " << shape_str.str();
           }
         }
       }
