@@ -1317,6 +1317,7 @@ migraphx::program CompileProgramWithBatch(
   const std::string& onnx_string,
   const std::vector<std::string>& input_names,
   const std::vector<std::vector<std::int64_t>>& all_input_base_shapes,
+  //const std::unordered_map<std::string, std::size_t>& map_input_name_index,
   size_t batch_size,
   migraphx::onnx_options options,
   const migraphx::target& t,
@@ -1362,7 +1363,7 @@ migraphx::program CompileProgramWithBatch(
   migraphx::program prog = migraphx::parse_onnx_buffer(onnx_string, options);
   migraphx::program_parameters quant_params;
 
-  if ((int8_enable ^ fp8_enable) && int8_calibration_cache_available) {
+  /* if ((int8_enable ^ fp8_enable) && int8_calibration_cache_available) {
     auto local_param_shapes = prog.get_parameter_shapes();
     // Add input parameter data and the values they're set to
     for (auto&& name : local_param_shapes.names()) {
@@ -1382,7 +1383,7 @@ migraphx::program CompileProgramWithBatch(
         quant_params.add(name, migraphx::argument(local_param_shapes[name], const_cast<void*>(input_tensor.GetTensorRawData())));
       }
     }
-  }
+  } */
 
   calibrate_and_quantize(prog, t, quant_params, fp16_enable, bf16_enable, int8_enable,
                         fp8_enable, int8_calibration_cache_available, dynamic_range_map);
