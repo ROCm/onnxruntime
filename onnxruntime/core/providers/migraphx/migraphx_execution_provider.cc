@@ -1619,6 +1619,87 @@ static void handle_input_shape_mismatch(
   no_input_shape = false;
 }
 
+// Helper: Handle program inputs and outputs binding
+// This function binds input tensors and allocates output tensors for the MIGraphX program
+static
+std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program_input_outputs(
+    const migraphx::program_parameter_shapes& param_shapes,
+    const std::unordered_map<std::string, std::size_t>& map_input_name_index,
+    const Ort::KernelContext& ctx,
+    const migraphx::program& prog)
+{
+  migraphx::program_parameters m;
+  std::vector<std::size_t> prog_output_indices;
+  auto prog_output_shapes = prog.get_output_shapes();
+
+  if (param_shapes.size() > 0) {
+    for (auto&& name : param_shapes.names()) {
+      if (map_input_name_index.count(name) > 0) {
+        LOGS_DEFAULT(VERBOSE) << "Setting parameters for:" << name;
+        auto input_tensor = ctx.GetInput(map_input_name_index.at(name));
+        auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+        const auto tensor_shape = tensor_info.GetShape();
+        const auto tensor_type = tensor_info.GetElementType();
+
+        migraphx_shape_datatype_t mgx_type;
+        getMIGraphXType(tensor_type, mgx_type);
+        auto mgx_s = param_shapes[name];
+
+        if (mgx_type != mgx_s.type()) {
+          LOGS_DEFAULT(FATAL) << "MIGraphX: param type mismatch";
+        }
+
+        LOGS_DEFAULT(VERBOSE) << "Writing Raw tensor data ";
+        m.add(name, migraphx::argument(param_shapes[name],
+                                       const_cast<void*>(input_tensor.GetTensorRawData())));
+      }
+      // It is an output argument
+      else {
+        auto compute_output_index = [](const std::string_view sv) -> int {
+          constexpr std::string_view out_name_prefix = "#output_";
+          const auto pos = sv.find(out_name_prefix);
+          if (pos == std::string_view::npos) {
+            return -1;
+          }
+
+          const auto index_str = sv.substr(pos + out_name_prefix.length());
+          return ToInteger(Trim(index_str, std::isdigit));
+        };
+
+        int output_index = compute_output_index(name);
+        if (output_index != -1) {
+          prog_output_indices.push_back(static_cast<std::size_t>(output_index));
+          auto mgx_output_shape = prog_output_shapes[output_index];
+          auto lens = mgx_output_shape.lengths();
+          std::vector<int64_t> ort_output_shape(lens.begin(), lens.end());
+          auto output_tensor = ctx.GetOutput(output_index, ort_output_shape.data(), ort_output_shape.size());
+          void* output_data = output_tensor.GetTensorMutableRawData();
+
+          // Log output batch size for tracking
+          if (!ort_output_shape.empty()) {
+            LOGS_DEFAULT(INFO) << "[Compute] Output " << output_index << " ('" << name
+                                  << "') allocated with shape: ["
+                                  << [&]() {
+                                      std::ostringstream ss;
+                                      for (size_t j = 0; j < ort_output_shape.size(); ++j) {
+                                        if (j > 0) ss << ", ";
+                                        ss << ort_output_shape[j];
+                                      }
+                                      return ss.str();
+                                    }() << "]";
+            LOGS_DEFAULT(INFO) << "[Compute] Output " << output_index << " batch size: " << ort_output_shape[0];
+          }
+
+          // argument shape
+          auto mgx_arg_shape = param_shapes[name];
+          m.add(name, migraphx::argument(mgx_arg_shape, output_data));
+        }
+      }
+    }
+  }
+  return {m, prog_output_indices};
+}
+
 constexpr std::uint64_t MIGraphX_Version =
     ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
 
@@ -2015,89 +2096,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             no_input_shape);
       }
 
-      migraphx::program_parameters m;
-      auto prog_output_shapes = prog.get_output_shapes();
-      std::vector<std::size_t> prog_output_indices;
-
-      // Log the output shapes from the compiled program to verify they match input batch
-      LOGS_DEFAULT(INFO) << "[Compute] Program has " << prog_output_shapes.size() << " outputs:";
-      for (std::size_t i = 0; i < prog_output_shapes.size(); ++i) {
-        auto out_lens = prog_output_shapes[i].lengths();
-        std::ostringstream ss;
-        ss << "[";
-        for (size_t j = 0; j < out_lens.size(); ++j) {
-          if (j > 0) ss << ", ";
-          ss << out_lens[j];
-        }
-        ss << "]";
-        LOGS_DEFAULT(INFO) << "[Compute] Program output " << i << " shape: " << ss.str();
-      }
-
-      if (param_shapes.size() > 0) {
-        for (auto&& name : param_shapes.names()) {
-          if (map_input_name_index.count(name) > 0) {
-            LOGS_DEFAULT(VERBOSE) << "Setting parameters for:" << name;
-            auto input_tensor = ctx.GetInput(map_input_name_index[name]);
-            auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
-            const auto tensor_shape = tensor_info.GetShape();
-            const auto tensor_type = tensor_info.GetElementType();
-
-            migraphx_shape_datatype_t mgx_type;
-            getMIGraphXType(tensor_type, mgx_type);
-            auto mgx_s = param_shapes[name];
-
-            if (mgx_type != mgx_s.type()) {
-              LOGS_DEFAULT(FATAL) << "MIGraphX: param type mismatch";
-            }
-
-            LOGS_DEFAULT(VERBOSE) << "Writing Raw tensor data ";
-            m.add(name, migraphx::argument(param_shapes[name],
-                                           const_cast<void*>(input_tensor.GetTensorRawData())));
-          }
-          // It is an output argument
-          else {
-            auto compute_output_index = [](const std::string_view sv) -> int {
-              constexpr std::string_view out_name_prefix = "#output_";
-              const auto pos = sv.find(out_name_prefix);
-              if (pos == std::string_view::npos) {
-                return -1;
-              }
-
-              const auto index_str = sv.substr(pos + out_name_prefix.length());
-              return ToInteger(Trim(index_str, std::isdigit));
-            };
-
-            int output_index = compute_output_index(name);
-            if (output_index != -1) {
-              prog_output_indices.push_back(output_index);
-              auto mgx_output_shape = prog_output_shapes[output_index];
-              auto lens = mgx_output_shape.lengths();
-              std::vector<int64_t> ort_output_shape(lens.begin(), lens.end());
-              auto output_tensor = ctx.GetOutput(output_index, ort_output_shape.data(), ort_output_shape.size());
-              void* output_data = output_tensor.GetTensorMutableRawData();
-
-              // Log output batch size for tracking
-              if (!ort_output_shape.empty()) {
-                LOGS_DEFAULT(INFO) << "[Compute] Output " << output_index << " ('" << name
-                                      << "') allocated with shape: ["
-                                      << [&]() {
-                                          std::ostringstream ss;
-                                          for (size_t j = 0; j < ort_output_shape.size(); ++j) {
-                                            if (j > 0) ss << ", ";
-                                            ss << ort_output_shape[j];
-                                          }
-                                          return ss.str();
-                                        }() << "]";
-                LOGS_DEFAULT(INFO) << "[Compute] Output " << output_index << " batch size: " << ort_output_shape[0];
-              }
-
-              // argument shape
-              auto mgx_arg_shape = param_shapes[name];
-              m.add(name, migraphx::argument(mgx_arg_shape, output_data));
-            }
-          }
-        }
-      }
+      // Bind inputs and allocate outputs for the MIGraphX program
+      auto [m, prog_output_indices] = handle_program_input_outputs(param_shapes, map_input_name_index, ctx, prog);
 
       // Run the MIGraphX program and handle outputs
       run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, prog_output_indices);
