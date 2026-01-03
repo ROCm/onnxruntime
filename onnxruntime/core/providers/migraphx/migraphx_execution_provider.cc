@@ -1700,6 +1700,129 @@ std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program
   return {m, prog_output_indices};
 }
 
+// Result structure for handle_input_shape function
+struct InputShapeResult {
+  bool input_shape_match;
+  migraphx::program_parameter_shapes param_shapes;
+  std::vector<std::int64_t> input_shapes;
+};
+
+// Helper: Handle input shape processing for both dynamic and static cases
+// This function processes runtime input shapes and determines if recompilation is needed
+static InputShapeResult handle_input_shape(
+    bool no_input_shape,
+    const std::unordered_map<std::string, std::size_t>& map_input_name_index,
+    Ort::KernelContext& ctx,
+    migraphx::onnx_options& cmp_options,
+    const migraphx::program& prog)
+{
+  bool input_shape_match = true;
+  migraphx::program_parameter_shapes param_shapes;
+  std::vector<std::int64_t> input_shapes;
+
+  if (no_input_shape) {
+    LOGS_DEFAULT(INFO) << "[Compute] No static input shapes available, setting from runtime inputs";
+    // NOTE: map_input_name_index only contains actual runtime inputs, not constants/initializers
+    // Constants and initializers are embedded in the graph and MIGraphX infers their shapes
+    LOGS_DEFAULT(INFO) << "[Compute] Setting shapes for " << map_input_name_index.size()
+                          << " runtime input parameters (excluding constants)";
+
+    for (const auto& it : map_input_name_index) {
+      const auto& name = it.first;
+      const auto& index = it.second;
+      auto input_tensor = ctx.GetInput(index);
+      auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+      const auto tensor_shape = tensor_info.GetShape();
+      std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
+
+      // Override default batch size with incoming batch size and treat as static
+      // Only for actual input parameters - constants are handled by MIGraphX
+      cmp_options.set_input_parameter_shape(name, ort_lens);
+      input_shape_match = false;
+
+      // Collect all shape dimensions including updated batch size for cache key
+      input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
+
+      // Log batch size and full shape for tracking dynamic shapes
+      if (!tensor_shape.empty()) {
+        LOGS_DEFAULT(INFO) << "[Compute] Input parameter '" << name
+                              << "' batch size (runtime override): " << tensor_shape[0];
+
+        std::ostringstream shape_str;
+        shape_str << "[";
+        for (size_t i = 0; i < tensor_shape.size(); ++i) {
+          if (i > 0) shape_str << ", ";
+          shape_str << tensor_shape[i];
+        }
+        shape_str << "]";
+        LOGS_DEFAULT(INFO) << "[Compute] Input parameter '" << name << "' set as static shape: " << shape_str.str();
+      }
+    }
+    LOGS_DEFAULT(INFO) << "[Compute] All runtime input shapes set as static parameters in MIGraphX options";
+    LOGS_DEFAULT(INFO) << "[Compute] MIGraphX will infer shapes for constants and intermediate tensors";
+  } else {
+    LOGS_DEFAULT(VERBOSE) << "Assigning inputs, and parameters from compiled model";
+    param_shapes = prog.get_parameter_shapes();
+    auto prog_output_shapes = prog.get_output_shapes();
+
+    // check whether input shapes match with shapes of program inputs
+    if (param_shapes.size() > 0) {
+      for (auto&& name : param_shapes.names()) {
+        if (map_input_name_index.count(name) > 0) {
+          auto input_tensor = ctx.GetInput(map_input_name_index.at(name));
+          auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+          const auto tensor_shape = tensor_info.GetShape();
+          std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
+
+          auto mgx_s = param_shapes[name];
+          auto mgx_lens = mgx_s.lengths();
+          auto mgx_strides = mgx_s.strides();
+
+          // Handle scalar tensors (rank-0 tensors)
+          if (mgx_lens.size() == 1 && mgx_lens[0] == 1 &&
+              mgx_strides.size() == 1 && mgx_strides[0] == 0) {
+            mgx_lens.clear();
+          }
+
+          // Check if shapes match
+          if (mgx_lens != ort_lens) {
+            LOGS_DEFAULT(INFO) << "[Compute] Shape mismatch for input '" << name
+                                  << "': MIGraphX expects [" << mgx_lens.size() << " dims], "
+                                  << "got [" << ort_lens.size() << " dims]";
+
+            // Check if it's specifically a batch size change
+            if (mgx_lens.size() == ort_lens.size() && mgx_lens.size() > 0 && mgx_lens[0] != ort_lens[0]) {
+              LOGS_DEFAULT(INFO) << "[Compute] Batch size changed from " << mgx_lens[0]
+                                    << " to " << ort_lens[0] << " for input '" << name << "'";
+            }
+
+            cmp_options.set_input_parameter_shape(name, ort_lens);
+            input_shape_match = false;
+          }
+          input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
+
+          // Log batch size and full shape for tracking
+          if (!tensor_shape.empty()) {
+            LOGS_DEFAULT(INFO) << "[Compute] Input '" << name << "' batch size: " << tensor_shape[0];
+
+            // Log full shape for debugging symbolic dimensions
+            std::ostringstream shape_str;
+            shape_str << "[";
+            for (size_t i = 0; i < tensor_shape.size(); ++i) {
+              if (i > 0) shape_str << ", ";
+              shape_str << tensor_shape[i];
+            }
+            shape_str << "]";
+            LOGS_DEFAULT(INFO) << "[Compute] Input '" << name << "' full shape: " << shape_str.str();
+          }
+        }
+      }
+    }
+  }
+
+  return {input_shape_match, param_shapes, input_shapes};
+}
+
 constexpr std::uint64_t MIGraphX_Version =
     ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
 
@@ -1963,112 +2086,9 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       bool int8_enable = mgx_state->int8_enable;
       bool int8_calibration_cache_available = mgx_state->int8_calibration_cache_available;
 
-      // mean no program at all, so need to get the input shape info
-      // from input data
-      bool input_shape_match = true;
-      migraphx::program_parameter_shapes param_shapes;
-      std::vector<std::int64_t> input_shapes;
-
-      if (no_input_shape) {
-        LOGS_DEFAULT(INFO) << "[Compute] No static input shapes available, setting from runtime inputs";
-        // NOTE: map_input_name_index only contains actual runtime inputs, not constants/initializers
-        // Constants and initializers are embedded in the graph and MIGraphX infers their shapes
-        LOGS_DEFAULT(INFO) << "[Compute] Setting shapes for " << map_input_name_index.size()
-                              << " runtime input parameters (excluding constants)";
-
-        for (auto& it : map_input_name_index) {
-          auto& name = it.first;
-          auto& index = it.second;
-          auto input_tensor = ctx.GetInput(index);
-          auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
-          const auto tensor_shape = tensor_info.GetShape();
-          std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
-
-          // Override default batch size with incoming batch size and treat as static
-          // Only for actual input parameters - constants are handled by MIGraphX
-          cmp_options.set_input_parameter_shape(name, ort_lens);
-          input_shape_match = false;
-
-          // Collect all shape dimensions including updated batch size for cache key
-          input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
-
-          // Log batch size and full shape for tracking dynamic shapes
-          if (!tensor_shape.empty()) {
-            LOGS_DEFAULT(INFO) << "[Compute] Input parameter '" << name
-                                  << "' batch size (runtime override): " << tensor_shape[0];
-
-            std::ostringstream shape_str;
-            shape_str << "[";
-            for (size_t i = 0; i < tensor_shape.size(); ++i) {
-              if (i > 0) shape_str << ", ";
-              shape_str << tensor_shape[i];
-            }
-            shape_str << "]";
-            LOGS_DEFAULT(INFO) << "[Compute] Input parameter '" << name << "' set as static shape: " << shape_str.str();
-          }
-        }
-        LOGS_DEFAULT(INFO) << "[Compute] All runtime input shapes set as static parameters in MIGraphX options";
-        LOGS_DEFAULT(INFO) << "[Compute] MIGraphX will infer shapes for constants and intermediate tensors";
-      } else {
-        LOGS_DEFAULT(VERBOSE) << "Assigning inputs, and parameters from compiled model";
-        param_shapes = prog.get_parameter_shapes();
-        auto prog_output_shapes = prog.get_output_shapes();
-
-        // check whether input shapes match with shapes of program inputs
-        // migraphx::onnx_options cmp_options;
-        if (param_shapes.size() > 0) {
-          for (auto&& name : param_shapes.names()) {
-            if (map_input_name_index.count(name) > 0) {
-              auto input_tensor = ctx.GetInput(map_input_name_index[name]);
-              auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
-              const auto tensor_shape = tensor_info.GetShape();
-              std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
-
-              auto mgx_s = param_shapes[name];
-              auto mgx_lens = mgx_s.lengths();
-              auto mgx_strides = mgx_s.strides();
-
-              // Handle scalar tensors (rank-0 tensors)
-              if (mgx_lens.size() == 1 && mgx_lens[0] == 1 &&
-                  mgx_strides.size() == 1 && mgx_strides[0] == 0) {
-                mgx_lens.clear();
-              }
-
-              // Check if shapes match
-              if (mgx_lens != ort_lens) {
-                LOGS_DEFAULT(INFO) << "[Compute] Shape mismatch for input '" << name
-                                      << "': MIGraphX expects [" << mgx_lens.size() << " dims], "
-                                      << "got [" << ort_lens.size() << " dims]";
-
-                // Check if it's specifically a batch size change
-                if (mgx_lens.size() == ort_lens.size() && mgx_lens.size() > 0 && mgx_lens[0] != ort_lens[0]) {
-                  LOGS_DEFAULT(INFO) << "[Compute] Batch size changed from " << mgx_lens[0]
-                                        << " to " << ort_lens[0] << " for input '" << name << "'";
-                }
-
-                cmp_options.set_input_parameter_shape(name, ort_lens);
-                input_shape_match = false;
-              }
-              input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
-
-              // Log batch size and full shape for tracking
-              if (!tensor_shape.empty()) {
-                LOGS_DEFAULT(INFO) << "[Compute] Input '" << name << "' batch size: " << tensor_shape[0];
-
-                // Log full shape for debugging symbolic dimensions
-                std::ostringstream shape_str;
-                shape_str << "[";
-                for (size_t i = 0; i < tensor_shape.size(); ++i) {
-                  if (i > 0) shape_str << ", ";
-                  shape_str << tensor_shape[i];
-                }
-                shape_str << "]";
-                LOGS_DEFAULT(INFO) << "[Compute] Input '" << name << "' full shape: " << shape_str.str();
-              }
-            }
-          }
-        }
-      }
+      // Process input shapes and determine if recompilation is needed
+      auto [input_shape_match, param_shapes, input_shapes] = handle_input_shape(
+          no_input_shape, map_input_name_index, ctx, cmp_options, prog);
 
       // input shapes are different, needs to re-parse onnx and
       // re-compile the program
