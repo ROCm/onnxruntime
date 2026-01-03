@@ -1416,20 +1416,22 @@ static void run_migraphx_program(
     migraphx::program_parameters& m,
     const std::vector<std::size_t>& prog_output_indices)
 {
-
-  // lock to avoid race condition
-  std::lock_guard<std::mutex> lock(*mgx_mu_ptr);
   void* rocm_stream;
   Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream));
-  auto prog_outputs = prog.run_async(m, static_cast<hipStream_t>(rocm_stream));
+
+  std::optional<migraphx::arguments> prog_outputs;
+  {  // lock to avoid race condition
+     std::lock_guard<std::mutex> lock(*mgx_mu_ptr);
+     prog_outputs = prog.run_async(m, static_cast<hipStream_t>(rocm_stream));
+  }
 
   // In case of input parameters are reused as output parameter call hipMemcpy
-  auto output_num = prog_outputs.size();
+  auto output_num = prog_outputs->size();
   if (prog_output_indices.size() < output_num) {
     for (std::size_t i = 0; i < output_num; ++i) {
       if (std::find(prog_output_indices.begin(), prog_output_indices.end(), static_cast<int>(i)) != prog_output_indices.end())
         continue;
-      auto gpu_res = prog_outputs[i];
+      auto gpu_res = (*prog_outputs)[i];
       migraphx::shape res_shape = gpu_res.get_shape();
       auto res_lens = res_shape.lengths();
       std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
