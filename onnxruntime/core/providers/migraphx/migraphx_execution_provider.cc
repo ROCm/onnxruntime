@@ -1458,6 +1458,167 @@ static void run_migraphx_program(
 
 }
 
+// Helper: Handle input shape mismatch by recompiling the model with new input shapes
+// This function is called when runtime input shapes differ from compiled shapes
+static void handle_input_shape_mismatch(
+    const std::filesystem::path& model_cache_path,
+    const std::filesystem::path& model_cache_dir,
+    const std::string& mxr_filename_prefix,
+    const std::filesystem::path& model_path,
+    bool exhaustive_tune,
+    bool fp16_enable,
+    bool bf16_enable,
+    bool fp8_enable,
+    bool int8_enable,
+    bool int8_calibration_cache_available,
+    const migraphx::target& t,
+    Ort::KernelContext& ctx,
+    const std::unordered_map<std::string, std::size_t>& map_input_name_index,
+    std::unordered_map<std::string, float>& map_dynamic_range,
+    const std::string& onnx_string,
+    migraphx::onnx_options& cmp_options,
+    migraphx::program& prog,
+    migraphx::program_parameter_shapes& param_shapes,
+    std::vector<std::int64_t>& input_shapes,
+    bool& no_input_shape)
+{
+  LOGS_DEFAULT(INFO) << "[Compute] Input shape mismatch detected, initiating recompilation";
+
+  std::filesystem::path model_cache_file;
+  // empty cache path means the MXR caching is disabled - always compile
+  if (!model_cache_path.empty()) {
+    // Ensure input_shapes has all updated dimensions including new batch sizes
+    if (input_shapes.empty()) {
+      LOGS_DEFAULT(WARNING) << "[Compute] Input shapes vector is empty, rebuilding from current inputs";
+      for (auto&& name : param_shapes.names()) {
+        if (map_input_name_index.count(name) > 0) {
+          auto input_tensor = ctx.GetInput(map_input_name_index.at(name));
+          auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+          const auto tensor_shape = tensor_info.GetShape();
+          input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
+        }
+      }
+    }
+
+    // Log the shapes being used for cache key generation
+    std::ostringstream shapes_str;
+    shapes_str << "[";
+    for (size_t i = 0; i < input_shapes.size(); ++i) {
+      if (i > 0) shapes_str << ", ";
+      shapes_str << input_shapes[i];
+    }
+    shapes_str << "]";
+    LOGS_DEFAULT(INFO) << "[Compute] Cache key input shapes (including updated batch): " << shapes_str.str();
+
+    auto cache_hash = make_hash(input_shapes);
+    model_cache_file = model_cache_dir / (mxr_filename_prefix + cache_hash + ".mxr");
+    LOGS_DEFAULT(INFO) << "[Compute] Cache file with batch-aware hash: " << model_cache_file.string();
+  }
+
+  if (!load_precompiled_model(prog, model_cache_file)) {
+    LOGS_DEFAULT(INFO) << "[Compute] Cache miss. Compiling model with updated batch size";
+
+    // CRITICAL: Ensure ALL input parameter shapes are explicitly set as static shapes in cmp_options
+    // This must be done BEFORE parsing to treat dynamic shapes as static for compilation
+    // NOTE: Only set shapes for actual runtime input parameters, NOT for constants/initializers
+    // MIGraphX will automatically infer shapes for constants and intermediate tensors
+    LOGS_DEFAULT(INFO) << "[Compute] Setting " << map_input_name_index.size()
+                          << " input parameter shapes as static in MIGraphX options (excluding constants)";
+
+    for (const auto& it : map_input_name_index) {
+      const auto& name = it.first;
+      const auto& index = it.second;
+      auto input_tensor = ctx.GetInput(index);
+      auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+      const auto tensor_shape = tensor_info.GetShape();
+      std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
+
+      // Set shape as static parameter for MIGraphX compilation
+      // Only for actual input parameters - constants/initializers are handled by MIGraphX
+      cmp_options.set_input_parameter_shape(name, ort_lens);
+
+      LOGS_DEFAULT(INFO) << "[Compute] Set static shape for input parameter '" << name << "': ["
+                            << [&]() {
+                                std::ostringstream ss;
+                                for (size_t i = 0; i < ort_lens.size(); ++i) {
+                                  if (i > 0) ss << ", ";
+                                  ss << ort_lens[i];
+                                }
+                                return ss.str();
+                              }() << "]";
+    }
+    LOGS_DEFAULT(INFO) << "[Compute] All input parameter shapes set as static";
+    LOGS_DEFAULT(INFO) << "[Compute] MIGraphX will infer shapes for constants and intermediate tensors";
+
+#ifndef ENABLE_TRAINING_CORE
+#ifdef HAVE_MIGRAPHX_API_ONNX_OPTIONS_SET_EXTERNAL_DATA_PATH
+    cmp_options.set_external_data_path(model_path.parent_path().string());
+#endif
+#endif
+    LOGS_DEFAULT(INFO) << "[Compute] Parsing ONNX buffer with static input shapes";
+    prog = migraphx::parse_onnx_buffer(onnx_string, cmp_options);
+    LOGS_DEFAULT(INFO) << "[Compute] ONNX parsing complete";
+
+    // Verify that MIGraphX parsed with correct shapes for input parameters
+    auto parsed_param_shapes = prog.get_parameter_shapes();
+    LOGS_DEFAULT(INFO) << "[Compute] Verifying parsed parameter shapes ("
+                          << parsed_param_shapes.size() << " total parameters):";
+    for (auto&& param_name : parsed_param_shapes.names()) {
+      auto shape = parsed_param_shapes[param_name];
+      auto lens = shape.lengths();
+      std::ostringstream ss;
+      ss << "[";
+      for (size_t i = 0; i < lens.size(); ++i) {
+        if (i > 0) ss << ", ";
+        ss << lens[i];
+      }
+      ss << "]";
+
+      // Distinguish between input parameters we set and constants MIGraphX inferred
+      bool is_input_param = (map_input_name_index.count(param_name) > 0);
+      LOGS_DEFAULT(INFO) << "[Compute] Parameter '" << param_name << "' parsed shape: " << ss.str()
+                            << (is_input_param ? " (input parameter)" : " (constant/internal)");
+    }
+
+    migraphx::program_parameters quant_params;
+
+    if ((int8_enable ^ fp8_enable) && int8_calibration_cache_available) {
+      auto local_param_shapes = prog.get_parameter_shapes();
+      // Add input parameter data and the values they're set to
+      for (auto&& name : local_param_shapes.names()) {
+        if (map_input_name_index.count(name) > 0) {
+          auto input_tensor = ctx.GetInput(map_input_name_index.at(name));
+          auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+          const auto tensor_shape = tensor_info.GetShape();
+          const auto tensor_type = tensor_info.GetElementType();
+
+          migraphx_shape_datatype_t mgx_type;
+          getMIGraphXType(tensor_type, mgx_type);
+          auto mgx_s = local_param_shapes[name];
+
+          if (mgx_type != mgx_s.type()) {
+            LOGS_DEFAULT(FATAL) << "MIGraphX: param type mismatch";
+          }
+          quant_params.add(name, migraphx::argument(local_param_shapes[name], const_cast<void*>(input_tensor.GetTensorRawData())));
+        }
+      }
+    }
+    calibrate_and_quantize(prog, t, quant_params, fp16_enable, bf16_enable, int8_enable,
+                           fp8_enable, int8_calibration_cache_available, map_dynamic_range);
+    compile_program(prog, t, exhaustive_tune);
+
+    // Save compiled model with batch-aware filename
+    LOGS_DEFAULT(INFO) << "[Compute] Saving compiled model with updated batch size to: "
+                          << model_cache_file.string();
+    save_compiled_model(prog, model_cache_file);
+  } else {
+    LOGS_DEFAULT(INFO) << "[Compute] Cache hit! Loaded precompiled model with matching batch size";
+  }
+
+  param_shapes = prog.get_parameter_shapes();
+  no_input_shape = false;
+}
+
 constexpr std::uint64_t MIGraphX_Version =
     ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
 
@@ -1831,142 +1992,27 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       // input shapes are different, needs to re-parse onnx and
       // re-compile the program
       if (!input_shape_match) {
-        LOGS_DEFAULT(INFO) << "[Compute] Input shape mismatch detected, initiating recompilation";
-
-        std::filesystem::path model_cache_file;
-        // empty cache path means the MXR caching is disabled - always compile
-        if (!model_cache_path_.empty()) {
-          // Ensure input_shapes has all updated dimensions including new batch sizes
-          if (input_shapes.empty()) {
-            LOGS_DEFAULT(WARNING) << "[Compute] Input shapes vector is empty, rebuilding from current inputs";
-            for (auto&& name : param_shapes.names()) {
-              if (map_input_name_index.count(name) > 0) {
-                auto input_tensor = ctx.GetInput(map_input_name_index[name]);
-                auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
-                const auto tensor_shape = tensor_info.GetShape();
-                input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
-              }
-            }
-          }
-
-          // Log the shapes being used for cache key generation
-          std::ostringstream shapes_str;
-          shapes_str << "[";
-          for (size_t i = 0; i < input_shapes.size(); ++i) {
-            if (i > 0) shapes_str << ", ";
-            shapes_str << input_shapes[i];
-          }
-          shapes_str << "]";
-          LOGS_DEFAULT(INFO) << "[Compute] Cache key input shapes (including updated batch): " << shapes_str.str();
-
-          auto cache_hash = make_hash(input_shapes);
-          model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + cache_hash + ".mxr");
-          LOGS_DEFAULT(INFO) << "[Compute] Cache file with batch-aware hash: " << model_cache_file.string();
-        }
-
-        if (!load_precompiled_model(prog, model_cache_file)) {
-          LOGS_DEFAULT(INFO) << "[Compute] Cache miss. Compiling model with updated batch size";
-
-          // CRITICAL: Ensure ALL input parameter shapes are explicitly set as static shapes in cmp_options
-          // This must be done BEFORE parsing to treat dynamic shapes as static for compilation
-          // NOTE: Only set shapes for actual runtime input parameters, NOT for constants/initializers
-          // MIGraphX will automatically infer shapes for constants and intermediate tensors
-          LOGS_DEFAULT(INFO) << "[Compute] Setting " << map_input_name_index.size()
-                                << " input parameter shapes as static in MIGraphX options (excluding constants)";
-
-          for (auto& it : map_input_name_index) {
-            auto& name = it.first;
-            auto& index = it.second;
-            auto input_tensor = ctx.GetInput(index);
-            auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
-            const auto tensor_shape = tensor_info.GetShape();
-            std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
-
-            // Set shape as static parameter for MIGraphX compilation
-            // Only for actual input parameters - constants/initializers are handled by MIGraphX
-            cmp_options.set_input_parameter_shape(name, ort_lens);
-
-            LOGS_DEFAULT(INFO) << "[Compute] Set static shape for input parameter '" << name << "': ["
-                                  << [&]() {
-                                      std::ostringstream ss;
-                                      for (size_t i = 0; i < ort_lens.size(); ++i) {
-                                        if (i > 0) ss << ", ";
-                                        ss << ort_lens[i];
-                                      }
-                                      return ss.str();
-                                    }() << "]";
-          }
-          LOGS_DEFAULT(INFO) << "[Compute] All input parameter shapes set as static";
-          LOGS_DEFAULT(INFO) << "[Compute] MIGraphX will infer shapes for constants and intermediate tensors";
-
-#ifndef ENABLE_TRAINING_CORE
-#ifdef HAVE_MIGRAPHX_API_ONNX_OPTIONS_SET_EXTERNAL_DATA_PATH
-          cmp_options.set_external_data_path(model_path_.parent_path().string());
-#endif
-#endif
-          LOGS_DEFAULT(INFO) << "[Compute] Parsing ONNX buffer with static input shapes";
-          prog = migraphx::parse_onnx_buffer(onnx_string, cmp_options);
-          LOGS_DEFAULT(INFO) << "[Compute] ONNX parsing complete";
-
-          // Verify that MIGraphX parsed with correct shapes for input parameters
-          auto parsed_param_shapes = prog.get_parameter_shapes();
-          LOGS_DEFAULT(INFO) << "[Compute] Verifying parsed parameter shapes ("
-                                << parsed_param_shapes.size() << " total parameters):";
-          for (auto&& param_name : parsed_param_shapes.names()) {
-            auto shape = parsed_param_shapes[param_name];
-            auto lens = shape.lengths();
-            std::ostringstream ss;
-            ss << "[";
-            for (size_t i = 0; i < lens.size(); ++i) {
-              if (i > 0) ss << ", ";
-              ss << lens[i];
-            }
-            ss << "]";
-
-            // Distinguish between input parameters we set and constants MIGraphX inferred
-            bool is_input_param = (map_input_name_index.count(param_name) > 0);
-            LOGS_DEFAULT(INFO) << "[Compute] Parameter '" << param_name << "' parsed shape: " << ss.str()
-                                  << (is_input_param ? " (input parameter)" : " (constant/internal)");
-          }
-
-          migraphx::program_parameters quant_params;
-
-          if ((int8_enable ^ fp8_enable) && int8_calibration_cache_available) {
-            auto local_param_shapes = prog.get_parameter_shapes();
-            // Add input parameter data and the values they're set to
-            for (auto&& name : local_param_shapes.names()) {
-              if (map_input_name_index.count(name) > 0) {
-                auto input_tensor = ctx.GetInput(map_input_name_index[name]);
-                auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
-                const auto tensor_shape = tensor_info.GetShape();
-                const auto tensor_type = tensor_info.GetElementType();
-
-                migraphx_shape_datatype_t mgx_type;
-                getMIGraphXType(tensor_type, mgx_type);
-                auto mgx_s = local_param_shapes[name];
-
-                if (mgx_type != mgx_s.type()) {
-                  LOGS_DEFAULT(FATAL) << "MIGraphX: param type mismatch";
-                }
-                quant_params.add(name, migraphx::argument(local_param_shapes[name], const_cast<void*>(input_tensor.GetTensorRawData())));
-              }
-            }
-          }
-          calibrate_and_quantize(prog, t, quant_params, fp16_enable, bf16_enable, int8_enable,
-                                 fp8_enable, int8_calibration_cache_available, map_dynamic_range);
-          compile_program(prog, t, exhaustive_tune_);
-
-          // Save compiled model with batch-aware filename
-          LOGS_DEFAULT(INFO) << "[Compute] Saving compiled model with updated batch size to: "
-                                << model_cache_file.string();
-          save_compiled_model(prog, model_cache_file);
-        } else {
-          LOGS_DEFAULT(INFO) << "[Compute] Cache hit! Loaded precompiled model with matching batch size";
-        }
-
-        mgx_state->prog = prog;
-        param_shapes = prog.get_parameter_shapes();
-        no_input_shape = false;
+        handle_input_shape_mismatch(
+            model_cache_path_,
+            mgx_state->model_cache_dir,
+            mxr_filename_prefix,
+            model_path_,
+            exhaustive_tune_,
+            fp16_enable,
+            bf16_enable,
+            fp8_enable,
+            int8_enable,
+            int8_calibration_cache_available,
+            t,
+            ctx,
+            map_input_name_index,
+            map_dynamic_range,
+            onnx_string,
+            cmp_options,
+            prog,
+            param_shapes,
+            input_shapes,
+            no_input_shape);
       }
 
       migraphx::program_parameters m;
