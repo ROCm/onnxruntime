@@ -38,6 +38,15 @@ constexpr auto kModelCachePath = "ORT_MIGRAPHX_MODEL_CACHE_PATH"sv;
 constexpr auto kModelMaxDynamicBatch = "ORT_MIGRAPHX_MAX_DYNAMIC_BATCH"sv;
 }  // namespace migraphx_env_vars
 
+// Tracks which dimensions are symbolic for a given input
+struct SymbolicDimInfo {
+  int dim_index;                // The dimension index (0 = batch, 1, 2, ...)
+  std::string dim_param;        // The symbolic parameter name (e.g., "batch", "sequence_length")
+};
+
+// Map from input name to its symbolic dimensions
+using SymbolicDimsMap = std::unordered_map<std::string, std::vector<SymbolicDimInfo>>;
+
 // Information to construct kernel function state.
 struct MIGraphXFuncState {
   AllocateFunc allocate_func = nullptr;
@@ -49,7 +58,7 @@ struct MIGraphXFuncState {
   migraphx::target t{};
   std::unordered_map<std::string, std::size_t> input_name_indexes;
   std::mutex* mgx_mu_ptr = nullptr;
-  bool no_input_shape = false;
+  bool defer_compilation = false;
   bool fp16_enable = false;
   bool bf16_enable = false;
   bool fp8_enable = false;
@@ -62,6 +71,10 @@ struct MIGraphXFuncState {
   size_t max_dynamic_batch;
   // Reference to the batched programs map for this node (keyed by batch size)
   std::optional<std::reference_wrapper<std::unordered_map<std::size_t, migraphx::program>>> batched_programs_ref = std::nullopt;
+  // Fine-grained tracking of which dimensions are symbolic per input
+  SymbolicDimsMap symbolic_dims;
+  // Flag indicating program has dynamic batch dimension (batch dim is symbolic for at least one input)
+  bool prog_has_dynamic_batch = false;
 };
 
 // Logical device representation.
@@ -142,9 +155,13 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   std::unordered_map<std::string, migraphx::program> map_progs_;
   std::unordered_map<std::string, std::string> map_onnx_string_;
   std::unordered_map<std::string, std::unordered_map<std::string, std::size_t>> map_input_index_;
-  std::unordered_map<std::string, bool> map_no_input_shape_;
+  std::unordered_map<std::string, bool> map_defer_compilation_;
   // Map of batched programs per node: node_name -> (batch_size -> program)
   std::unordered_map<std::string, std::unordered_map<std::size_t, migraphx::program>> batched_programs_;
+  // Fine-grained symbolic dimension tracking per node: node_name -> (input_name -> symbolic dims)
+  std::unordered_map<std::string, SymbolicDimsMap> map_symbolic_dims_;
+  // Flag indicating program has dynamic batch dimension per node
+  std::unordered_map<std::string, bool> map_prog_has_dynamic_batch_;
 
   AllocatorPtr allocator_;
   std::unique_ptr<ModelMetadefIdGenerator> metadef_id_generator_;

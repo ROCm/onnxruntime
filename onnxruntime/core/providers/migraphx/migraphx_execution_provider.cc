@@ -1155,34 +1155,64 @@ MIGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
   return result;
 }
 
-bool get_input_output_names(const GraphViewer& graph,
-                            std::vector<std::string>& input_names,
-                            std::vector<std::string>& output_names) {
+// Result structure for get_input_output_names containing detailed symbolic dimension info
+struct InputOutputNamesResult {
+  bool defer_compilation;        // True if any input has unknown/symbolic dimensions
+  bool prog_has_dynamic_batch;   // True if batch dimension (dim 0) is symbolic for any input
+  SymbolicDimsMap symbolic_dims; // Fine-grained tracking of which dimensions are symbolic per input
+};
+
+InputOutputNamesResult get_input_output_names(const GraphViewer& graph,
+                                              std::vector<std::string>& input_names,
+                                              std::vector<std::string>& output_names) {
   input_names.clear();
   output_names.clear();
+  SymbolicDimsMap symbolic_dims;
+  bool defer_compilation = false;
+  bool prog_has_dynamic_batch = false;
+
   const auto& input_args = graph.GetInputs();
-  std::transform(input_args.begin(), input_args.end(), std::back_inserter(input_names), [](auto& arg) {
-    return arg->Name();
-  });
 
-  bool no_input_shape = std::any_of(input_args.begin(), input_args.end(), [&](auto arg) {
-    if (arg == nullptr)
-      return true;
-
-    auto sptr = arg->Shape();
-    if (sptr == nullptr)
-      return true;
-
-    if (sptr->dim_size() == 0)
-      return true;
-
-    for (int i = 0; i < sptr->dim_size(); i++) {
-      if (sptr->dim(i).has_dim_param())
-        return true;
+  for (const auto& arg : input_args) {
+    if (arg == nullptr) {
+      defer_compilation = true;
+      continue;
     }
 
-    return false;
-  });
+    input_names.push_back(arg->Name());
+    auto sptr = arg->Shape();
+
+    if (sptr == nullptr || sptr->dim_size() == 0) {
+      defer_compilation = true;
+      // Mark all dimensions as unknown for this input
+      LOGS_DEFAULT(VERBOSE) << "[get_input_output_names] Input '" << arg->Name()
+                            << "' has no shape info, treating as fully dynamic";
+      continue;
+    }
+
+    std::vector<SymbolicDimInfo> input_symbolic_dims;
+    for (int i = 0; i < sptr->dim_size(); i++) {
+      if (sptr->dim(i).has_dim_param()) {
+        defer_compilation = true;
+        std::string dim_param = sptr->dim(i).dim_param();
+        input_symbolic_dims.push_back({i, dim_param});
+
+        // Check if this is the batch dimension (dim 0)
+        if (i == 0) {
+          prog_has_dynamic_batch = true;
+          LOGS_DEFAULT(VERBOSE) << "[get_input_output_names] Input '" << arg->Name()
+                                << "' has dynamic batch dimension: " << dim_param;
+        } else {
+          LOGS_DEFAULT(VERBOSE) << "[get_input_output_names] Input '" << arg->Name()
+                                << "' dimension " << i << " is symbolic: " << dim_param;
+        }
+      }
+    }
+
+    if (!input_symbolic_dims.empty()) {
+      symbolic_dims[arg->Name()] = std::move(input_symbolic_dims);
+    }
+  }
 
   const auto& out_args = graph.GetOutputs();
   std::vector<std::string> tmp_out_names;
@@ -1197,7 +1227,15 @@ bool get_input_output_names(const GraphViewer& graph,
       std::back_inserter(output_names),
       [&](const auto& name) { return !name.empty(); });
 
-  return no_input_shape;
+  if (prog_has_dynamic_batch) {
+    LOGS_DEFAULT(VERBOSE) << "[get_input_output_names] Model has dynamic batch dimension";
+  }
+  if (!symbolic_dims.empty()) {
+    LOGS_DEFAULT(VERBOSE) << "[get_input_output_names] Found " << symbolic_dims.size()
+                          << " inputs with symbolic dimensions";
+  }
+
+  return {defer_compilation, prog_has_dynamic_batch, std::move(symbolic_dims)};
 }
 
 // Attempt to load a model and catch any exceptions on load fail.
@@ -1591,7 +1629,7 @@ static void handle_input_shape_mismatch(
   }
 
   param_shapes = prog.get_parameter_shapes();
-  mgx_state->no_input_shape = false;
+  mgx_state->defer_compilation = false;
 }
 
 // Helper: Handle program inputs and outputs binding
@@ -1684,8 +1722,11 @@ struct InputShapeResult {
 
 // Helper: Handle input shape processing for both dynamic and static cases
 // This function processes runtime input shapes and determines if recompilation is needed
+// Now uses fine-grained symbolic dimension tracking for more precise shape matching
 static InputShapeResult handle_input_shape(
-    bool no_input_shape,
+    bool defer_compilation,
+    const SymbolicDimsMap& symbolic_dims,
+    bool prog_has_dynamic_batch,
     const std::unordered_map<std::string, std::size_t>& map_input_name_index,
     Ort::KernelContext& ctx,
     migraphx::onnx_options& cmp_options,
@@ -1695,12 +1736,16 @@ static InputShapeResult handle_input_shape(
   migraphx::program_parameter_shapes param_shapes;
   std::vector<std::int64_t> input_shapes;
 
-  if (no_input_shape) {
+  if (defer_compilation) {
     LOGS_DEFAULT(VERBOSE) << "[Compute] No static input shapes available, setting from runtime inputs";
     // NOTE: map_input_name_index only contains actual runtime inputs, not constants/initializers
     // Constants and initializers are embedded in the graph and MIGraphX infers their shapes
     LOGS_DEFAULT(VERBOSE) << "[Compute] Setting shapes for " << map_input_name_index.size()
                           << " runtime input parameters (excluding constants)";
+
+    if (prog_has_dynamic_batch) {
+      LOGS_DEFAULT(VERBOSE) << "[Compute] Program has dynamic batch dimension - using runtime batch sizes";
+    }
 
     for (const auto& it : map_input_name_index) {
       const auto& name = it.first;
@@ -1722,6 +1767,17 @@ static InputShapeResult handle_input_shape(
       if (!tensor_shape.empty()) {
         LOGS_DEFAULT(VERBOSE) << "[Compute] Input parameter '" << name
                               << "' batch size (runtime override): " << tensor_shape[0];
+
+        // Log which dimensions are symbolic for this input
+        auto sym_it = symbolic_dims.find(name);
+        if (sym_it != symbolic_dims.end()) {
+          for (const auto& sym_dim : sym_it->second) {
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name << "' dimension " << sym_dim.dim_index
+                                  << " ('" << sym_dim.dim_param << "') resolved to: "
+                                  << (sym_dim.dim_index < static_cast<int>(tensor_shape.size())
+                                      ? std::to_string(tensor_shape[sym_dim.dim_index]) : "N/A");
+          }
+        }
 
         std::ostringstream shape_str;
         shape_str << "[";
@@ -1759,16 +1815,58 @@ static InputShapeResult handle_input_shape(
             mgx_lens.clear();
           }
 
-          // Check if shapes match
-          if (mgx_lens != ort_lens) {
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Shape mismatch for input '" << name
-                                  << "': MIGraphX expects [" << mgx_lens.size() << " dims], "
-                                  << "got [" << ort_lens.size() << " dims]";
+          // Check if shapes match - with fine-grained symbolic dimension tracking
+          bool shape_mismatch = (mgx_lens != ort_lens);
 
-            // Check if it's specifically a batch size change
+          if (shape_mismatch) {
+            // Check if mismatch is only in symbolic dimensions (expected and handled)
+            auto sym_it = symbolic_dims.find(name);
+            bool is_symbolic_dim_change = false;
+
+            if (sym_it != symbolic_dims.end() && mgx_lens.size() == ort_lens.size()) {
+              // Check if only symbolic dimensions changed
+              is_symbolic_dim_change = true;
+              for (size_t i = 0; i < mgx_lens.size(); ++i) {
+                if (mgx_lens[i] != ort_lens[i]) {
+                  // Check if this dimension is symbolic
+                  bool is_symbolic = false;
+                  for (const auto& sym_dim : sym_it->second) {
+                    if (sym_dim.dim_index == static_cast<int>(i)) {
+                      is_symbolic = true;
+                      LOGS_DEFAULT(VERBOSE) << "[Compute] Symbolic dimension '" << sym_dim.dim_param
+                                            << "' (dim " << i << ") changed from " << mgx_lens[i]
+                                            << " to " << ort_lens[i] << " for input '" << name << "'";
+                      break;
+                    }
+                  }
+                  if (!is_symbolic) {
+                    is_symbolic_dim_change = false;
+                    LOGS_DEFAULT(WARNING) << "[Compute] Non-symbolic dimension " << i
+                                          << " changed from " << mgx_lens[i] << " to " << ort_lens[i]
+                                          << " for input '" << name << "' - unexpected shape change";
+                    break;
+                  }
+                }
+              }
+            }
+
+            if (is_symbolic_dim_change) {
+              LOGS_DEFAULT(VERBOSE) << "[Compute] Shape change in symbolic dimensions only for input '" << name << "'";
+            } else {
+              LOGS_DEFAULT(VERBOSE) << "[Compute] Shape mismatch for input '" << name
+                                    << "': MIGraphX expects [" << mgx_lens.size() << " dims], "
+                                    << "got [" << ort_lens.size() << " dims]";
+            }
+
+            // Check if it's specifically a batch size change (common case)
             if (mgx_lens.size() == ort_lens.size() && mgx_lens.size() > 0 && mgx_lens[0] != ort_lens[0]) {
-              LOGS_DEFAULT(VERBOSE) << "[Compute] Batch size changed from " << mgx_lens[0]
-                                    << " to " << ort_lens[0] << " for input '" << name << "'";
+              if (prog_has_dynamic_batch) {
+                LOGS_DEFAULT(VERBOSE) << "[Compute] Dynamic batch size changed from " << mgx_lens[0]
+                                      << " to " << ort_lens[0] << " for input '" << name << "'";
+              } else {
+                LOGS_DEFAULT(VERBOSE) << "[Compute] Batch size changed from " << mgx_lens[0]
+                                      << " to " << ort_lens[0] << " for input '" << name << "'";
+              }
             }
 
             cmp_options.set_input_parameter_shape(name, ort_lens);
@@ -1804,7 +1902,7 @@ constexpr std::uint64_t MIGraphX_Version =
 Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& fused_nodes,
                                           std::vector<NodeComputeInfo>& node_compute_funcs) {
   migraphx::onnx_options options;
-  bool no_input_shape = false;
+  bool defer_compilation = false;
   for (const auto& fused_node_graph : fused_nodes) {
     const GraphViewer& graph_body_viewer = fused_node_graph.filtered_graph;
     const Node& fused_node = fused_node_graph.fused_node;
@@ -1923,13 +2021,16 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     dump_model_as_onnx(onnx_string_buffer, std::string{fused_node.Name() + ".onnx"});
 
     std::vector<std::string> input_names, output_names;
-    no_input_shape = no_input_shape || get_input_output_names(graph_body_viewer, input_names, output_names);
+    auto names_result = get_input_output_names(graph_body_viewer, input_names, output_names);
+    defer_compilation = defer_compilation || names_result.defer_compilation;
+    bool prog_has_dynamic_batch = names_result.prog_has_dynamic_batch;
+    SymbolicDimsMap symbolic_dims = std::move(names_result.symbolic_dims);
 
     // Set default batch size for symbolic dimensions in onnx_options
     // NOTE: Only set shapes for actual model inputs, NOT for constants or initializers
     // MIGraphX will automatically infer shapes for constants and intermediate tensors
     constexpr std::size_t default_batch_size = 1;
-    if (no_input_shape) {
+    if (defer_compilation) {
       LOGS_DEFAULT(VERBOSE) << "[Compile] Setting default batch size of " << default_batch_size
                             << " for model input parameters (excluding constants)";
 
@@ -1976,7 +2077,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     // the input fused_node
     migraphx::program prog;
 
-    if (!no_input_shape) {
+    if (!defer_compilation) {
       if (!load_precompiled_model(prog, model_cache_file)) {
         LOGS_DEFAULT(VERBOSE) << "[Compile] Cache miss. Compiling model with batch size included in shapes";
         LOGS_DEFAULT(VERBOSE) << "[Compile] Model cache file will be: " << model_cache_file.string();
@@ -2047,7 +2148,9 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
     map_onnx_string_[fused_node.Name()] = onnx_string_buffer;
     map_input_index_[fused_node.Name()] = input_name_index;
-    map_no_input_shape_[fused_node.Name()] = no_input_shape;
+    map_defer_compilation_[fused_node.Name()] = defer_compilation;
+    map_symbolic_dims_[fused_node.Name()] = symbolic_dims;
+    map_prog_has_dynamic_batch_[fused_node.Name()] = prog_has_dynamic_batch;
 
     // Initialize the batched_programs map for this node if not already done
     if (batched_programs_.find(fused_node.Name()) == batched_programs_.end()) {
@@ -2059,10 +2162,12 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       std::unique_ptr<MIGraphXFuncState> p = std::make_unique<MIGraphXFuncState>();
       *p = {context->allocate_func, context->release_func, context->allocator_handle, map_progs_[context->node_name],
             map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_mu_,
-            map_no_input_shape_[context->node_name], fp16_enable_, bf16_enable_, fp8_enable_, int8_enable_,
+            map_defer_compilation_[context->node_name], fp16_enable_, bf16_enable_, fp8_enable_, int8_enable_,
             int8_calibration_cache_available_, dynamic_range_map_,
             model_cache_path_.string(), dump_model_ops_, exhaustive_tune_, max_dynamic_batch_,
-            std::ref(batched_programs_[context->node_name])};
+            std::ref(batched_programs_[context->node_name]),
+            map_symbolic_dims_[context->node_name],
+            map_prog_has_dynamic_batch_[context->node_name]};
       *state = p.release();
       return 0;
     };
@@ -2079,11 +2184,14 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       std::unordered_map<std::string, std::size_t>& map_input_name_index = mgx_state->input_name_indexes;
       migraphx::program& prog = mgx_state->prog;
       migraphx::onnx_options& cmp_options = mgx_state->options;
-      bool& no_input_shape = mgx_state->no_input_shape;
+      bool& defer_compilation = mgx_state->defer_compilation;
+      const SymbolicDimsMap& symbolic_dims = mgx_state->symbolic_dims;
+      bool prog_has_dynamic_batch = mgx_state->prog_has_dynamic_batch;
 
       // Process input shapes and determine if recompilation is needed
+      // Using fine-grained symbolic dimension tracking for more precise shape matching
       auto [input_shape_match, param_shapes, input_shapes] = handle_input_shape(
-          no_input_shape, map_input_name_index, ctx, cmp_options, prog);
+          defer_compilation, symbolic_dims, prog_has_dynamic_batch, map_input_name_index, ctx, cmp_options, prog);
 
       // input shapes are different, needs to re-parse onnx and
       // re-compile the program
