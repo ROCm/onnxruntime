@@ -1358,6 +1358,19 @@ void save_compiled_model(const migraphx::program& prog, const std::filesystem::p
   }
 }
 
+// Generate a vector of power-of-2 batch sizes from 1 up to max_batch_size (inclusive)
+// E.g., max_batch_size=16 returns {1, 2, 4, 8, 16}
+static std::vector<std::size_t> generate_power_of_two_batch_sizes(std::size_t max_batch_size) {
+  std::vector<std::size_t> batch_sizes;
+  if (max_batch_size == 0) {
+    return batch_sizes;
+  }
+  for (std::size_t bs = 1; bs <= max_batch_size; bs *= 2) {
+    batch_sizes.push_back(bs);
+  }
+  return batch_sizes;
+}
+
 // Order matters here especially if the program uses mixed quantization
 // Calibrate on full precision for int8/fp8 and then quantize down to fp16
 void calibrate_and_quantize(migraphx::program& prog,
