@@ -1238,6 +1238,102 @@ InputOutputNamesResult get_input_output_names(const GraphViewer& graph,
   return {defer_compilation, prog_has_dynamic_batch, std::move(symbolic_dims)};
 }
 
+// Result structure for check_for_symbolic_dims
+struct SymbolicDimsCheckResult {
+  std::vector<std::int64_t> input_shapes;  // Shapes for cache key hash calculation
+  bool has_symbolic_dims;                   // True if any symbolic dimensions found
+  bool symbolic_batch_dim;                  // True if batch dimension (dim 0) is symbolic for any input
+};
+
+// Check input tensors for symbolic dimensions and build shape vector for cache key generation
+// Returns input shapes suitable for hash calculation and whether symbolic dims were found
+static SymbolicDimsCheckResult check_for_symbolic_dims(
+    const std::vector<const NodeArg*>& input_tensor,
+    const std::set<std::string>& session_input_names,
+    int64_t default_batch_size = 1)
+{
+  std::vector<std::int64_t> input_shapes;
+  bool has_symbolic_dims = false;
+  // Track if ALL inputs have symbolic batch dimension (starts true, set false if any concrete batch found)
+  bool all_batch_dims_symbolic = !session_input_names.empty();
+
+  for (std::size_t i = 0; i < session_input_names.size(); ++i) {
+    auto tensor_shape = input_tensor[i]->Shape();
+
+    // Check for symbolic dimensions and handle them
+    if (tensor_shape == nullptr || tensor_shape->dim_size() == 0) {
+      LOGS_DEFAULT(WARNING) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                            << ") has no shape information";
+      has_symbolic_dims = true;
+      // No shape info implies batch is also unknown - keeps all_batch_dims_symbolic as true for this input
+      continue;
+    }
+
+    // Handle batch dimension (first dimension) specially
+    if (tensor_shape->dim_size() > 0) {
+      const auto& batch_dim = tensor_shape->dim(0);
+      int64_t batch_size_to_use = default_batch_size;
+
+      if (batch_dim.has_dim_value()) {
+        batch_size_to_use = batch_dim.dim_value();
+        // Found a concrete batch dimension - not all batch dims are symbolic
+        all_batch_dims_symbolic = false;
+        LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                              << ") batch size: " << batch_size_to_use;
+      } else if (batch_dim.has_dim_param()) {
+        // Symbolic batch dimension - default to 1
+        has_symbolic_dims = true;
+        LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                              << ") batch size is symbolic: " << batch_dim.dim_param()
+                              << ", defaulting to " << default_batch_size;
+      } else {
+        // Unknown batch dimension - default to 1
+        has_symbolic_dims = true;
+        LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                              << ") batch size is unknown, defaulting to " << default_batch_size;
+      }
+
+      // Add batch size to input shapes for hash calculation
+      input_shapes.push_back(batch_size_to_use);
+    }
+
+    // Process all dimensions (skip batch dimension at j=0, start at j=1)
+    for (int j = 1; j < tensor_shape->dim_size(); ++j) {
+      const auto& dim = tensor_shape->dim(j);
+
+      // Handle symbolic dimensions
+      if (dim.has_dim_param()) {
+        LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                              << ") dimension " << j << " is symbolic: " << dim.dim_param();
+        has_symbolic_dims = true;
+        // Use -1 as placeholder for symbolic dimensions in hash calculation
+        input_shapes.push_back(-1);
+      } else if (dim.has_dim_value()) {
+        auto dim_val = dim.dim_value();
+        input_shapes.push_back(dim_val);
+        LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                              << ") dimension " << j << " value: " << dim_val;
+      } else {
+        LOGS_DEFAULT(WARNING) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
+                              << ") dimension " << j << " has no value or param";
+        has_symbolic_dims = true;
+      }
+    }
+  }
+
+  if (has_symbolic_dims) {
+    LOGS_DEFAULT(WARNING) << "[Compile] Model has symbolic dimensions, "
+                          << "dynamic batch dimensions defaulted to " << default_batch_size
+                          << " (will be overridden at runtime if needed)";
+  }
+
+  if (all_batch_dims_symbolic) {
+    LOGS_DEFAULT(VERBOSE) << "[Compile] All inputs have symbolic batch dimension";
+  }
+
+  return {std::move(input_shapes), has_symbolic_dims, all_batch_dims_symbolic};
+}
+
 // Attempt to load a model and catch any exceptions on load fail.
 // Useful to default to EP to trigger the compile if file doesn't exist or loading fails.
 bool load_precompiled_model(migraphx::program& prog, const std::filesystem::path& path) try {
@@ -1921,78 +2017,10 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       session_input_names.insert(i->Name());
     }
 
+    constexpr std::size_t default_batch_size = 1;
     // empty cache path means the MXR caching is disabled - always compile
     if (!model_cache_path_.empty() or first_start_) {
-      std::vector<std::int64_t> input_shapes;
-      bool has_symbolic_dims = false;
-      constexpr int64_t default_batch_size = 1;
-
-      for (std::size_t i = 0; i < session_input_names.size(); ++i) {
-        auto tensor_shape = input_tensor[i]->Shape();
-
-        // Check for symbolic dimensions and handle them
-        if (tensor_shape == nullptr || tensor_shape->dim_size() == 0) {
-          LOGS_DEFAULT(WARNING) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                                << ") has no shape information";
-          has_symbolic_dims = true;
-          continue;
-        }
-
-        // Handle batch dimension (first dimension) specially
-        if (tensor_shape->dim_size() > 0) {
-          const auto& batch_dim = tensor_shape->dim(0);
-          int64_t batch_size_to_use = default_batch_size;
-
-          if (batch_dim.has_dim_value()) {
-            batch_size_to_use = batch_dim.dim_value();
-            LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                                  << ") batch size: " << batch_size_to_use;
-          } else if (batch_dim.has_dim_param()) {
-            // Symbolic batch dimension - default to 1
-            has_symbolic_dims = true;
-            LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                                  << ") batch size is symbolic: " << batch_dim.dim_param()
-                                  << ", defaulting to " << default_batch_size;
-          } else {
-            // Unknown batch dimension - default to 1
-            has_symbolic_dims = true;
-            LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                                  << ") batch size is unknown, defaulting to " << default_batch_size;
-          }
-
-          // Add batch size to input shapes for hash calculation
-          input_shapes.push_back(batch_size_to_use);
-        }
-
-        // Process all dimensions (skip batch dimension at j=0, start at j=1)
-        for (int j = 1; j < tensor_shape->dim_size(); ++j) {
-          const auto& dim = tensor_shape->dim(j);
-
-          // Handle symbolic dimensions
-          if (dim.has_dim_param()) {
-            LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                                  << ") dimension " << j << " is symbolic: " << dim.dim_param();
-            has_symbolic_dims = true;
-            // Use -1 as placeholder for symbolic dimensions in hash calculation
-            input_shapes.push_back(-1);
-          } else if (dim.has_dim_value()) {
-            auto dim_val = dim.dim_value();
-            input_shapes.push_back(dim_val);
-            LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                                  << ") dimension " << j << " value: " << dim_val;
-          } else {
-            LOGS_DEFAULT(WARNING) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                                  << ") dimension " << j << " has no value or param";
-            has_symbolic_dims = true;
-          }
-        }
-      }
-
-      if (has_symbolic_dims) {
-        LOGS_DEFAULT(WARNING) << "[Compile] Model has symbolic dimensions, "
-                              << "dynamic batch dimensions defaulted to " << default_batch_size
-                              << " (will be overridden at runtime if needed)";
-      }
+      auto [input_shapes, has_symbolic_dims, symbolic_batch_dim] = check_for_symbolic_dims(input_tensor, session_input_names, default_batch_size);
 
       if (!input_shapes.empty()) {
         model_cache_file = model_cache_path_ / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
@@ -2029,7 +2057,6 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     // Set default batch size for symbolic dimensions in onnx_options
     // NOTE: Only set shapes for actual model inputs, NOT for constants or initializers
     // MIGraphX will automatically infer shapes for constants and intermediate tensors
-    constexpr std::size_t default_batch_size = 1;
     if (defer_compilation) {
       LOGS_DEFAULT(VERBOSE) << "[Compile] Setting default batch size of " << default_batch_size
                             << " for model input parameters (excluding constants)";
