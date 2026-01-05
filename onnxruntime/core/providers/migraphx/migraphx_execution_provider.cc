@@ -1428,8 +1428,9 @@ static void run_migraphx_program(
   // In case of input parameters are reused as output parameter call hipMemcpy
   auto output_num = prog_outputs->size();
   if (prog_output_indices.size() < output_num) {
+    std::unordered_set<std::size_t> prog_output_indices_set(prog_output_indices.begin(), prog_output_indices.end());
     for (std::size_t i = 0; i < output_num; ++i) {
-      if (std::find(prog_output_indices.begin(), prog_output_indices.end(), static_cast<int>(i)) != prog_output_indices.end())
+      if (prog_output_indices_set.count(i) > 0)
         continue;
       auto gpu_res = (*prog_outputs)[i];
       migraphx::shape res_shape = gpu_res.get_shape();
