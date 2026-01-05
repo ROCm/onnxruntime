@@ -2199,7 +2199,47 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       const SymbolicDimsMap& symbolic_dims = mgx_state->symbolic_dims;
       bool prog_has_dynamic_batch = mgx_state->prog_has_dynamic_batch;
 
-      // Process input shapes and determine if recompilation is needed
+      // Fast path: If program has dynamic batch and we have a cached program for the current batch size,
+      // use it directly without going through shape comparison and recompilation
+      if (prog_has_dynamic_batch && !defer_compilation && mgx_state->batched_programs_ref.has_value()) {
+        // Get current batch size from first input
+        std::size_t current_batch_size = 0;
+        if (!map_input_name_index.empty()) {
+          auto first_input = map_input_name_index.begin();
+          auto input_tensor = ctx.GetInput(first_input->second);
+          auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+          const auto tensor_shape = tensor_info.GetShape();
+          if (!tensor_shape.empty()) {
+            current_batch_size = static_cast<std::size_t>(tensor_shape[0]);
+          }
+        }
+
+        // Check if we have a cached program for this batch size
+        if (current_batch_size > 0) {
+          auto& batched_programs = mgx_state->batched_programs_ref.value().get();
+          auto it = batched_programs.find(current_batch_size);
+          if (it != batched_programs.end()) {
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Fast path: Found cached program for batch size " << current_batch_size;
+
+            // Use the cached program directly
+            migraphx::program& cached_prog = it->second;
+            auto param_shapes = cached_prog.get_parameter_shapes();
+
+            // Bind inputs and allocate outputs for the cached program
+            auto [m, prog_output_indices] = handle_program_input_outputs(param_shapes, map_input_name_index, ctx, cached_prog);
+
+            // Run the cached program
+            run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, cached_prog, m, prog_output_indices);
+
+            return Status::OK();
+          } else {
+            LOGS_DEFAULT(VERBOSE) << "[Compute] No cached program for batch size " << current_batch_size
+                                  << ", falling back to standard path";
+          }
+        }
+      }
+
+      // Standard path: Process input shapes and determine if recompilation is needed
       // Using fine-grained symbolic dimension tracking for more precise shape matching
       auto [input_shape_match, param_shapes, input_shapes] = handle_input_shape(
           defer_compilation, symbolic_dims, prog_has_dynamic_batch, map_input_name_index, ctx, cmp_options, prog);
