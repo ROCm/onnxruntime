@@ -2131,24 +2131,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         LOGS_DEFAULT(VERBOSE) << "[Compile] Cache hit! Loaded precompiled model from: " << model_cache_file.string();
       }
 
-      // Log output shapes to verify they match the input batch size
-      auto prog_output_shapes = prog.get_output_shapes();
-      LOGS_DEFAULT(VERBOSE) << "[Compile] Compiled model has " << prog_output_shapes.size() << " outputs:";
-      for (std::size_t i = 0; i < prog_output_shapes.size(); ++i) {
-        auto out_lens = prog_output_shapes[i].lengths();
-        std::ostringstream ss;
-        ss << "[";
-        for (size_t j = 0; j < out_lens.size(); ++j) {
-          if (j > 0) ss << ", ";
-          ss << out_lens[j];
-        }
-        ss << "]";
-        LOGS_DEFAULT(VERBOSE) << "[Compile] Output " << i << " shape: " << ss.str()
-                              << (out_lens.size() > 0 ? " (batch=" + std::to_string(out_lens[0]) + ")" : "");
-      }
       // NOTE: DO NOT set output shapes as input parameters!
       // Outputs are dynamically inferred by MIGraphX based on input shapes
-
       // Store the compiled/loaded program in batched_programs_ indexed by batch size
       auto param_shapes = prog.get_parameter_shapes();
       if (param_shapes.size() > 0) {
