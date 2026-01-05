@@ -154,7 +154,8 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
       metadef_id_generator_{ModelMetadefIdGenerator::Create()},
       external_alloc_{info.external_alloc},
       external_free_{info.external_free},
-      external_empty_cache_{info.external_empty_cache} {
+      external_empty_cache_{info.external_empty_cache},
+      max_dynamic_batch_{info.max_dynamic_batch} {
   InitProviderOrtApi();
 
   // Set GPU device to be used and read device properties for feature usage.
@@ -237,7 +238,8 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
                         << "\n " << migraphx_provider_option::kInt8CalibTable << ": " << int8_calibration_table_name_
                         << "\n int8_calibration_cache_available: " << int8_calibration_cache_available_
                         << "\n " << migraphx_provider_option::kInt8UseNativeCalibTable << ": " << int8_use_native_calibration_table_
-                        << "\n " << migraphx_provider_option::kModelCacheDir << ": " << model_cache_path_;
+                        << "\n " << migraphx_provider_option::kModelCacheDir << ": " << model_cache_path_
+                        << "\n " << migraphx_provider_option::kModelMaxDynamicBatch << ": " << max_dynamic_batch_;
 }
 
 std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators() {
