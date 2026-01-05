@@ -1551,6 +1551,71 @@ migraphx::program CompileProgramWithBatch(
   return prog;
 }
 
+// Helper: Load a precompiled model from cache or compile and save it
+// This function encapsulates the common pattern of:
+// 1. Try to load from cache
+// 2. If cache miss, compile using CompileProgramWithBatch
+// 3. Save the compiled model to cache
+// Returns the loaded or compiled program
+static migraphx::program load_or_compile_model(
+    const std::filesystem::path& cache_file,
+    const std::string& onnx_string,
+    migraphx::onnx_options& options,
+    const migraphx::target& t,
+    bool fp16_enable,
+    bool bf16_enable,
+    bool int8_enable,
+    bool fp8_enable,
+    bool int8_calibration_cache_available,
+    std::unordered_map<std::string, float>& dynamic_range_map,
+    bool exhaustive_tune,
+    const std::filesystem::path& model_path,
+    const std::vector<std::string>& input_names = {},
+    const std::vector<std::vector<std::int64_t>>& all_input_base_shapes = {},
+    size_t batch_size = 0)
+{
+  migraphx::program prog;
+
+  if (!load_precompiled_model(prog, cache_file)) {
+    if (batch_size > 0) {
+      LOGS_DEFAULT(VERBOSE) << "[LoadOrCompile] Cache miss for batch size " << batch_size << ", compiling...";
+    } else {
+      LOGS_DEFAULT(VERBOSE) << "[LoadOrCompile] Cache miss, compiling...";
+    }
+
+    prog = CompileProgramWithBatch(
+        onnx_string,
+        options,
+        t,
+        fp16_enable,
+        bf16_enable,
+        int8_enable,
+        fp8_enable,
+        int8_calibration_cache_available,
+        dynamic_range_map,
+        exhaustive_tune,
+        model_path,
+        nullptr,  // No runtime context during compile
+        nullptr,  // No input name index map needed
+        input_names,
+        all_input_base_shapes,
+        batch_size);
+
+    save_compiled_model(prog, cache_file);
+    if (!cache_file.empty()) {
+      LOGS_DEFAULT(VERBOSE) << "[LoadOrCompile] Saved compiled model to: " << cache_file.string();
+    }
+  } else {
+    if (batch_size > 0) {
+      LOGS_DEFAULT(VERBOSE) << "[LoadOrCompile] Cache hit for batch size " << batch_size;
+    } else {
+      LOGS_DEFAULT(VERBOSE) << "[LoadOrCompile] Cache hit! Loaded from: " << cache_file.string();
+    }
+  }
+
+  return prog;
+}
+
 // Helper: Run the MIGraphX program and handle outputs
 // This function executes the compiled MIGraphX program and copies outputs that
 // were not pre-allocated (input parameters reused as outputs) to the ORT output tensors
