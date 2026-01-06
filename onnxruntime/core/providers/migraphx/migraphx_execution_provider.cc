@@ -1192,13 +1192,10 @@ static bool inputs_have_dynamic_dims(const GraphViewer& graph) {
 }
 
 // Get input and output names from the graph
-static void get_io_names(const GraphViewer& graph,
-                         std::vector<std::string>& input_names,
-                         std::vector<std::string>& output_names) {
-  input_names.clear();
-  output_names.clear();
-
+static std::pair<std::vector<std::string>, std::vector<std::string>> get_io_names(const GraphViewer& graph) {
   const auto& input_args = graph.GetInputs();
+  std::vector<std::string> input_names;
+  input_names.reserve(input_args.size());
   for (const auto& arg : input_args) {
     if (arg != nullptr) {
       input_names.push_back(arg->Name());
@@ -1206,17 +1203,15 @@ static void get_io_names(const GraphViewer& graph,
   }
 
   const auto& out_args = graph.GetOutputs();
-  std::vector<std::string> tmp_out_names;
-  std::transform(out_args.begin(),
-                 out_args.end(),
-                 std::back_inserter(tmp_out_names),
-                 [](auto& arg) { return arg->Name(); });
+  std::vector<std::string> output_names;
+  output_names.reserve(out_args.size());
+  for (const auto& arg : out_args) {
+    if (arg != nullptr) {
+      output_names.push_back(arg->Name());
+    }
+  }
 
-  std::copy_if(
-      tmp_out_names.begin(),
-      tmp_out_names.end(),
-      std::back_inserter(output_names),
-      [&](const auto& name) { return !name.empty(); });
+  return {std::move(input_names), std::move(output_names)};
 }
 
 // Check input tensors for symbolic dimensions and build shape vector for cache key generation
@@ -2016,8 +2011,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
     dump_model_as_onnx(onnx_string_buffer, std::string{fused_node.Name() + ".onnx"});
 
-    std::vector<std::string> input_names, output_names;
-    get_io_names(graph_body_viewer, input_names, output_names);
+    // map parameter input name to index
+    auto [input_names, output_names] = get_io_names(graph_body_viewer);
 
     // Get initializers and build ONNX options with default shapes for symbolic dimensions
     const auto& initializers = graph_body_viewer.GetAllInitializedTensors();
