@@ -2267,16 +2267,33 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
       // Fast path: If program has dynamic batch and we have a cached program for the current batch size,
       // use it directly without going through shape comparison and recompilation
-      /* if (prog_has_dynamic_batch && mgx_state->max_dynamic_batch > 0 && mgx_state->batched_programs_ref.has_value()) {
-        // Get current batch size from first input
+      if (prog_has_dynamic_batch && mgx_state->batched_programs_ref.has_value()) {
+        // Get current batch size from an input with symbolic batch dimension (dim 0)
+        // This ensures we use the actual dynamic batch input, not weight tensors
         std::size_t current_batch_size = 0;
-        if (!map_input_name_index.empty()) {
-          auto first_input = map_input_name_index.begin();
-          auto input_tensor = ctx.GetInput(first_input->second);
-          auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
-          const auto tensor_shape = tensor_info.GetShape();
-          if (!tensor_shape.empty() && tensor_shape[0] == ) {
-            current_batch_size = static_cast<std::size_t>(tensor_shape[0]);
+        for (const auto& it : map_input_name_index) {
+          const auto& name = it.first;
+
+          // Check if this input has a symbolic batch dimension (dim 0)
+          auto sym_it = symbolic_dims.find(name);
+          if (sym_it != symbolic_dims.end()) {
+            bool has_dynamic_batch = false;
+            for (const auto& sym_dim : sym_it->second) {
+              if (sym_dim.dim_index == 0) {
+                has_dynamic_batch = true;
+                break;
+              }
+            }
+
+            if (has_dynamic_batch) {
+              auto input_tensor = ctx.GetInput(it.second);
+              auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+              const auto tensor_shape = tensor_info.GetShape();
+              if (!tensor_shape.empty()) {
+                current_batch_size = static_cast<std::size_t>(tensor_shape[0]);
+                break;  // Use first dynamic batch input found
+              }
+            }
           }
         }
 
@@ -2303,7 +2320,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
                                   << ", falling back to standard path";
           }
         }
-      } */
+      }
 
       // Standard path: Process input shapes and determine if recompilation is needed
       // Using fine-grained symbolic dimension tracking for more precise shape matching
