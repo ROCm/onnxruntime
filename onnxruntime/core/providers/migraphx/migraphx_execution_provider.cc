@@ -2185,31 +2185,9 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     migraphx::program prog;
 
     if (!defer_compilation) {
-      if (!load_precompiled_model(prog, model_cache_file)) {
-        LOGS_DEFAULT(VERBOSE) << "[Compile] Cache miss. Compiling model with batch size included in shapes";
-        LOGS_DEFAULT(VERBOSE) << "[Compile] Model cache file will be: " << model_cache_file.string();
-
-        // Compile using the helper function (shapes already set in options)
-        // No runtime context available during initial compile - pass nullptr
-        prog = CompileProgramWithBatch(
-            onnx_string_buffer,
-            options,
-            t_,
-            fp16_enable_,
-            bf16_enable_,
-            int8_enable_,
-            fp8_enable_,
-            int8_calibration_cache_available_,
-            dynamic_range_map_,
-            exhaustive_tune_,
-            model_path_);
-
-        LOGS_DEFAULT(VERBOSE) << "[Compile] Saving compiled model to cache: " << model_cache_file.string();
-        save_compiled_model(prog, model_cache_file);
-        LOGS_DEFAULT(VERBOSE) << "[Compile] Model saved successfully with batch-aware filename";
-      } else {
-        LOGS_DEFAULT(VERBOSE) << "[Compile] Cache hit! Loaded precompiled model from: " << model_cache_file.string();
-      }
+      prog = load_or_compile_model(model_cache_file, onnx_string_buffer, options, t_,
+                                   fp16_enable_, bf16_enable_, int8_enable_, fp8_enable_,
+                                   int8_calibration_cache_available_, dynamic_range_map_, exhaustive_tune_, model_path_);
 
       // NOTE: DO NOT set output shapes as input parameters!
       // Outputs are dynamically inferred by MIGraphX based on input shapes
