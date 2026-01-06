@@ -1969,6 +1969,18 @@ static migraphx::onnx_options get_program_parameter_options(
   return options;
 }
 
+// Build a map from input parameter name to index
+template <typename Container>
+static std::unordered_map<std::string, std::size_t> get_input_name_map(const Container& input_defs) {
+  std::unordered_map<std::string, std::size_t> input_name_index;
+  input_name_index.reserve(input_defs.size());
+  std::size_t i = 0;
+  for (const auto& def : input_defs) {
+    input_name_index[def->Name()] = i++;
+  }
+  return input_name_index;
+}
+
 constexpr std::uint64_t MIGraphX_Version =
     ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
 
@@ -1993,13 +2005,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     }
 
 
-    // map parameter input name to index
-    std::unordered_map<std::string, std::size_t> input_name_index;
-    const auto& input_defs = fused_node.InputDefs();
-    input_name_index.reserve(input_defs.size());
-    for (std::size_t i = 0; i < input_defs.size(); ++i) {
-      input_name_index[input_defs[i]->Name()] = i;
-    }
+    auto input_name_index = get_input_name_map(fused_node.InputDefs());
 
     auto model = graph_body_viewer.CreateModel(*GetLogger());
     auto model_proto = model->ToProto();
