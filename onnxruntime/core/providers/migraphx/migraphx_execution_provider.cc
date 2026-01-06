@@ -1922,13 +1922,58 @@ static InputShapeResult handle_input_shape(
   return {input_shape_match, param_shapes, input_shapes};
 }
 
+// Build MIGraphX ONNX options with default shapes for symbolic dimensions
+// Sets default batch size of 1 for symbolic batch dimensions, 1 for other symbolic dimensions
+static migraphx::onnx_options get_program_parameter_options(
+    const std::vector<std::string>& input_names,
+    const std::vector<const NodeArg*>& input_tensor,
+    const InitializedTensorSet& initializers) {
+  migraphx::onnx_options options;
+  constexpr std::size_t default_batch_size = 1;
+
+  for (std::size_t i = 0; i < input_names.size(); ++i) {
+    // Skip if this is an initializer/constant - let MIGraphX infer its shape
+    if (initializers.count(input_names[i]) > 0) {
+      LOGS_DEFAULT(VERBOSE) << "[Compile] Skipping '" << input_names[i] << "' (initializer/constant)";
+      continue;
+    }
+
+    if (i < input_tensor.size()) {
+      auto tensor_shape = input_tensor[i]->Shape();
+      if (tensor_shape != nullptr && tensor_shape->dim_size() > 0) {
+        std::vector<std::size_t> default_shape;
+        bool has_symbolic = false;
+
+        for (int j = 0; j < tensor_shape->dim_size(); ++j) {
+          const auto& dim = tensor_shape->dim(j);
+          if (dim.has_dim_value()) {
+            default_shape.push_back(static_cast<std::size_t>(dim.dim_value()));
+          } else if (dim.has_dim_param() || !dim.has_dim_value()) {
+            // Symbolic or unknown dimension - use default batch size for dim 0, 1 for others
+            has_symbolic = true;
+            default_shape.push_back(j == 0 ? default_batch_size : 1);
+            LOGS_DEFAULT(VERBOSE) << "[Compile] Input parameter '" << input_names[i]
+                                  << "' dimension " << j << " is symbolic, using default";
+          }
+        }
+
+        if (has_symbolic && !default_shape.empty()) {
+          options.set_input_parameter_shape(input_names[i], default_shape);
+          LOGS_DEFAULT(VERBOSE) << "[Compile] Set default shape for input parameter '" << input_names[i] << "'";
+        }
+      }
+    }
+  }
+  LOGS_DEFAULT(VERBOSE) << "[Compile] Constants and initializers will have shapes inferred by MIGraphX";
+
+  return options;
+}
+
 constexpr std::uint64_t MIGraphX_Version =
     ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
 
 Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& fused_nodes,
                                           std::vector<NodeComputeInfo>& node_compute_funcs) {
-  migraphx::onnx_options options;
-  bool defer_compilation = false;
   for (const auto& fused_node_graph : fused_nodes) {
     const GraphViewer& graph_body_viewer = fused_node_graph.filtered_graph;
     const Node& fused_node = fused_node_graph.fused_node;
@@ -1946,8 +1991,6 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     for (auto i : input_tensor) {
       session_input_names.insert(i->Name());
     }
-
-    constexpr std::size_t default_batch_size = 1;
 
 
     // map parameter input name to index
@@ -1970,43 +2013,9 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     std::vector<std::string> input_names, output_names;
     get_io_names(graph_body_viewer, input_names, output_names);
 
-    // Get initializers to filter them out
+    // Get initializers and build ONNX options with default shapes for symbolic dimensions
     const auto& initializers = graph_body_viewer.GetAllInitializedTensors();
-
-    for (std::size_t i = 0; i < input_names.size(); ++i) {
-      // Skip if this is an initializer/constant - let MIGraphX infer its shape
-      if (initializers.count(input_names[i]) > 0) {
-        LOGS_DEFAULT(VERBOSE) << "[Compile] Skipping '" << input_names[i] << "' (initializer/constant)";
-        continue;
-      }
-
-      if (i < input_tensor.size()) {
-        auto tensor_shape = input_tensor[i]->Shape();
-        if (tensor_shape != nullptr && tensor_shape->dim_size() > 0) {
-          std::vector<std::size_t> default_shape;
-          bool has_symbolic = false;
-
-          for (int j = 0; j < tensor_shape->dim_size(); ++j) {
-            const auto& dim = tensor_shape->dim(j);
-            if (dim.has_dim_value()) {
-              default_shape.push_back(static_cast<std::size_t>(dim.dim_value()));
-            } else if (dim.has_dim_param() || !dim.has_dim_value()) {
-              // Symbolic or unknown dimension - use default batch size for dim 0, 1 for others
-              has_symbolic = true;
-              default_shape.push_back(j == 0 ? default_batch_size : 1);
-              LOGS_DEFAULT(VERBOSE) << "[Compile] Input parameter '" << input_names[i]
-                                    << "' dimension " << j << " is symbolic, using default";
-            }
-          }
-
-          if (has_symbolic && !default_shape.empty()) {
-            options.set_input_parameter_shape(input_names[i], default_shape);
-            LOGS_DEFAULT(VERBOSE) << "[Compile] Set default shape for input parameter '" << input_names[i] << "'";
-          }
-        }
-      }
-    }
-    LOGS_DEFAULT(VERBOSE) << "[Compile] Constants and initializers will have shapes inferred by MIGraphX";
+    migraphx::onnx_options options = get_program_parameter_options(input_names, input_tensor, initializers);
 
     // always defer compilation to compute for first inference
     // This is done as if the modic has static input shapes but batch changes we'll need to do an update anyway
@@ -2055,7 +2064,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       migraphx::onnx_options& cmp_options = mgx_state->options;
 
       // Fast path: If compilation is not deferred and we have cached programs, check for a match
-      if (!migx_state->defer_compilation && mgx_state->cached_programs_ref.has_value()) {
+      if (!mgx_state->defer_compilation && mgx_state->cached_programs_ref.has_value()) {
         // Build cache key from ALL inputs
         std::vector<std::int64_t> all_input_shapes;
         for (const auto& it : map_input_name_index) {
@@ -2091,7 +2100,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       // Standard path: Process input shapes and determine if recompilation is needed
       // Using fine-grained symbolic dimension tracking for more precise shape matching
       auto [input_shape_match, param_shapes, input_shapes] = handle_input_shape(
-          defer_compilation, map_input_name_index, ctx, cmp_options, prog);
+          mgx_state->defer_compilation, map_input_name_index, ctx, cmp_options, prog);
 
       // input shapes are different, needs to re-parse onnx and
       // re-compile the program
