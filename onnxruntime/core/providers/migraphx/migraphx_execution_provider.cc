@@ -1157,62 +1157,51 @@ MIGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
   return result;
 }
 
-// Result structure for get_input_output_names containing detailed symbolic dimension info
-struct InputOutputNamesResult {
-  bool defer_compilation;        // True if any input has unknown/symbolic dimensions
-  bool prog_has_dynamic_batch;   // True if batch dimension (dim 0) is symbolic for any input
-  SymbolicDimsMap symbolic_dims; // Fine-grained tracking of which dimensions are symbolic per input
-};
-
-InputOutputNamesResult get_input_output_names(const GraphViewer& graph,
-                                              std::vector<std::string>& input_names,
-                                              std::vector<std::string>& output_names) {
-  input_names.clear();
-  output_names.clear();
-  SymbolicDimsMap symbolic_dims;
-  bool defer_compilation = false;
-  bool prog_has_dynamic_batch = false;
-
+// Check if any inputs have dynamic/symbolic dimensions that require deferred compilation
+static bool inputs_have_dynamic_dims(const GraphViewer& graph) {
   const auto& input_args = graph.GetInputs();
 
   for (const auto& arg : input_args) {
     if (arg == nullptr) {
-      defer_compilation = true;
-      continue;
+      return true;
     }
 
-    input_names.push_back(arg->Name());
     auto sptr = arg->Shape();
-
     if (sptr == nullptr || sptr->dim_size() == 0) {
-      defer_compilation = true;
-      // Mark all dimensions as unknown for this input
-      LOGS_DEFAULT(VERBOSE) << "[get_input_output_names] Input '" << arg->Name()
-                            << "' has no shape info, treating as fully dynamic";
-      continue;
+      LOGS_DEFAULT(VERBOSE) << "[inputs_have_dynamic_dims] Input '" << arg->Name()
+                            << "' has no shape info, treating as dynamic";
+      return true;
     }
 
-    std::vector<SymbolicDimInfo> input_symbolic_dims;
     for (int i = 0; i < sptr->dim_size(); i++) {
       if (sptr->dim(i).has_dim_param()) {
-        defer_compilation = true;
         std::string dim_param = sptr->dim(i).dim_param();
-        input_symbolic_dims.push_back({i, dim_param});
-
-        // Check if this is the batch dimension (dim 0)
         if (i == 0) {
-          prog_has_dynamic_batch = true;
-          LOGS_DEFAULT(VERBOSE) << "[get_input_output_names] Input '" << arg->Name()
+          LOGS_DEFAULT(VERBOSE) << "[inputs_have_dynamic_dims] Input '" << arg->Name()
                                 << "' has dynamic batch dimension: " << dim_param;
         } else {
-          LOGS_DEFAULT(VERBOSE) << "[get_input_output_names] Input '" << arg->Name()
+          LOGS_DEFAULT(VERBOSE) << "[inputs_have_dynamic_dims] Input '" << arg->Name()
                                 << "' dimension " << i << " is symbolic: " << dim_param;
         }
+        return true;
       }
     }
+  }
 
-    if (!input_symbolic_dims.empty()) {
-      symbolic_dims[arg->Name()] = std::move(input_symbolic_dims);
+  return false;
+}
+
+// Get input and output names from the graph
+static void get_io_names(const GraphViewer& graph,
+                         std::vector<std::string>& input_names,
+                         std::vector<std::string>& output_names) {
+  input_names.clear();
+  output_names.clear();
+
+  const auto& input_args = graph.GetInputs();
+  for (const auto& arg : input_args) {
+    if (arg != nullptr) {
+      input_names.push_back(arg->Name());
     }
   }
 
@@ -1228,28 +1217,11 @@ InputOutputNamesResult get_input_output_names(const GraphViewer& graph,
       tmp_out_names.end(),
       std::back_inserter(output_names),
       [&](const auto& name) { return !name.empty(); });
-
-  if (prog_has_dynamic_batch) {
-    LOGS_DEFAULT(VERBOSE) << "[get_input_output_names] Model has dynamic batch dimension";
-  }
-  if (!symbolic_dims.empty()) {
-    LOGS_DEFAULT(VERBOSE) << "[get_input_output_names] Found " << symbolic_dims.size()
-                          << " inputs with symbolic dimensions";
-  }
-
-  return {defer_compilation, prog_has_dynamic_batch, std::move(symbolic_dims)};
 }
-
-// Result structure for check_for_symbolic_dims
-struct SymbolicDimsCheckResult {
-  std::vector<std::int64_t> input_shapes;  // Shapes for cache key hash calculation
-  bool has_symbolic_dims;                   // True if any symbolic dimensions found
-  bool symbolic_batch_dim;                  // True if batch dimension (dim 0) is symbolic for any input
-};
 
 // Check input tensors for symbolic dimensions and build shape vector for cache key generation
 // Returns input shapes suitable for hash calculation and whether symbolic dims were found
-static SymbolicDimsCheckResult check_for_symbolic_dims(
+static std::vector<std::int64_t> check_for_symbolic_dims(
     const std::vector<const NodeArg*>& input_tensor,
     const std::set<std::string>& session_input_names,
     int64_t default_batch_size = 1)
@@ -1333,7 +1305,7 @@ static SymbolicDimsCheckResult check_for_symbolic_dims(
     LOGS_DEFAULT(VERBOSE) << "[Compile] All inputs have symbolic batch dimension";
   }
 
-  return {std::move(input_shapes), has_symbolic_dims, all_batch_dims_symbolic};
+  return {std::move(input_shapes)};
 }
 
 // Attempt to load a model and catch any exceptions on load fail.
@@ -1686,54 +1658,28 @@ static void handle_input_shape_mismatch(
   auto& cmp_options = mgx_state->options;
   const auto& map_input_name_index = mgx_state->input_name_indexes;
 
-  // Determine batch size ONLY from inputs that have symbolic/dynamic dimensions
-  // We must NOT use weight/embedding tensors which have large fixed first dimensions
-  const auto& symbolic_dims = mgx_state->symbolic_dims;
-  std::size_t current_batch_size = 0;
-
-  // First, try to find batch size from inputs with symbolic batch dimension
+  // Build cache key from ALL inputs (not just symbolic ones)
+  std::vector<std::int64_t> all_input_shapes;
   for (const auto& it : map_input_name_index) {
-    const auto& name = it.first;
-
-    // Check if this input has a symbolic batch dimension (dim 0)
-    auto sym_it = symbolic_dims.find(name);
-    if (sym_it != symbolic_dims.end()) {
-      bool has_dynamic_batch = false;
-      for (const auto& sym_dim : sym_it->second) {
-        if (sym_dim.dim_index == 0) {
-          has_dynamic_batch = true;
-          break;
-        }
-      }
-
-      if (has_dynamic_batch) {
-        auto input_tensor = ctx.GetInput(it.second);
-        auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
-        const auto tensor_shape = tensor_info.GetShape();
-        if (!tensor_shape.empty()) {
-          current_batch_size = static_cast<std::size_t>(tensor_shape[0]);
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Found dynamic batch input '" << name
-                                << "' with batch=" << current_batch_size;
-          break;  // Use first dynamic batch input found
-        }
-      }
-    }
+    auto input_tensor = ctx.GetInput(it.second);
+    auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+    const auto tensor_shape = tensor_info.GetShape();
+    all_input_shapes.insert(all_input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
   }
+  auto cache_hash = make_hash(all_input_shapes);
 
-  LOGS_DEFAULT(VERBOSE) << "[Compute] Using batch size: " << current_batch_size;
-
-  // Check in-memory batched_programs cache first (before disk cache)
-  if (mgx_state->batched_programs_ref.has_value() && current_batch_size > 0) {
-    auto& batched_progs = mgx_state->batched_programs_ref.value().get();
-    auto it = batched_progs.find(current_batch_size);
-    if (it != batched_progs.end()) {
-      LOGS_DEFAULT(VERBOSE) << "[Compute] Found batch size " << current_batch_size
-                         << " in in-memory batched_programs cache - using cached program";
+  // Check in-memory cached_programs first (before disk cache)
+  if (mgx_state->cached_programs_ref.has_value()) {
+    auto& cached_progs = mgx_state->cached_programs_ref.value().get();
+    auto it = cached_progs.find(cache_hash);
+    if (it != cached_progs.end()) {
+      LOGS_DEFAULT(VERBOSE) << "[Compute] Found hash " << cache_hash
+                         << " in in-memory cached_programs - using cached program";
       prog = it->second;
-        param_shapes = prog.get_parameter_shapes();
+      param_shapes = prog.get_parameter_shapes();
       return;  // Early exit - no need to load from disk or compile
     } else {
-      LOGS_DEFAULT(VERBOSE) << "[Compute] Batch size " << current_batch_size
+      LOGS_DEFAULT(VERBOSE) << "[Compute] Hash " << cache_hash
                          << " not in in-memory cache, checking disk cache";
     }
   }
@@ -1741,31 +1687,6 @@ static void handle_input_shape_mismatch(
   std::filesystem::path model_cache_file;
   // empty cache path means the MXR caching is disabled - always compile
   if (!model_cache_path.empty()) {
-    // Build cache key from ONLY inputs with symbolic/dynamic dimensions
-    // This ensures different batch sizes get different cache files
-    std::vector<std::int64_t> dynamic_input_shapes;
-
-    for (const auto& it : map_input_name_index) {
-      const auto& name = it.first;
-
-      // Check if this input has any symbolic dimensions
-      auto sym_it = symbolic_dims.find(name);
-      if (sym_it != symbolic_dims.end() && !sym_it->second.empty()) {
-        auto input_tensor = ctx.GetInput(it.second);
-        auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
-        const auto tensor_shape = tensor_info.GetShape();
-
-        // Include ALL dimensions of dynamic inputs in cache key
-        dynamic_input_shapes.insert(dynamic_input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
-      }
-    }
-
-    // If no dynamic inputs found, fall back to using batch size directly
-    if (dynamic_input_shapes.empty()) {
-      dynamic_input_shapes.push_back(static_cast<std::int64_t>(current_batch_size));
-    }
-
-    auto cache_hash = make_hash(dynamic_input_shapes);
     model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + cache_hash + ".mxr");
   }
 
@@ -1821,11 +1742,11 @@ static void handle_input_shape_mismatch(
     LOGS_DEFAULT(VERBOSE) << "[Compute] Cache hit - loaded precompiled model";
   }
 
-  // Store the compiled/loaded program in the in-memory batched_programs cache
-  if (mgx_state->batched_programs_ref.has_value() && current_batch_size > 0) {
-    mgx_state->batched_programs_ref.value().get()[current_batch_size] = prog;
-    LOGS_DEFAULT(VERBOSE) << "[Compute] Stored program for batch size " << current_batch_size
-                          << " in in-memory batched_programs cache";
+  // Store the compiled/loaded program in the in-memory cached_programs cache
+  if (mgx_state->cached_programs_ref.has_value()) {
+    mgx_state->cached_programs_ref.value().get()[cache_hash] = prog;
+    LOGS_DEFAULT(VERBOSE) << "[Compute] Stored program for hash " << cache_hash
+                          << " in in-memory cached_programs cache";
   }
 
   param_shapes = prog.get_parameter_shapes();
@@ -1922,11 +1843,9 @@ struct InputShapeResult {
 
 // Helper: Handle input shape processing for both dynamic and static cases
 // This function processes runtime input shapes and determines if recompilation is needed
-// Now uses fine-grained symbolic dimension tracking for more precise shape matching
+// Compares all input dimensions of the compiled program against runtime input dimensions
 static InputShapeResult handle_input_shape(
     bool defer_compilation,
-    const SymbolicDimsMap& symbolic_dims,
-    bool prog_has_dynamic_batch,
     const std::unordered_map<std::string, std::size_t>& map_input_name_index,
     Ort::KernelContext& ctx,
     migraphx::onnx_options& cmp_options,
@@ -1943,9 +1862,6 @@ static InputShapeResult handle_input_shape(
     LOGS_DEFAULT(VERBOSE) << "[Compute] Setting shapes for " << map_input_name_index.size()
                           << " runtime input parameters (excluding constants)";
 
-    if (prog_has_dynamic_batch) {
-      LOGS_DEFAULT(VERBOSE) << "[Compute] Program has dynamic batch dimension - using runtime batch sizes";
-    }
 
     for (const auto& it : map_input_name_index) {
       const auto& name = it.first;
@@ -1960,22 +1876,16 @@ static InputShapeResult handle_input_shape(
       cmp_options.set_input_parameter_shape(name, ort_lens);
       input_shape_match = false;
 
-      // Only include inputs with symbolic dimensions in cache key (for correct hashing)
-      // This ensures different batch sizes result in different cache files
-      auto sym_it = symbolic_dims.find(name);
-      if (sym_it != symbolic_dims.end() && !sym_it->second.empty()) {
-        input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
-        LOGS_DEFAULT(VERBOSE) << "[Compute] Including dynamic input '" << name << "' in cache key";
-      }
+      // Include ALL inputs in cache key for hash calculation
+      input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
     }
     LOGS_DEFAULT(VERBOSE) << "[Compute] All runtime input shapes set as static parameters in MIGraphX options";
     LOGS_DEFAULT(VERBOSE) << "[Compute] MIGraphX will infer shapes for constants and intermediate tensors";
   } else {
-    LOGS_DEFAULT(VERBOSE) << "Assigning inputs, and parameters from compiled model";
+    LOGS_DEFAULT(VERBOSE) << "[Compute] Checking if compiled program shapes match runtime inputs";
     param_shapes = prog.get_parameter_shapes();
-    auto prog_output_shapes = prog.get_output_shapes();
 
-    // check whether input shapes match with shapes of program inputs
+    // Check if all input shapes match the compiled program's shapes
     if (param_shapes.size() > 0) {
       for (auto&& name : param_shapes.names()) {
         if (map_input_name_index.count(name) > 0) {
@@ -1994,84 +1904,16 @@ static InputShapeResult handle_input_shape(
             mgx_lens.clear();
           }
 
-          // Check if shapes match - with fine-grained symbolic dimension tracking
-          bool shape_mismatch = (mgx_lens != ort_lens);
-
-          if (shape_mismatch) {
-            // Check if mismatch is only in symbolic dimensions (expected and handled)
-            auto sym_it = symbolic_dims.find(name);
-            bool is_symbolic_dim_change = false;
-
-            if (sym_it != symbolic_dims.end() && mgx_lens.size() == ort_lens.size()) {
-              // Check if only symbolic dimensions changed
-              is_symbolic_dim_change = true;
-              for (size_t i = 0; i < mgx_lens.size(); ++i) {
-                if (mgx_lens[i] != ort_lens[i]) {
-                  // Check if this dimension is symbolic
-                  bool is_symbolic = false;
-                  for (const auto& sym_dim : sym_it->second) {
-                    if (sym_dim.dim_index == static_cast<int>(i)) {
-                      is_symbolic = true;
-                      LOGS_DEFAULT(VERBOSE) << "[Compute] Symbolic dimension '" << sym_dim.dim_param
-                                            << "' (dim " << i << ") changed from " << mgx_lens[i]
-                                            << " to " << ort_lens[i] << " for input '" << name << "'";
-                      break;
-                    }
-                  }
-                  if (!is_symbolic) {
-                    is_symbolic_dim_change = false;
-                    LOGS_DEFAULT(WARNING) << "[Compute] Non-symbolic dimension " << i
-                                          << " changed from " << mgx_lens[i] << " to " << ort_lens[i]
-                                          << " for input '" << name << "' - unexpected shape change";
-                    break;
-                  }
-                }
-              }
-            }
-
-            if (is_symbolic_dim_change) {
-              LOGS_DEFAULT(VERBOSE) << "[Compute] Shape change in symbolic dimensions only for input '" << name << "'";
-            } else {
-              LOGS_DEFAULT(VERBOSE) << "[Compute] Shape mismatch for input '" << name
-                                    << "': MIGraphX expects [" << mgx_lens.size() << " dims], "
-                                    << "got [" << ort_lens.size() << " dims]";
-            }
-
-            // Check if it's specifically a batch size change (common case)
-            if (mgx_lens.size() == ort_lens.size() && mgx_lens.size() > 0 && mgx_lens[0] != ort_lens[0]) {
-              if (prog_has_dynamic_batch) {
-                LOGS_DEFAULT(VERBOSE) << "[Compute] Dynamic batch size changed from " << mgx_lens[0]
-                                      << " to " << ort_lens[0] << " for input '" << name << "'";
-              } else {
-                LOGS_DEFAULT(VERBOSE) << "[Compute] Batch size changed from " << mgx_lens[0]
-                                      << " to " << ort_lens[0] << " for input '" << name << "'";
-              }
-            }
-
+          // Check if shapes match
+          if (mgx_lens != ort_lens) {
+            LOGS_DEFAULT(VERBOSE) << "[Compute] Shape mismatch for input '" << name << "': "
+                                  << "compiled shape vs runtime shape differ";
             cmp_options.set_input_parameter_shape(name, ort_lens);
             input_shape_match = false;
           }
 
-          // Only include inputs with symbolic dimensions in cache key (for correct hashing)
-          auto sym_it = symbolic_dims.find(name);
-          if (sym_it != symbolic_dims.end() && !sym_it->second.empty()) {
-            input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
-          }
-
-          // Log batch size and full shape for tracking
-          if (!tensor_shape.empty()) {
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name << "' batch size: " << tensor_shape[0];
-
-            // Log full shape for debugging symbolic dimensions
-            std::ostringstream shape_str;
-            shape_str << "[";
-            for (size_t i = 0; i < tensor_shape.size(); ++i) {
-              if (i > 0) shape_str << ", ";
-              shape_str << tensor_shape[i];
-            }
-            shape_str << "]";
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Input '" << name << "' full shape: " << shape_str.str();
-          }
+          // Include ALL inputs in cache key for hash calculation
+          input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
         }
       }
     }
@@ -2106,18 +1948,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     }
 
     constexpr std::size_t default_batch_size = 1;
-    // empty cache path means the MXR caching is disabled - always compile
-    if (!model_cache_path_.empty() or first_start_) {
-      auto [input_shapes, has_symbolic_dims, symbolic_batch_dim] = check_for_symbolic_dims(input_tensor, session_input_names, default_batch_size);
 
-      if (!input_shapes.empty()) {
-        model_cache_file = model_cache_path_ / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
-      } else {
-        LOGS_DEFAULT(WARNING) << "[Compile] Input shapes are empty, skipping model cache file hash generation";
-      }
-
-      first_start_ = false;
-    }
 
     // map parameter input name to index
     std::unordered_map<std::string, std::size_t> input_name_index;
@@ -2137,101 +1968,64 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     dump_model_as_onnx(onnx_string_buffer, std::string{fused_node.Name() + ".onnx"});
 
     std::vector<std::string> input_names, output_names;
-    auto names_result = get_input_output_names(graph_body_viewer, input_names, output_names);
-    defer_compilation = defer_compilation || names_result.defer_compilation;
-    bool prog_has_dynamic_batch = names_result.prog_has_dynamic_batch;
-    SymbolicDimsMap symbolic_dims = std::move(names_result.symbolic_dims);
+    get_io_names(graph_body_viewer, input_names, output_names);
 
-    // Set default batch size for symbolic dimensions in onnx_options
-    // NOTE: Only set shapes for actual model inputs, NOT for constants or initializers
-    // MIGraphX will automatically infer shapes for constants and intermediate tensors
-    if (defer_compilation) {
-      LOGS_DEFAULT(VERBOSE) << "[Compile] Setting default batch size of " << default_batch_size
-                            << " for model input parameters (excluding constants)";
+    // Get initializers to filter them out
+    const auto& initializers = graph_body_viewer.GetAllInitializedTensors();
 
-      // Get initializers to filter them out
-      const auto& initializers = graph_body_viewer.GetAllInitializedTensors();
+    for (std::size_t i = 0; i < input_names.size(); ++i) {
+      // Skip if this is an initializer/constant - let MIGraphX infer its shape
+      if (initializers.count(input_names[i]) > 0) {
+        LOGS_DEFAULT(VERBOSE) << "[Compile] Skipping '" << input_names[i] << "' (initializer/constant)";
+        continue;
+      }
 
-      for (std::size_t i = 0; i < input_names.size(); ++i) {
-        // Skip if this is an initializer/constant - let MIGraphX infer its shape
-        if (initializers.count(input_names[i]) > 0) {
-          LOGS_DEFAULT(VERBOSE) << "[Compile] Skipping '" << input_names[i] << "' (initializer/constant)";
-          continue;
-        }
+      if (i < input_tensor.size()) {
+        auto tensor_shape = input_tensor[i]->Shape();
+        if (tensor_shape != nullptr && tensor_shape->dim_size() > 0) {
+          std::vector<std::size_t> default_shape;
+          bool has_symbolic = false;
 
-        if (i < input_tensor.size()) {
-          auto tensor_shape = input_tensor[i]->Shape();
-          if (tensor_shape != nullptr && tensor_shape->dim_size() > 0) {
-            std::vector<std::size_t> default_shape;
-            bool has_symbolic = false;
-
-            for (int j = 0; j < tensor_shape->dim_size(); ++j) {
-              const auto& dim = tensor_shape->dim(j);
-              if (dim.has_dim_value()) {
-                default_shape.push_back(static_cast<std::size_t>(dim.dim_value()));
-              } else if (dim.has_dim_param() || !dim.has_dim_value()) {
-                // Symbolic or unknown dimension - use default batch size for dim 0, 1 for others
-                has_symbolic = true;
-                default_shape.push_back(j == 0 ? default_batch_size : 1);
-                LOGS_DEFAULT(VERBOSE) << "[Compile] Input parameter '" << input_names[i]
-                                      << "' dimension " << j << " is symbolic, using default";
-              }
+          for (int j = 0; j < tensor_shape->dim_size(); ++j) {
+            const auto& dim = tensor_shape->dim(j);
+            if (dim.has_dim_value()) {
+              default_shape.push_back(static_cast<std::size_t>(dim.dim_value()));
+            } else if (dim.has_dim_param() || !dim.has_dim_value()) {
+              // Symbolic or unknown dimension - use default batch size for dim 0, 1 for others
+              has_symbolic = true;
+              default_shape.push_back(j == 0 ? default_batch_size : 1);
+              LOGS_DEFAULT(VERBOSE) << "[Compile] Input parameter '" << input_names[i]
+                                    << "' dimension " << j << " is symbolic, using default";
             }
+          }
 
-            if (has_symbolic && !default_shape.empty()) {
-              options.set_input_parameter_shape(input_names[i], default_shape);
-              LOGS_DEFAULT(VERBOSE) << "[Compile] Set default shape for input parameter '" << input_names[i] << "'";
-            }
+          if (has_symbolic && !default_shape.empty()) {
+            options.set_input_parameter_shape(input_names[i], default_shape);
+            LOGS_DEFAULT(VERBOSE) << "[Compile] Set default shape for input parameter '" << input_names[i] << "'";
           }
         }
       }
-      LOGS_DEFAULT(VERBOSE) << "[Compile] Constants and initializers will have shapes inferred by MIGraphX";
     }
+    LOGS_DEFAULT(VERBOSE) << "[Compile] Constants and initializers will have shapes inferred by MIGraphX";
+
+    // always defer compilation to compute for first inference
+    // This is done as if the modic has static input shapes but batch changes we'll need to do an update anyway
+    // In the case of dynamic shapes, like with dynamic batch or sequence length we wont know input shapes until runtime
+    map_defer_compilation_[fused_node.Name()] = true;
 
     // by parsing the model_proto, create a program corresponding to
     // the input fused_node
     migraphx::program prog;
-
-    if (!defer_compilation) {
-      prog = load_or_compile_model(model_cache_file, onnx_string_buffer, options, t_,
-                                   fp16_enable_, bf16_enable_, int8_enable_, fp8_enable_,
-                                   int8_calibration_cache_available_, dynamic_range_map_, exhaustive_tune_, model_path_);
-
-      // NOTE: DO NOT set output shapes as input parameters!
-      // Outputs are dynamically inferred by MIGraphX based on input shapes
-      // Store the compiled/loaded program in batched_programs_ indexed by batch size
-      auto param_shapes = prog.get_parameter_shapes();
-      if (param_shapes.size() > 0) {
-        // Extract batch size from first input parameter
-        for (auto&& name : param_shapes.names()) {
-          auto shape = param_shapes[name];
-          auto lens = shape.lengths();
-          if (!lens.empty()) {
-            std::size_t batch_size = lens[0];
-            batched_programs_[fused_node.Name()][batch_size] = prog;
-            LOGS_DEFAULT(VERBOSE) << "[Compile] Stored program for batch size " << batch_size
-                                  << " in batched_programs cache";
-            break;  // Only need batch size from first input
-          }
-        }
-      }
-    } else {
-      LOGS_DEFAULT(VERBOSE) << "[Compile] Deferring compilation until runtime (no static input shapes available)";
-      LOGS_DEFAULT(VERBOSE) << "[Compile] Will use default batch size of 1, then recompile with actual batch at runtime";
-    }
 
     // compile the program
     map_progs_[fused_node.Name()] = prog;
 
     map_onnx_string_[fused_node.Name()] = onnx_string_buffer;
     map_input_index_[fused_node.Name()] = input_name_index;
-    map_defer_compilation_[fused_node.Name()] = defer_compilation;
-    map_symbolic_dims_[fused_node.Name()] = symbolic_dims;
-    map_prog_has_dynamic_batch_[fused_node.Name()] = prog_has_dynamic_batch;
 
-    // Initialize the batched_programs map for this node if not already done
-    if (batched_programs_.find(fused_node.Name()) == batched_programs_.end()) {
-      batched_programs_[fused_node.Name()] = std::unordered_map<std::size_t, migraphx::program>();
+    // Initialize the cached_programs map for this node if not already done
+    if (cached_programs_.find(fused_node.Name()) == cached_programs_.end()) {
+      cached_programs_[fused_node.Name()] = std::unordered_map<std::string, migraphx::program>();
     }
 
     NodeComputeInfo compute_info;
@@ -2242,9 +2036,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             map_defer_compilation_[context->node_name], fp16_enable_, bf16_enable_, fp8_enable_, int8_enable_,
             int8_calibration_cache_available_, dynamic_range_map_,
             model_cache_path_.string(), dump_model_ops_, exhaustive_tune_, max_dynamic_batch_,
-            std::ref(batched_programs_[context->node_name]),
-            map_symbolic_dims_[context->node_name],
-            map_prog_has_dynamic_batch_[context->node_name]};
+            std::ref(cached_programs_[context->node_name])};
       *state = p.release();
       return 0;
     };
@@ -2261,71 +2053,45 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       std::unordered_map<std::string, std::size_t>& map_input_name_index = mgx_state->input_name_indexes;
       migraphx::program& prog = mgx_state->prog;
       migraphx::onnx_options& cmp_options = mgx_state->options;
-      bool& defer_compilation = mgx_state->defer_compilation;
-      const SymbolicDimsMap& symbolic_dims = mgx_state->symbolic_dims;
-      bool prog_has_dynamic_batch = mgx_state->prog_has_dynamic_batch;
 
-      // Fast path: If program has dynamic batch and we have a cached program for the current batch size,
-      // use it directly without going through shape comparison and recompilation
-      if (prog_has_dynamic_batch && mgx_state->batched_programs_ref.has_value()) {
-        // Get current batch size from an input with symbolic batch dimension (dim 0)
-        // This ensures we use the actual dynamic batch input, not weight tensors
-        std::size_t current_batch_size = 0;
+      // Fast path: If compilation is not deferred and we have cached programs, check for a match
+      if (!migx_state->defer_compilation && mgx_state->cached_programs_ref.has_value()) {
+        // Build cache key from ALL inputs
+        std::vector<std::int64_t> all_input_shapes;
         for (const auto& it : map_input_name_index) {
-          const auto& name = it.first;
-
-          // Check if this input has a symbolic batch dimension (dim 0)
-          auto sym_it = symbolic_dims.find(name);
-          if (sym_it != symbolic_dims.end()) {
-            bool has_dynamic_batch = false;
-            for (const auto& sym_dim : sym_it->second) {
-              if (sym_dim.dim_index == 0) {
-                has_dynamic_batch = true;
-                break;
-              }
-            }
-
-            if (has_dynamic_batch) {
-              auto input_tensor = ctx.GetInput(it.second);
-              auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
-              const auto tensor_shape = tensor_info.GetShape();
-              if (!tensor_shape.empty()) {
-                current_batch_size = static_cast<std::size_t>(tensor_shape[0]);
-                break;  // Use first dynamic batch input found
-              }
-            }
-          }
+          auto input_tensor = ctx.GetInput(it.second);
+          auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+          const auto tensor_shape = tensor_info.GetShape();
+          all_input_shapes.insert(all_input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
         }
 
-        // Check if we have a cached program for this batch size
-        if (current_batch_size > 0) {
-          auto& batched_programs = mgx_state->batched_programs_ref.value().get();
-          auto it = batched_programs.find(current_batch_size);
-          if (it != batched_programs.end()) {
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Fast path: Found cached program for batch size " << current_batch_size;
+        auto cache_hash = make_hash(all_input_shapes);
+        auto& cached_programs = mgx_state->cached_programs_ref.value().get();
+        auto it = cached_programs.find(cache_hash);
+        if (it != cached_programs.end()) {
+          LOGS_DEFAULT(VERBOSE) << "[Compute] Fast path: Found cached program for hash " << cache_hash;
 
-            // Use the cached program directly
-            migraphx::program& cached_prog = it->second;
-            auto param_shapes = cached_prog.get_parameter_shapes();
+          // Use the cached program directly
+          migraphx::program& cached_prog = it->second;
+          auto param_shapes = cached_prog.get_parameter_shapes();
 
-            // Bind inputs and allocate outputs for the cached program
-            auto [m, prog_output_indices] = handle_program_input_outputs(param_shapes, map_input_name_index, ctx, cached_prog);
+          // Bind inputs and allocate outputs for the cached program
+          auto [m, prog_output_indices] = handle_program_input_outputs(param_shapes, map_input_name_index, ctx, cached_prog);
 
-            // Run the cached program
-            run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, cached_prog, m, prog_output_indices);
+          // Run the cached program
+          run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, cached_prog, m, prog_output_indices);
 
-            return Status::OK();
-          } else {
-            LOGS_DEFAULT(VERBOSE) << "[Compute] No cached program for batch size " << current_batch_size
-                                  << ", falling back to standard path";
-          }
+          return Status::OK();
+        } else {
+          LOGS_DEFAULT(VERBOSE) << "[Compute] No cached program for hash " << cache_hash
+                                << ", falling back to standard path";
         }
       }
 
       // Standard path: Process input shapes and determine if recompilation is needed
       // Using fine-grained symbolic dimension tracking for more precise shape matching
       auto [input_shape_match, param_shapes, input_shapes] = handle_input_shape(
-          defer_compilation, symbolic_dims, prog_has_dynamic_batch, map_input_name_index, ctx, cmp_options, prog);
+          defer_compilation, map_input_name_index, ctx, cmp_options, prog);
 
       // input shapes are different, needs to re-parse onnx and
       // re-compile the program
