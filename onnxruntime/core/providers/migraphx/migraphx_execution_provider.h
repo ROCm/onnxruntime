@@ -100,7 +100,10 @@ struct MIGraphXFuncState {
   // Cached output indices for pre-allocated outputs (used by run_migraphx_program)
   std::vector<std::size_t> cached_prog_output_indices;
 
-  // Last input shape hash for ultra-fast path detection
+  // Last input shapes for quick comparison (avoids hash computation in ultra-fast path)
+  std::vector<std::int64_t> last_input_shapes_raw;
+
+  // Last input shape hash (only computed when shapes change, used for cache lookup)
   std::string last_input_shape_hash;
 
   // Flag indicating caches are valid

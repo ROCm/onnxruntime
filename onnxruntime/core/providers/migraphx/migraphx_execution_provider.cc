@@ -1742,6 +1742,7 @@ static void handle_input_shape_mismatch(
   mgx_state->cached_output_ort_shapes.clear();
   mgx_state->cached_prog_params = std::nullopt;
   mgx_state->cached_prog_output_indices.clear();
+  mgx_state->last_input_shapes_raw.clear();
   mgx_state->last_input_shape_hash.clear();
 
   param_shapes = prog.get_parameter_shapes();
@@ -2146,7 +2147,60 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       auto& cmp_options = mgx_state->options;
 
       // ═══════════════════════════════════════════════════════════════════════
-      // Build input shape hash ONCE - used for all cache lookups
+      // ULTRA-FAST PATH: Quick shape comparison without hash computation
+      // Directly compare raw shape values - avoids MurmurHash overhead
+      // ═══════════════════════════════════════════════════════════════════════
+      if (mgx_state->caches_valid && !mgx_state->last_input_shapes_raw.empty()) {
+        bool shapes_match = true;
+        std::size_t offset = 0;
+        const auto& last_shapes = mgx_state->last_input_shapes_raw;
+
+        // Quick comparison using cached input list (already in correct order)
+        for (const auto& inp : mgx_state->cached_inputs) {
+          const auto& shape = ctx.GetInput(inp.ort_index).GetTensorTypeAndShapeInfo().GetShape();
+          if (offset + shape.size() > last_shapes.size()) {
+            shapes_match = false;
+            break;
+          }
+          for (std::size_t i = 0; i < shape.size(); ++i) {
+            if (last_shapes[offset + i] != shape[i]) {
+              shapes_match = false;
+              break;
+            }
+          }
+          if (!shapes_match) break;
+          offset += shape.size();
+        }
+
+        if (shapes_match && offset == last_shapes.size()) {
+          // Shapes unchanged - rebind pointers and run directly
+          auto& m = mgx_state->cached_prog_params.value();
+
+          // Rebind inputs - direct iteration, no map lookups
+          for (const auto& inp : mgx_state->cached_inputs) {
+            const auto& input_tensor = ctx.GetInput(inp.ort_index);
+            m.add(inp.name.c_str(), migraphx::argument(inp.mgx_shape,
+                                               const_cast<void*>(input_tensor.GetTensorRawData())));
+          }
+
+          // Rebind outputs - direct iteration, uses pre-allocated shape vectors
+          for (std::size_t i = 0; i < mgx_state->cached_outputs.size(); ++i) {
+            const auto& out = mgx_state->cached_outputs[i];
+            const auto& ort_shape = mgx_state->cached_output_ort_shapes[i];
+            auto output_tensor = ctx.GetOutput(out.output_index, ort_shape.data(), ort_shape.size());
+            m.add(out.name.c_str(), migraphx::argument(out.mgx_shape,
+                                               output_tensor.GetTensorMutableRawData()));
+          }
+
+          // Run directly - minimal overhead path
+          run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m,
+                               mgx_state->cached_prog_output_indices);
+          return Status::OK();
+        }
+      }
+
+      // ═══════════════════════════════════════════════════════════════════════
+      // Build input shape hash - only computed when shapes change
       // ═══════════════════════════════════════════════════════════════════════
       std::vector<std::int64_t> all_input_shapes;
       all_input_shapes.reserve(map_input_name_index.size() * 4);  // Pre-allocate
@@ -2155,35 +2209,6 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         all_input_shapes.insert(all_input_shapes.end(), shape.begin(), shape.end());
       }
       const auto current_hash = make_hash(all_input_shapes);
-
-      // ═══════════════════════════════════════════════════════════════════════
-      // ULTRA-FAST PATH: Same shapes as last run - just rebind pointers and run
-      // No map lookups, no string parsing, no vector allocations
-      // ═══════════════════════════════════════════════════════════════════════
-      if (mgx_state->caches_valid && current_hash == mgx_state->last_input_shape_hash) {
-        auto& m = mgx_state->cached_prog_params.value();
-
-        // Rebind inputs - direct iteration, no map lookups
-        for (const auto& inp : mgx_state->cached_inputs) {
-          const auto& input_tensor = ctx.GetInput(inp.ort_index);
-          m.add(inp.name.c_str(), migraphx::argument(inp.mgx_shape,
-                                             const_cast<void*>(input_tensor.GetTensorRawData())));
-        }
-
-        // Rebind outputs - direct iteration, uses pre-allocated shape vectors
-        for (std::size_t i = 0; i < mgx_state->cached_outputs.size(); ++i) {
-          const auto& out = mgx_state->cached_outputs[i];
-          const auto& ort_shape = mgx_state->cached_output_ort_shapes[i];
-          auto output_tensor = ctx.GetOutput(out.output_index, ort_shape.data(), ort_shape.size());
-          m.add(out.name.c_str(), migraphx::argument(out.mgx_shape,
-                                             output_tensor.GetTensorMutableRawData()));
-        }
-
-        // Run directly - minimal overhead path
-        run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m,
-                             mgx_state->cached_prog_output_indices);
-        return Status::OK();
-      }
 
       // ═══════════════════════════════════════════════════════════════════════
       // FAST PATH: Check cached programs for this shape hash
@@ -2208,6 +2233,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
           mgx_state->cached_prog_params = std::move(m);
           mgx_state->cached_prog_output_indices = std::move(prog_output_indices);
+          mgx_state->last_input_shapes_raw = std::move(all_input_shapes);  // Store for quick comparison
           mgx_state->last_input_shape_hash = current_hash;
           mgx_state->caches_valid = true;
 
@@ -2254,6 +2280,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       // Complete cache population
       mgx_state->cached_prog_params = m;
       mgx_state->cached_prog_output_indices = prog_output_indices;
+      mgx_state->last_input_shapes_raw = std::move(all_input_shapes);  // Store for quick comparison
       mgx_state->last_input_shape_hash = current_hash;
       mgx_state->caches_valid = true;
 
