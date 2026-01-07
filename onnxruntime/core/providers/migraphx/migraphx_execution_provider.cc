@@ -1526,6 +1526,7 @@ migraphx::program CompileProgramWithBatch(
 // 2. If cache miss, compile using CompileProgramWithBatch
 // 3. Save the compiled model to cache
 // Returns the loaded or compiled program
+// Optional ctx and map_input_name_index can be provided for int8/fp8 calibration during compilation
 static migraphx::program load_or_compile_model(
     const std::filesystem::path& cache_file,
     const std::string& onnx_string,
@@ -1539,6 +1540,8 @@ static migraphx::program load_or_compile_model(
     std::unordered_map<std::string, float>& dynamic_range_map,
     bool exhaustive_tune,
     const std::filesystem::path& model_path,
+    Ort::KernelContext* ctx = nullptr,
+    const std::unordered_map<std::string, std::size_t>* map_input_name_index = nullptr,
     const std::vector<std::string>& input_names = {},
     const std::vector<std::vector<std::int64_t>>& all_input_base_shapes = {},
     size_t batch_size = 0)
@@ -1564,8 +1567,8 @@ static migraphx::program load_or_compile_model(
         dynamic_range_map,
         exhaustive_tune,
         model_path,
-        nullptr,  // No runtime context during compile
-        nullptr,  // No input name index map needed
+        ctx,
+        map_input_name_index,
         input_names,
         all_input_base_shapes,
         batch_size);
@@ -1678,57 +1681,46 @@ static void handle_input_shape_mismatch(
     model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + cache_hash + ".mxr");
   }
 
-  if (!load_precompiled_model(prog, model_cache_file)) {
-    LOGS_DEFAULT(VERBOSE) << "[Compute] Cache miss. Compiling model with updated batch size";
+  // Set input parameter shapes from runtime tensors before compilation
+  LOGS_DEFAULT(VERBOSE) << "[Compute] Setting " << map_input_name_index.size()
+                        << " input parameter shapes as static in MIGraphX options (excluding constants)";
 
-    // Set input parameter shapes from runtime tensors before compilation
-    LOGS_DEFAULT(VERBOSE) << "[Compute] Setting " << map_input_name_index.size()
-                          << " input parameter shapes as static in MIGraphX options (excluding constants)";
+  for (const auto& it : map_input_name_index) {
+    const auto& name = it.first;
+    const auto& index = it.second;
+    auto input_tensor = ctx.GetInput(index);
+    auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+    const auto tensor_shape = tensor_info.GetShape();
+    std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
+    cmp_options.set_input_parameter_shape(name, ort_lens);
 
-    for (const auto& it : map_input_name_index) {
-      const auto& name = it.first;
-      const auto& index = it.second;
-      auto input_tensor = ctx.GetInput(index);
-      auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
-      const auto tensor_shape = tensor_info.GetShape();
-      std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
-      cmp_options.set_input_parameter_shape(name, ort_lens);
-
-      LOGS_DEFAULT(VERBOSE) << "[Compute] Set static shape for input parameter '" << name << "': ["
-                            << [&]() {
-                                std::ostringstream ss;
-                                for (size_t i = 0; i < ort_lens.size(); ++i) {
-                                  if (i > 0) ss << ", ";
-                                  ss << ort_lens[i];
-                                }
-                                return ss.str();
-                              }() << "]";
-    }
-
-    // Compile using the helper function (shapes already set in cmp_options)
-    // Pass ctx and map_input_name_index for quant_params population if int8/fp8 calibration is needed
-    prog = CompileProgramWithBatch(
-        mgx_state->onnx_string,
-        cmp_options,
-        mgx_state->t,
-        mgx_state->fp16_enable,
-        mgx_state->bf16_enable,
-        mgx_state->int8_enable,
-        mgx_state->fp8_enable,
-        mgx_state->int8_calibration_cache_available,
-        mgx_state->dynamic_range_map,
-        mgx_state->exhaustive_tune,
-        mgx_state->model_cache_dir,
-        &ctx,
-        &map_input_name_index);
-
-    // Save compiled model with batch-aware filename
-    LOGS_DEFAULT(VERBOSE) << "[Compute] Saving compiled model with updated batch size to: "
-                          << model_cache_file.string();
-    save_compiled_model(prog, model_cache_file);
-  } else {
-    LOGS_DEFAULT(VERBOSE) << "[Compute] Cache hit - loaded precompiled model";
+    LOGS_DEFAULT(VERBOSE) << "[Compute] Set static shape for input parameter '" << name << "': ["
+                          << [&]() {
+                              std::ostringstream ss;
+                              for (size_t i = 0; i < ort_lens.size(); ++i) {
+                                if (i > 0) ss << ", ";
+                                ss << ort_lens[i];
+                              }
+                              return ss.str();
+                            }() << "]";
   }
+
+  // Use load_or_compile_model helper - handles cache loading, compilation, and saving
+  prog = load_or_compile_model(
+      model_cache_file,
+      mgx_state->onnx_string,
+      cmp_options,
+      mgx_state->t,
+      mgx_state->fp16_enable,
+      mgx_state->bf16_enable,
+      mgx_state->int8_enable,
+      mgx_state->fp8_enable,
+      mgx_state->int8_calibration_cache_available,
+      mgx_state->dynamic_range_map,
+      mgx_state->exhaustive_tune,
+      mgx_state->model_cache_dir,
+      &ctx,
+      &map_input_name_index);
 
   // Store the compiled/loaded program in the in-memory cached_programs cache
   if (mgx_state->cached_programs_ref.has_value()) {
