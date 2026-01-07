@@ -68,6 +68,24 @@ struct MIGraphXFuncState {
   size_t max_dynamic_batch;
   // Reference to the cached programs map for this node (keyed by input shape hash)
   std::optional<std::reference_wrapper<std::unordered_map<std::string, migraphx::program>>> cached_programs_ref = std::nullopt;
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PERFORMANCE CACHES - Avoid redundant MIGraphX API calls per inference
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Cached parameter shapes (invalidated on recompilation)
+  std::optional<migraphx::program_parameter_shapes> cached_param_shapes;
+  // Cached output shapes (invalidated on recompilation)
+  std::optional<migraphx::shapes> cached_output_shapes;
+  // Cached parameter names vector (avoid repeated .names() calls)
+  std::vector<std::string> cached_param_names;
+  // Cached program_parameters object for ultra-fast rebinding
+  std::optional<migraphx::program_parameters> cached_prog_params;
+  // Cached output indices for pre-allocated outputs
+  std::vector<std::size_t> cached_prog_output_indices;
+  // Last input shape hash for ultra-fast path detection
+  std::string last_input_shape_hash;
+  // Flag indicating caches are valid
+  bool caches_valid = false;
 };
 
 // Logical device representation.
