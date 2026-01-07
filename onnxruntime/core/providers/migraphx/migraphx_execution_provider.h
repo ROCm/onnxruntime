@@ -72,18 +72,37 @@ struct MIGraphXFuncState {
   // ═══════════════════════════════════════════════════════════════════════════
   // PERFORMANCE CACHES - Avoid redundant MIGraphX API calls per inference
   // ═══════════════════════════════════════════════════════════════════════════
-  // Cached parameter shapes (invalidated on recompilation)
-  std::optional<migraphx::program_parameter_shapes> cached_param_shapes;
-  // Cached output shapes (invalidated on recompilation)
-  std::optional<migraphx::shapes> cached_output_shapes;
-  // Cached parameter names vector (avoid repeated .names() calls)
-  std::vector<std::string> cached_param_names;
+
+  // Cached input parameter info (name as const char*, ORT index, MIGraphX shape)
+  struct CachedInputParam {
+    std::string name;              // Parameter name (owns the string)
+    std::size_t ort_index;         // ORT input index
+    migraphx::shape mgx_shape;     // MIGraphX shape for this input
+  };
+
+  // Cached output parameter info (name as const char*, output index, MIGraphX shape)
+  struct CachedOutputParam {
+    std::string name;              // Parameter name (owns the string)
+    int output_index;              // ORT output index
+    migraphx::shape mgx_shape;     // MIGraphX shape for this output
+  };
+
+  // Separated input/output parameter lists for O(1) iteration without map lookups
+  std::vector<CachedInputParam> cached_inputs;
+  std::vector<CachedOutputParam> cached_outputs;
+
+  // Pre-allocated output shapes in ORT format (avoids vector allocation per inference)
+  std::vector<std::vector<int64_t>> cached_output_ort_shapes;
+
   // Cached program_parameters object for ultra-fast rebinding
   std::optional<migraphx::program_parameters> cached_prog_params;
-  // Cached output indices for pre-allocated outputs
+
+  // Cached output indices for pre-allocated outputs (used by run_migraphx_program)
   std::vector<std::size_t> cached_prog_output_indices;
+
   // Last input shape hash for ultra-fast path detection
   std::string last_input_shape_hash;
+
   // Flag indicating caches are valid
   bool caches_valid = false;
 };

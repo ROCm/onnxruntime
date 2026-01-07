@@ -1737,10 +1737,10 @@ static void handle_input_shape_mismatch(
 
   // Invalidate ultra-fast path caches (will be repopulated on next run)
   mgx_state->caches_valid = false;
-  mgx_state->cached_param_shapes = std::nullopt;
-  mgx_state->cached_output_shapes = std::nullopt;
+  mgx_state->cached_inputs.clear();
+  mgx_state->cached_outputs.clear();
+  mgx_state->cached_output_ort_shapes.clear();
   mgx_state->cached_prog_params = std::nullopt;
-  mgx_state->cached_param_names.clear();
   mgx_state->cached_prog_output_indices.clear();
   mgx_state->last_input_shape_hash.clear();
 
@@ -1850,6 +1850,53 @@ std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program
     }
   }
   return {m, prog_output_indices};
+}
+
+// Helper: Populate optimized caches for ultra-fast path
+// This separates inputs from outputs, pre-computes indices, and pre-allocates output shapes
+static void populate_ultra_fast_caches(
+    MIGraphXFuncState* mgx_state,
+    const migraphx::program_parameter_shapes& param_shapes,
+    const migraphx::shapes& output_shapes,
+    const std::unordered_map<std::string, std::size_t>& map_input_name_index)
+{
+  // Clear existing caches
+  mgx_state->cached_inputs.clear();
+  mgx_state->cached_outputs.clear();
+  mgx_state->cached_output_ort_shapes.clear();
+
+  // Reserve space for outputs
+  mgx_state->cached_outputs.reserve(output_shapes.size());
+  mgx_state->cached_output_ort_shapes.reserve(output_shapes.size());
+
+  // Separate inputs from outputs
+  if (param_shapes.size() > 0) {
+    for (const auto& name : param_shapes.names()) {
+      auto it = map_input_name_index.find(name);
+      if (it != map_input_name_index.end()) {
+        // This is an input parameter
+        MIGraphXFuncState::CachedInputParam inp;
+        inp.name = name;
+        inp.ort_index = it->second;
+        inp.mgx_shape = param_shapes[name];
+        mgx_state->cached_inputs.push_back(std::move(inp));
+      } else {
+        // This is an output parameter
+        const int output_index = compute_output_index(name);
+        if (output_index != -1) {
+          MIGraphXFuncState::CachedOutputParam out;
+          out.name = name;
+          out.output_index = output_index;
+          out.mgx_shape = param_shapes[name];
+          mgx_state->cached_outputs.push_back(std::move(out));
+
+          // Pre-allocate ORT-format output shape vector
+          const auto& lens = output_shapes[output_index].lengths();
+          mgx_state->cached_output_ort_shapes.emplace_back(lens.begin(), lens.end());
+        }
+      }
+    }
+  }
 }
 
 // Result structure for handle_input_shape function
@@ -2111,30 +2158,25 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
       // ═══════════════════════════════════════════════════════════════════════
       // ULTRA-FAST PATH: Same shapes as last run - just rebind pointers and run
+      // No map lookups, no string parsing, no vector allocations
       // ═══════════════════════════════════════════════════════════════════════
       if (mgx_state->caches_valid && current_hash == mgx_state->last_input_shape_hash) {
-        // Rebind input/output pointers only (shapes unchanged)
         auto& m = mgx_state->cached_prog_params.value();
-        const auto& param_names = mgx_state->cached_param_names;
 
-        for (const auto& name : param_names) {
-          auto it = map_input_name_index.find(name);
-          if (it != map_input_name_index.end()) {
-            // Input: update pointer
-            const auto& input_tensor = ctx.GetInput(it->second);
-            m.add(name.c_str(), migraphx::argument(mgx_state->cached_param_shapes.value()[name.c_str()],
-                                           const_cast<void*>(input_tensor.GetTensorRawData())));
-          } else {
-            // Output: update pointer
-            const int output_index = compute_output_index(name);
-            if (output_index != -1) {
-              const auto& lens = mgx_state->cached_output_shapes.value()[output_index].lengths();
-              std::vector<int64_t> ort_shape(lens.begin(), lens.end());
-              auto output_tensor = ctx.GetOutput(output_index, ort_shape.data(), ort_shape.size());
-              m.add(name.c_str(), migraphx::argument(mgx_state->cached_param_shapes.value()[name.c_str()],
+        // Rebind inputs - direct iteration, no map lookups
+        for (const auto& inp : mgx_state->cached_inputs) {
+          const auto& input_tensor = ctx.GetInput(inp.ort_index);
+          m.add(inp.name.c_str(), migraphx::argument(inp.mgx_shape,
+                                             const_cast<void*>(input_tensor.GetTensorRawData())));
+        }
+
+        // Rebind outputs - direct iteration, uses pre-allocated shape vectors
+        for (std::size_t i = 0; i < mgx_state->cached_outputs.size(); ++i) {
+          const auto& out = mgx_state->cached_outputs[i];
+          const auto& ort_shape = mgx_state->cached_output_ort_shapes[i];
+          auto output_tensor = ctx.GetOutput(out.output_index, ort_shape.data(), ort_shape.size());
+          m.add(out.name.c_str(), migraphx::argument(out.mgx_shape,
                                              output_tensor.GetTensorMutableRawData()));
-            }
-          }
         }
 
         // Run directly - minimal overhead path
@@ -2153,21 +2195,16 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           // Found cached program - use it and populate caches
           prog = prog_it->second;
 
-          // Populate caches for ultra-fast path on next call
-          mgx_state->cached_param_shapes = prog.get_parameter_shapes();
-          mgx_state->cached_output_shapes = prog.get_output_shapes();
+          // Get shapes once
+          auto param_shapes = prog.get_parameter_shapes();
+          auto output_shapes = prog.get_output_shapes();
 
-          // Cache param names (once per program)
-          mgx_state->cached_param_names.clear();
-          for (const auto& name : mgx_state->cached_param_shapes->names()) {
-            mgx_state->cached_param_names.push_back(name);
-          }
+          // Populate optimized caches for ultra-fast path
+          populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index);
 
-          // Bind inputs/outputs using cached shapes (avoids another get_output_shapes() call)
+          // Bind inputs/outputs
           auto [m, prog_output_indices] = handle_program_input_outputs(
-              mgx_state->cached_param_shapes.value(),
-              mgx_state->cached_output_shapes.value(),
-              map_input_name_index, ctx);
+              param_shapes, output_shapes, map_input_name_index, ctx);
 
           mgx_state->cached_prog_params = std::move(m);
           mgx_state->cached_prog_output_indices = std::move(prog_output_indices);
@@ -2204,21 +2241,15 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         param_shapes = prog.get_parameter_shapes();
       }
 
-      // Fetch and cache shapes ONCE (avoid duplicate API calls)
-      mgx_state->cached_param_shapes = param_shapes;
-      mgx_state->cached_output_shapes = prog.get_output_shapes();
+      // Fetch output shapes once
+      auto output_shapes = prog.get_output_shapes();
 
-      // Cache param names
-      mgx_state->cached_param_names.clear();
-      for (const auto& name : mgx_state->cached_param_shapes->names()) {
-        mgx_state->cached_param_names.push_back(name);
-      }
+      // Populate optimized caches for ultra-fast path
+      populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index);
 
-      // Bind inputs and allocate outputs using cached shapes
+      // Bind inputs and allocate outputs
       auto [m, prog_output_indices] = handle_program_input_outputs(
-          mgx_state->cached_param_shapes.value(),
-          mgx_state->cached_output_shapes.value(),
-          map_input_name_index, ctx);
+          param_shapes, output_shapes, map_input_name_index, ctx);
 
       // Complete cache population
       mgx_state->cached_prog_params = m;
