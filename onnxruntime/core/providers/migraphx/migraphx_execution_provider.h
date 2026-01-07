@@ -7,8 +7,8 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <optional>
+#include <semaphore>
 #include <set>
 #include <string>
 #include <string_view>
@@ -54,7 +54,7 @@ struct MIGraphXFuncState {
   migraphx::onnx_options options;
   migraphx::target t{};
   std::unordered_map<std::string, std::size_t> input_name_indexes;
-  std::mutex* mgx_mu_ptr = nullptr;
+  std::binary_semaphore* mgx_sem_ptr = nullptr;
   bool defer_compilation = false;
   bool fp16_enable = false;
   bool bf16_enable = false;
@@ -178,7 +178,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   std::unordered_map<std::string, std::set<std::string>> map_session_input_names_;
   bool dump_model_ops_ = false;
   migraphx::target t_;
-  std::mutex mgx_mu_;
+  std::binary_semaphore mgx_sem_{1};  // Initialize to 1 (available)
   hipStream_t stream_ = nullptr;
   hipDeviceProp_t device_prop_{};
   bool exhaustive_tune_ = false;

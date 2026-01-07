@@ -1589,7 +1589,7 @@ static migraphx::program load_or_compile_model(
 // This function executes the compiled MIGraphX program and copies outputs that
 // were not pre-allocated (input parameters reused as outputs) to the ORT output tensors
 static void run_migraphx_program(
-    std::mutex* mgx_mu_ptr,
+    std::binary_semaphore* mgx_sem_ptr,
     const OrtApi* api,
     OrtKernelContext* context,
     Ort::KernelContext& ctx,
@@ -1601,10 +1601,10 @@ static void run_migraphx_program(
   Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream));
 
   std::optional<migraphx::arguments> prog_outputs;
-  {  // lock to avoid race condition
-     std::lock_guard<std::mutex> lock(*mgx_mu_ptr);
-     prog_outputs = prog.run_async(m, static_cast<hipStream_t>(rocm_stream));
-  }
+  // Use binary semaphore for synchronization (acquire/release pattern)
+  mgx_sem_ptr->acquire();
+  prog_outputs = prog.run_async(m, static_cast<hipStream_t>(rocm_stream));
+  mgx_sem_ptr->release();
 
   // In case of input parameters are reused as output parameter call hipMemcpy
   auto output_num = prog_outputs->size();
@@ -2124,7 +2124,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     compute_info.create_state_func = [=](ComputeContext* context, FunctionState* state) {
       std::unique_ptr<MIGraphXFuncState> p = std::make_unique<MIGraphXFuncState>();
       *p = {context->allocate_func, context->release_func, context->allocator_handle, map_progs_[context->node_name],
-            map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_mu_,
+            map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_sem_,
             map_defer_compilation_[context->node_name], fp16_enable_, bf16_enable_, fp8_enable_, int8_enable_,
             int8_calibration_cache_available_, dynamic_range_map_,
             model_cache_path_.string(), dump_model_ops_, exhaustive_tune_, max_dynamic_batch_,
@@ -2193,7 +2193,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           }
 
           // Run directly - minimal overhead path
-          run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m,
+          run_migraphx_program(mgx_state->mgx_sem_ptr, api, context, ctx, prog, m,
                                mgx_state->cached_prog_output_indices);
           return Status::OK();
         }
@@ -2237,7 +2237,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           mgx_state->last_input_shape_hash = current_hash;
           mgx_state->caches_valid = true;
 
-          run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog,
+          run_migraphx_program(mgx_state->mgx_sem_ptr, api, context, ctx, prog,
                                mgx_state->cached_prog_params.value(),
                                mgx_state->cached_prog_output_indices);
           return Status::OK();
@@ -2284,7 +2284,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       mgx_state->last_input_shape_hash = current_hash;
       mgx_state->caches_valid = true;
 
-      run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, prog_output_indices);
+      run_migraphx_program(mgx_state->mgx_sem_ptr, api, context, ctx, prog, m, prog_output_indices);
 
       return Status::OK();
     };
