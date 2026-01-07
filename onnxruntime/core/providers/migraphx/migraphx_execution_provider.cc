@@ -1592,7 +1592,7 @@ static migraphx::program load_or_compile_model(
 // This function executes the compiled MIGraphX program and copies outputs that
 // were not pre-allocated (input parameters reused as outputs) to the ORT output tensors
 static void run_migraphx_program(
-    std::binary_semaphore* mgx_sem_ptr,
+    std::mutex* mgx_mu_ptr,
     const OrtApi* api,
     OrtKernelContext* context,
     Ort::KernelContext& ctx,
@@ -1604,10 +1604,10 @@ static void run_migraphx_program(
   Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream));
 
   std::optional<migraphx::arguments> prog_outputs;
-  // Use binary semaphore for synchronization (acquire/release pattern)
-  mgx_sem_ptr->acquire();
-  prog_outputs = prog.run_async(m, static_cast<hipStream_t>(rocm_stream));
-  mgx_sem_ptr->release();
+  {  // Scoped lock for thread safety
+    std::lock_guard<std::mutex> lock(*mgx_mu_ptr);
+    prog_outputs = prog.run_async(m, static_cast<hipStream_t>(rocm_stream));
+  }
 
   // In case of input parameters are reused as output parameter call hipMemcpy
   auto output_num = prog_outputs->size();
@@ -1954,7 +1954,7 @@ static bool execute_ultra_fast_path(
   }
 
   // Run directly - minimal overhead path
-  run_migraphx_program(mgx_state->mgx_sem_ptr, api, context, ctx, prog, m,
+  run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m,
                        mgx_state->cached_prog_output_indices);
   return true;
 }
@@ -2003,66 +2003,10 @@ static bool execute_fast_path(
   mgx_state->last_input_shape_hash = current_hash;
   mgx_state->caches_valid = true;
 
-  run_migraphx_program(mgx_state->mgx_sem_ptr, api, context, ctx, prog,
+  run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog,
                        mgx_state->cached_prog_params.value(),
                        mgx_state->cached_prog_output_indices);
   return true;
-}
-
-// Standard path: Shape checking, potential recompilation, and execution
-static void execute_standard_path(
-    MIGraphXFuncState* mgx_state,
-    const OrtApi* api,
-    OrtKernelContext* context,
-    Ort::KernelContext& ctx,
-    const std::string& current_hash,
-    std::vector<std::int64_t>&& all_input_shapes,
-    const std::filesystem::path& model_cache_path,
-    const std::filesystem::path& model_path,
-    const std::string& mxr_filename_prefix)
-{
-  auto& prog = mgx_state->prog;
-  auto& cmp_options = mgx_state->options;
-  const auto& map_input_name_index = mgx_state->input_name_indexes;
-
-  auto [input_shape_match, param_shapes, input_shapes] = handle_input_shape(
-      mgx_state->defer_compilation, map_input_name_index, ctx, cmp_options, prog);
-
-  if (!input_shape_match) {
-    // Invalidate caches before recompilation
-    mgx_state->caches_valid = false;
-
-    handle_input_shape_mismatch(
-        mgx_state,
-        model_cache_path,
-        model_path,
-        mxr_filename_prefix,
-        ctx,
-        param_shapes,
-        input_shapes);
-
-    // Re-fetch param_shapes after recompilation
-    param_shapes = prog.get_parameter_shapes();
-  }
-
-  // Fetch output shapes once
-  auto output_shapes = prog.get_output_shapes();
-
-  // Populate optimized caches for ultra-fast path
-  populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index);
-
-  // Bind inputs and allocate outputs
-  auto [m, prog_output_indices] = handle_program_input_outputs(
-      param_shapes, output_shapes, map_input_name_index, ctx);
-
-  // Complete cache population
-  mgx_state->cached_prog_params = m;
-  mgx_state->cached_prog_output_indices = prog_output_indices;
-  mgx_state->last_input_shapes_raw = std::move(all_input_shapes);
-  mgx_state->last_input_shape_hash = current_hash;
-  mgx_state->caches_valid = true;
-
-  run_migraphx_program(mgx_state->mgx_sem_ptr, api, context, ctx, prog, m, prog_output_indices);
 }
 
 // Result structure for handle_input_shape function
@@ -2149,6 +2093,62 @@ static InputShapeResult handle_input_shape(
   }
 
   return {input_shape_match, param_shapes, input_shapes};
+}
+
+// Standard path: Shape checking, potential recompilation, and execution
+static void execute_standard_path(
+    MIGraphXFuncState* mgx_state,
+    const OrtApi* api,
+    OrtKernelContext* context,
+    Ort::KernelContext& ctx,
+    const std::string& current_hash,
+    std::vector<std::int64_t>&& all_input_shapes,
+    const std::filesystem::path& model_cache_path,
+    const std::filesystem::path& model_path,
+    const std::string& mxr_filename_prefix)
+{
+  auto& prog = mgx_state->prog;
+  auto& cmp_options = mgx_state->options;
+  const auto& map_input_name_index = mgx_state->input_name_indexes;
+
+  auto [input_shape_match, param_shapes, input_shapes] = handle_input_shape(
+      mgx_state->defer_compilation, map_input_name_index, ctx, cmp_options, prog);
+
+  if (!input_shape_match) {
+    // Invalidate caches before recompilation
+    mgx_state->caches_valid = false;
+
+    handle_input_shape_mismatch(
+        mgx_state,
+        model_cache_path,
+        model_path,
+        mxr_filename_prefix,
+        ctx,
+        param_shapes,
+        input_shapes);
+
+    // Re-fetch param_shapes after recompilation
+    param_shapes = prog.get_parameter_shapes();
+  }
+
+  // Fetch output shapes once
+  auto output_shapes = prog.get_output_shapes();
+
+  // Populate optimized caches for ultra-fast path
+  populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index);
+
+  // Bind inputs and allocate outputs
+  auto [m, prog_output_indices] = handle_program_input_outputs(
+      param_shapes, output_shapes, map_input_name_index, ctx);
+
+  // Complete cache population
+  mgx_state->cached_prog_params = m;
+  mgx_state->cached_prog_output_indices = prog_output_indices;
+  mgx_state->last_input_shapes_raw = std::move(all_input_shapes);
+  mgx_state->last_input_shape_hash = current_hash;
+  mgx_state->caches_valid = true;
+
+  run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, prog_output_indices);
 }
 
 // Build MIGraphX ONNX options with default shapes for symbolic dimensions
@@ -2289,7 +2289,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     compute_info.create_state_func = [=](ComputeContext* context, FunctionState* state) {
       std::unique_ptr<MIGraphXFuncState> p = std::make_unique<MIGraphXFuncState>();
       *p = {context->allocate_func, context->release_func, context->allocator_handle, map_progs_[context->node_name],
-            map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_sem_,
+            map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_mu_,
             map_defer_compilation_[context->node_name], fp16_enable_, bf16_enable_, fp8_enable_, int8_enable_,
             int8_calibration_cache_available_, dynamic_range_map_,
             model_cache_path_.string(), dump_model_ops_, exhaustive_tune_, max_dynamic_batch_,
