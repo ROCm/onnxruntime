@@ -165,7 +165,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
 
   // Overwrite initialized values with values from environment variables.
 
-  LOGS_DEFAULT(WARNING) << "[MIGraphX EP] MIGraphX ENV Override Variables Set:";
+  LOGS_DEFAULT(INFO) << "[MIGraphX EP] MIGraphX ENV Override Variables Set:";
   GET_ENV_BOOL(migraphx_env_vars::kFP16Enable, fp16_enable_);
 #if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && (HIP_VERSION_MINOR > 4 || (HIP_VERSION_MINOR == 4 && HIP_VERSION_PATCH >= 2)))
   GET_ENV_BOOL(migraphx_env_vars::kBF16Enable, bf16_enable_);
