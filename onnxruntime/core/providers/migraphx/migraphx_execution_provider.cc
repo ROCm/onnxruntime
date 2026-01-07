@@ -1622,7 +1622,7 @@ static void run_migraphx_program(
 
       // Log output batch size for tracking
       if (!ort_shape.empty()) {
-        LOGS_DEFAULT(INFO) << "[Compute] Output " << i << " batch size: " << ort_shape[0];
+        LOGS_DEFAULT(VERBOSE) << "[Compute] Output " << i << " batch size: " << ort_shape[0];
       }
 
       HIP_CALL_THROW(hipMemcpyWithStream(output_data,
@@ -1752,6 +1752,17 @@ std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program
   std::vector<std::size_t> prog_output_indices;
   auto prog_output_shapes = prog.get_output_shapes();
 
+  auto compute_output_index = [](const std::string_view sv) -> int {
+    constexpr std::string_view out_name_prefix = "#output_";
+    const auto pos = sv.find(out_name_prefix);
+    if (pos == std::string_view::npos) {
+      return -1;
+    }
+
+    const auto index_str = sv.substr(pos + out_name_prefix.length());
+    return ToInteger(Trim(index_str, std::isdigit));
+  };
+
   if (param_shapes.size() > 0) {
     for (auto&& name : param_shapes.names()) {
       if (map_input_name_index.count(name) > 0) {
@@ -1775,17 +1786,6 @@ std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program
       }
       // It is an output argument
       else {
-        auto compute_output_index = [](const std::string_view sv) -> int {
-          constexpr std::string_view out_name_prefix = "#output_";
-          const auto pos = sv.find(out_name_prefix);
-          if (pos == std::string_view::npos) {
-            return -1;
-          }
-
-          const auto index_str = sv.substr(pos + out_name_prefix.length());
-          return ToInteger(Trim(index_str, std::isdigit));
-        };
-
         int output_index = compute_output_index(name);
         if (output_index != -1) {
           prog_output_indices.push_back(static_cast<std::size_t>(output_index));
