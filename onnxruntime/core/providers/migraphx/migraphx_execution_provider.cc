@@ -1646,14 +1646,12 @@ static void handle_input_shape_mismatch(
     migraphx::program_parameter_shapes& param_shapes,
     std::vector<std::int64_t>& input_shapes)
 {
-  LOGS_DEFAULT(VERBOSE) << "[Compute] Input shape mismatch detected, initiating recompilation";
-
   // Extract references from mgx_state for convenience
   auto& prog = mgx_state->prog;
   auto& cmp_options = mgx_state->options;
   const auto& map_input_name_index = mgx_state->input_name_indexes;
 
-  // Build cache key from ALL inputs (not just symbolic ones)
+  // Build cache key from all inputs in map_input_name_index (already filtered to model inputs only)
   std::vector<std::int64_t> all_input_shapes;
   for (const auto& it : map_input_name_index) {
     auto input_tensor = ctx.GetInput(it.second);
@@ -1668,14 +1666,9 @@ static void handle_input_shape_mismatch(
     auto& cached_progs = mgx_state->cached_programs_ref.value().get();
     auto it = cached_progs.find(cache_hash);
     if (it != cached_progs.end()) {
-      LOGS_DEFAULT(VERBOSE) << "[Compute] Found hash " << cache_hash
-                         << " in in-memory cached_programs - using cached program";
       prog = it->second;
       param_shapes = prog.get_parameter_shapes();
       return;  // Early exit - no need to load from disk or compile
-    } else {
-      LOGS_DEFAULT(VERBOSE) << "[Compute] Hash " << cache_hash
-                         << " not in in-memory cache, checking disk cache";
     }
   }
 
@@ -1740,8 +1733,6 @@ static void handle_input_shape_mismatch(
   // Store the compiled/loaded program in the in-memory cached_programs cache
   if (mgx_state->cached_programs_ref.has_value()) {
     mgx_state->cached_programs_ref.value().get()[cache_hash] = prog;
-    LOGS_DEFAULT(VERBOSE) << "[Compute] Stored program for hash " << cache_hash
-                          << " in in-memory cached_programs cache";
   }
 
   param_shapes = prog.get_parameter_shapes();
@@ -1852,11 +1843,10 @@ static InputShapeResult handle_input_shape(
 
   if (defer_compilation) {
     LOGS_DEFAULT(VERBOSE) << "[Compute] No static input shapes available, setting from runtime inputs";
-    // NOTE: map_input_name_index only contains actual runtime inputs, not constants/initializers
+    // NOTE: map_input_name_index only contains actual model inputs, not constants/initializers
     // Constants and initializers are embedded in the graph and MIGraphX infers their shapes
     LOGS_DEFAULT(VERBOSE) << "[Compute] Setting shapes for " << map_input_name_index.size()
-                          << " runtime input parameters (excluding constants)";
-
+                          << " model input parameters (excluding constants)";
 
     for (const auto& it : map_input_name_index) {
       const auto& name = it.first;
@@ -1867,11 +1857,10 @@ static InputShapeResult handle_input_shape(
       std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
 
       // Override default batch size with incoming batch size and treat as static
-      // Only for actual input parameters - constants are handled by MIGraphX
       cmp_options.set_input_parameter_shape(name, ort_lens);
       input_shape_match = false;
 
-      // Include ALL inputs in cache key for hash calculation
+      // Include all inputs in cache key (map_input_name_index already filtered to model inputs only)
       input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
     }
     LOGS_DEFAULT(VERBOSE) << "[Compute] All runtime input shapes set as static parameters in MIGraphX options";
@@ -1907,7 +1896,7 @@ static InputShapeResult handle_input_shape(
             input_shape_match = false;
           }
 
-          // Include ALL inputs in cache key for hash calculation
+          // Include all inputs in cache key (map_input_name_index already filtered to model inputs only)
           input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
         }
       }
@@ -1965,13 +1954,21 @@ static migraphx::onnx_options get_program_parameter_options(
 }
 
 // Build a map from input parameter name to index
+// If model_input_names is provided, only includes inputs that are in that set (excludes weights/constants)
 template <typename Container>
-static std::unordered_map<std::string, std::size_t> get_input_name_map(const Container& input_defs) {
+static std::unordered_map<std::string, std::size_t> get_input_name_map(
+    const Container& input_defs,
+    const std::set<std::string>* model_input_names = nullptr) {
   std::unordered_map<std::string, std::size_t> input_name_index;
   input_name_index.reserve(input_defs.size());
   std::size_t i = 0;
   for (const auto& def : input_defs) {
-    input_name_index[def->Name()] = i++;
+    const auto& name = def->Name();
+    // Only include if it's a model input parameter (skip weights/constants)
+    if (model_input_names == nullptr || model_input_names->count(name) > 0) {
+      input_name_index[name] = i;
+    }
+    ++i;  // Always increment index to maintain correct ORT input indices
   }
   return input_name_index;
 }
@@ -1988,19 +1985,24 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     std::filesystem::path model_cache_file;
     auto mxr_filename_prefix = to_hex(MIGraphX_Version) + "-" + GenerateGraphId(graph_body_viewer) + "-" + make_hash(std::string_view(device_prop_.gcnArchName)) + "-";
 
-    // Get model input names (only first layer)
+    // Get model input names (only first layer) - these are actual model inputs, not weights/constants
     const Graph* cur_graph = &graph_body_viewer.GetGraph();
     while (cur_graph->IsSubgraph()) {
       cur_graph = cur_graph->ParentGraph();
     }
     const Graph& main_graph = *cur_graph;
     const auto& input_tensor = main_graph.GetInputs();
+    std::set<std::string>& node_session_input_names = map_session_input_names_[fused_node.Name()];
     for (auto i : input_tensor) {
-      session_input_names.insert(i->Name());
+      node_session_input_names.insert(i->Name());
     }
+    LOGS_DEFAULT(VERBOSE) << "[Compile] Node '" << fused_node.Name() << "' has "
+                          << node_session_input_names.size() << " model input parameters (excluding weights/constants)";
 
-
-    auto input_name_index = get_input_name_map(fused_node.InputDefs());
+    // Build input name to index map, only for model input parameters (excludes weights/constants)
+    auto input_name_index = get_input_name_map(fused_node.InputDefs(), &node_session_input_names);
+    LOGS_DEFAULT(VERBOSE) << "[Compile] input_name_index has " << input_name_index.size()
+                          << " entries (model inputs only)";
 
     auto model = graph_body_viewer.CreateModel(*GetLogger());
     auto model_proto = model->ToProto();
@@ -2066,7 +2068,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
       // Fast path: If compilation is not deferred and we have cached programs, check for a match
       if (!mgx_state->defer_compilation && mgx_state->cached_programs_ref.has_value()) {
-        // Build cache key from ALL inputs
+        // Build cache key from all inputs in map_input_name_index (already filtered to model inputs only)
         std::vector<std::int64_t> all_input_shapes;
         for (const auto& it : map_input_name_index) {
           auto input_tensor = ctx.GetInput(it.second);
@@ -2077,10 +2079,9 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
         auto cache_hash = make_hash(all_input_shapes);
         auto& cached_programs = mgx_state->cached_programs_ref.value().get();
+
         auto it = cached_programs.find(cache_hash);
         if (it != cached_programs.end()) {
-          LOGS_DEFAULT(VERBOSE) << "[Compute] Fast path: Found cached program for hash " << cache_hash;
-
           // Use the cached program directly
           migraphx::program& cached_prog = it->second;
           auto param_shapes = cached_prog.get_parameter_shapes();
@@ -2092,14 +2093,10 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, cached_prog, m, prog_output_indices);
 
           return Status::OK();
-        } else {
-          LOGS_DEFAULT(VERBOSE) << "[Compute] No cached program for hash " << cache_hash
-                                << ", falling back to standard path";
         }
       }
 
       // Standard path: Process input shapes and determine if recompilation is needed
-      // Using fine-grained symbolic dimension tracking for more precise shape matching
       auto [input_shape_match, param_shapes, input_shapes] = handle_input_shape(
           mgx_state->defer_compilation, map_input_name_index, ctx, cmp_options, prog);
 

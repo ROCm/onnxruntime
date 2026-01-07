@@ -134,7 +134,8 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   std::filesystem::path calibration_cache_path_{};
   std::unordered_map<std::string, float> dynamic_range_map_;
   std::filesystem::path model_cache_path_{};
-  std::set<std::string> session_input_names;
+  // Map of model input names per node (excludes weights/constants)
+  std::unordered_map<std::string, std::set<std::string>> map_session_input_names_;
   bool dump_model_ops_ = false;
   migraphx::target t_;
   std::mutex mgx_mu_;
