@@ -1157,40 +1157,6 @@ MIGraphXExecutionProvider::GetCapability(const onnxruntime::GraphViewer& graph_v
   return result;
 }
 
-// Check if any inputs have dynamic/symbolic dimensions that require deferred compilation
-static bool inputs_have_dynamic_dims(const GraphViewer& graph) {
-  const auto& input_args = graph.GetInputs();
-
-  for (const auto& arg : input_args) {
-    if (arg == nullptr) {
-      return true;
-    }
-
-    auto sptr = arg->Shape();
-    if (sptr == nullptr || sptr->dim_size() == 0) {
-      LOGS_DEFAULT(VERBOSE) << "[inputs_have_dynamic_dims] Input '" << arg->Name()
-                            << "' has no shape info, treating as dynamic";
-      return true;
-    }
-
-    for (int i = 0; i < sptr->dim_size(); i++) {
-      if (sptr->dim(i).has_dim_param()) {
-        std::string dim_param = sptr->dim(i).dim_param();
-        if (i == 0) {
-          LOGS_DEFAULT(VERBOSE) << "[inputs_have_dynamic_dims] Input '" << arg->Name()
-                                << "' has dynamic batch dimension: " << dim_param;
-        } else {
-          LOGS_DEFAULT(VERBOSE) << "[inputs_have_dynamic_dims] Input '" << arg->Name()
-                                << "' dimension " << i << " is symbolic: " << dim_param;
-        }
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
 // Get input and output names from the graph
 static std::pair<std::vector<std::string>, std::vector<std::string>> get_io_names(const GraphViewer& graph) {
   const auto& input_args = graph.GetInputs();
@@ -1212,95 +1178,6 @@ static std::pair<std::vector<std::string>, std::vector<std::string>> get_io_name
   }
 
   return {std::move(input_names), std::move(output_names)};
-}
-
-// Check input tensors for symbolic dimensions and build shape vector for cache key generation
-// Returns input shapes suitable for hash calculation and whether symbolic dims were found
-static std::vector<std::int64_t> check_for_symbolic_dims(
-    const std::vector<const NodeArg*>& input_tensor,
-    const std::set<std::string>& session_input_names,
-    int64_t default_batch_size = 1)
-{
-  std::vector<std::int64_t> input_shapes;
-  bool has_symbolic_dims = false;
-  // Track if ALL inputs have symbolic batch dimension (starts true, set false if any concrete batch found)
-  bool all_batch_dims_symbolic = !session_input_names.empty();
-
-  for (std::size_t i = 0; i < session_input_names.size(); ++i) {
-    auto tensor_shape = input_tensor[i]->Shape();
-
-    // Check for symbolic dimensions and handle them
-    if (tensor_shape == nullptr || tensor_shape->dim_size() == 0) {
-      LOGS_DEFAULT(WARNING) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                            << ") has no shape information";
-      has_symbolic_dims = true;
-      // No shape info implies batch is also unknown - keeps all_batch_dims_symbolic as true for this input
-      continue;
-    }
-
-    // Handle batch dimension (first dimension) specially
-    if (tensor_shape->dim_size() > 0) {
-      const auto& batch_dim = tensor_shape->dim(0);
-      int64_t batch_size_to_use = default_batch_size;
-
-      if (batch_dim.has_dim_value()) {
-        batch_size_to_use = batch_dim.dim_value();
-        // Found a concrete batch dimension - not all batch dims are symbolic
-        all_batch_dims_symbolic = false;
-        LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                              << ") batch size: " << batch_size_to_use;
-      } else if (batch_dim.has_dim_param()) {
-        // Symbolic batch dimension - default to 1
-        has_symbolic_dims = true;
-        LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                              << ") batch size is symbolic: " << batch_dim.dim_param()
-                              << ", defaulting to " << default_batch_size;
-      } else {
-        // Unknown batch dimension - default to 1
-        has_symbolic_dims = true;
-        LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                              << ") batch size is unknown, defaulting to " << default_batch_size;
-      }
-
-      // Add batch size to input shapes for hash calculation
-      input_shapes.push_back(batch_size_to_use);
-    }
-
-    // Process all dimensions (skip batch dimension at j=0, start at j=1)
-    for (int j = 1; j < tensor_shape->dim_size(); ++j) {
-      const auto& dim = tensor_shape->dim(j);
-
-      // Handle symbolic dimensions
-      if (dim.has_dim_param()) {
-        LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                              << ") dimension " << j << " is symbolic: " << dim.dim_param();
-        has_symbolic_dims = true;
-        // Use -1 as placeholder for symbolic dimensions in hash calculation
-        input_shapes.push_back(-1);
-      } else if (dim.has_dim_value()) {
-        auto dim_val = dim.dim_value();
-        input_shapes.push_back(dim_val);
-        LOGS_DEFAULT(VERBOSE) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                              << ") dimension " << j << " value: " << dim_val;
-      } else {
-        LOGS_DEFAULT(WARNING) << "[Compile] Input " << i << " (" << input_tensor[i]->Name()
-                              << ") dimension " << j << " has no value or param";
-        has_symbolic_dims = true;
-      }
-    }
-  }
-
-  if (has_symbolic_dims) {
-    LOGS_DEFAULT(WARNING) << "[Compile] Model has symbolic dimensions, "
-                          << "dynamic batch dimensions defaulted to " << default_batch_size
-                          << " (will be overridden at runtime if needed)";
-  }
-
-  if (all_batch_dims_symbolic) {
-    LOGS_DEFAULT(VERBOSE) << "[Compile] All inputs have symbolic batch dimension";
-  }
-
-  return {std::move(input_shapes)};
 }
 
 // Attempt to load a model and catch any exceptions on load fail.
@@ -1751,59 +1628,6 @@ static int compute_output_index(const std::string_view sv) {
   }
   const auto index_str = sv.substr(pos + out_name_prefix.length());
   return ToInteger(Trim(index_str, std::isdigit));
-}
-
-// Helper: Handle program inputs and outputs binding
-// This function binds input tensors and allocates output tensors for the MIGraphX program
-static
-std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program_input_outputs(
-    const migraphx::program_parameter_shapes& param_shapes,
-    const std::unordered_map<std::string, std::size_t>& map_input_name_index,
-    const Ort::KernelContext& ctx,
-    const migraphx::program& prog)
-{
-  migraphx::program_parameters m;
-  std::vector<std::size_t> prog_output_indices;
-  auto prog_output_shapes = prog.get_output_shapes();
-
-  if (param_shapes.size() > 0) {
-    for (const auto& name : param_shapes.names()) {
-      auto it = map_input_name_index.find(name);
-      if (it != map_input_name_index.end()) {
-        LOGS_DEFAULT(VERBOSE) << "Setting parameters for:" << name;
-        const auto& input_tensor = ctx.GetInput(it->second);
-        const auto& tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
-        const auto& tensor_type = tensor_info.GetElementType();
-
-        migraphx_shape_datatype_t mgx_current_type;
-        getMIGraphXType(tensor_type, mgx_current_type);
-        const auto& mgx_s = param_shapes[name];
-
-        if (mgx_current_type != mgx_s.type()) {
-          LOGS_DEFAULT(FATAL) << "MIGraphX: param type mismatch for" << name;
-        }
-
-        LOGS_DEFAULT(VERBOSE) << "Writing Raw tensor data ";
-        m.add(name, migraphx::argument(mgx_s,
-                                       const_cast<void*>(input_tensor.GetTensorRawData())));
-      }
-      // It is an output argument
-      else {
-        const auto output_index = compute_output_index(name);
-        if (output_index != -1) {
-          prog_output_indices.push_back(static_cast<std::size_t>(output_index));
-          const auto& mgx_output_shape = prog_output_shapes[output_index];
-          const auto& lens = mgx_output_shape.lengths();
-          const std::vector<int64_t> ort_output_shape(lens.begin(), lens.end());
-          auto output_tensor = ctx.GetOutput(output_index, ort_output_shape.data(), ort_output_shape.size());
-          const void* output_data = output_tensor.GetTensorMutableRawData();
-          const auto& mgx_arg_shape = param_shapes[name];
-          m.add(name, migraphx::argument(mgx_arg_shape, const_cast<void*>(output_data)));
-        }
-      }
-    }
-  }
-  return {m, prog_output_indices};
 }
 
 // Overload: Handle program inputs and outputs binding with pre-cached output shapes
