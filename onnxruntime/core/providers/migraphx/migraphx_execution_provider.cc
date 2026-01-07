@@ -1900,6 +1900,179 @@ static void populate_ultra_fast_caches(
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXECUTION PATH FUNCTIONS - Encapsulated paths for cleaner compute_func
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Ultra-fast path: Shapes unchanged from last run - just rebind pointers and execute
+// Returns true if executed successfully, false if shapes don't match
+static bool execute_ultra_fast_path(
+    MIGraphXFuncState* mgx_state,
+    const OrtApi* api,
+    OrtKernelContext* context,
+    Ort::KernelContext& ctx)
+{
+  if (!mgx_state->caches_valid || mgx_state->last_input_shapes_raw.empty()) {
+    return false;
+  }
+
+  // Quick shape comparison
+  bool shapes_match = true;
+  std::size_t offset = 0;
+  const auto& last_shapes = mgx_state->last_input_shapes_raw;
+
+  for (const auto& inp : mgx_state->cached_inputs) {
+    const auto& shape = ctx.GetInput(inp.ort_index).GetTensorTypeAndShapeInfo().GetShape();
+    if (offset + shape.size() > last_shapes.size()) {
+      shapes_match = false;
+      break;
+    }
+    for (std::size_t i = 0; i < shape.size(); ++i) {
+      if (last_shapes[offset + i] != shape[i]) {
+        shapes_match = false;
+        break;
+      }
+    }
+    if (!shapes_match) break;
+    offset += shape.size();
+  }
+
+  if (!shapes_match || offset != last_shapes.size()) {
+    return false;
+  }
+
+  // Shapes unchanged - rebind pointers and run directly
+  auto& m = mgx_state->cached_prog_params.value();
+  auto& prog = mgx_state->prog;
+
+  // Rebind inputs - direct iteration, no map lookups
+  for (const auto& inp : mgx_state->cached_inputs) {
+    const auto& input_tensor = ctx.GetInput(inp.ort_index);
+    m.add(inp.name.c_str(), migraphx::argument(inp.mgx_shape,
+                                       const_cast<void*>(input_tensor.GetTensorRawData())));
+  }
+
+  // Rebind outputs - direct iteration, uses pre-allocated shape vectors
+  for (std::size_t i = 0; i < mgx_state->cached_outputs.size(); ++i) {
+    const auto& out = mgx_state->cached_outputs[i];
+    const auto& ort_shape = mgx_state->cached_output_ort_shapes[i];
+    auto output_tensor = ctx.GetOutput(out.output_index, ort_shape.data(), ort_shape.size());
+    m.add(out.name.c_str(), migraphx::argument(out.mgx_shape,
+                                       output_tensor.GetTensorMutableRawData()));
+  }
+
+  // Run directly - minimal overhead path
+  run_migraphx_program(mgx_state->mgx_sem_ptr, api, context, ctx, prog, m,
+                       mgx_state->cached_prog_output_indices);
+  return true;
+}
+
+// Fast path: Found cached program for this shape hash - populate caches and execute
+// Returns true if a cached program was found and executed
+// Note: all_input_shapes is only consumed (moved) if the function returns true
+static bool execute_fast_path(
+    MIGraphXFuncState* mgx_state,
+    const OrtApi* api,
+    OrtKernelContext* context,
+    Ort::KernelContext& ctx,
+    const std::string& current_hash,
+    std::vector<std::int64_t>& all_input_shapes)
+{
+  if (mgx_state->defer_compilation || !mgx_state->cached_programs_ref.has_value()) {
+    return false;
+  }
+
+  auto& cached_programs = mgx_state->cached_programs_ref.value().get();
+  auto prog_it = cached_programs.find(current_hash);
+  if (prog_it == cached_programs.end()) {
+    return false;
+  }
+
+  // Found cached program - use it and populate caches
+  auto& prog = mgx_state->prog;
+  prog = prog_it->second;
+
+  const auto& map_input_name_index = mgx_state->input_name_indexes;
+
+  // Get shapes once
+  auto param_shapes = prog.get_parameter_shapes();
+  auto output_shapes = prog.get_output_shapes();
+
+  // Populate optimized caches for ultra-fast path
+  populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index);
+
+  // Bind inputs/outputs
+  auto [m, prog_output_indices] = handle_program_input_outputs(
+      param_shapes, output_shapes, map_input_name_index, ctx);
+
+  mgx_state->cached_prog_params = std::move(m);
+  mgx_state->cached_prog_output_indices = std::move(prog_output_indices);
+  mgx_state->last_input_shapes_raw = std::move(all_input_shapes);
+  mgx_state->last_input_shape_hash = current_hash;
+  mgx_state->caches_valid = true;
+
+  run_migraphx_program(mgx_state->mgx_sem_ptr, api, context, ctx, prog,
+                       mgx_state->cached_prog_params.value(),
+                       mgx_state->cached_prog_output_indices);
+  return true;
+}
+
+// Standard path: Shape checking, potential recompilation, and execution
+static void execute_standard_path(
+    MIGraphXFuncState* mgx_state,
+    const OrtApi* api,
+    OrtKernelContext* context,
+    Ort::KernelContext& ctx,
+    const std::string& current_hash,
+    std::vector<std::int64_t>&& all_input_shapes,
+    const std::filesystem::path& model_cache_path,
+    const std::filesystem::path& model_path,
+    const std::string& mxr_filename_prefix)
+{
+  auto& prog = mgx_state->prog;
+  auto& cmp_options = mgx_state->options;
+  const auto& map_input_name_index = mgx_state->input_name_indexes;
+
+  auto [input_shape_match, param_shapes, input_shapes] = handle_input_shape(
+      mgx_state->defer_compilation, map_input_name_index, ctx, cmp_options, prog);
+
+  if (!input_shape_match) {
+    // Invalidate caches before recompilation
+    mgx_state->caches_valid = false;
+
+    handle_input_shape_mismatch(
+        mgx_state,
+        model_cache_path,
+        model_path,
+        mxr_filename_prefix,
+        ctx,
+        param_shapes,
+        input_shapes);
+
+    // Re-fetch param_shapes after recompilation
+    param_shapes = prog.get_parameter_shapes();
+  }
+
+  // Fetch output shapes once
+  auto output_shapes = prog.get_output_shapes();
+
+  // Populate optimized caches for ultra-fast path
+  populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index);
+
+  // Bind inputs and allocate outputs
+  auto [m, prog_output_indices] = handle_program_input_outputs(
+      param_shapes, output_shapes, map_input_name_index, ctx);
+
+  // Complete cache population
+  mgx_state->cached_prog_params = m;
+  mgx_state->cached_prog_output_indices = prog_output_indices;
+  mgx_state->last_input_shapes_raw = std::move(all_input_shapes);
+  mgx_state->last_input_shape_hash = current_hash;
+  mgx_state->caches_valid = true;
+
+  run_migraphx_program(mgx_state->mgx_sem_ptr, api, context, ctx, prog, m, prog_output_indices);
+}
+
 // Result structure for handle_input_shape function
 struct InputShapeResult {
   bool input_shape_match;
@@ -2142,68 +2315,19 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       Ort::KernelContext ctx(context);
       MIGraphXFuncState* mgx_state = reinterpret_cast<MIGraphXFuncState*>(state);
 
-      auto& map_input_name_index = mgx_state->input_name_indexes;
-      auto& prog = mgx_state->prog;
-      auto& cmp_options = mgx_state->options;
-
       // ═══════════════════════════════════════════════════════════════════════
-      // ULTRA-FAST PATH: Quick shape comparison without hash computation
-      // Directly compare raw shape values - avoids MurmurHash overhead
+      // ULTRA-FAST PATH: Shapes unchanged from last run
       // ═══════════════════════════════════════════════════════════════════════
-      if (mgx_state->caches_valid && !mgx_state->last_input_shapes_raw.empty()) {
-        bool shapes_match = true;
-        std::size_t offset = 0;
-        const auto& last_shapes = mgx_state->last_input_shapes_raw;
-
-        // Quick comparison using cached input list (already in correct order)
-        for (const auto& inp : mgx_state->cached_inputs) {
-          const auto& shape = ctx.GetInput(inp.ort_index).GetTensorTypeAndShapeInfo().GetShape();
-          if (offset + shape.size() > last_shapes.size()) {
-            shapes_match = false;
-            break;
-          }
-          for (std::size_t i = 0; i < shape.size(); ++i) {
-            if (last_shapes[offset + i] != shape[i]) {
-              shapes_match = false;
-              break;
-            }
-          }
-          if (!shapes_match) break;
-          offset += shape.size();
-        }
-
-        if (shapes_match && offset == last_shapes.size()) {
-          // Shapes unchanged - rebind pointers and run directly
-          auto& m = mgx_state->cached_prog_params.value();
-
-          // Rebind inputs - direct iteration, no map lookups
-          for (const auto& inp : mgx_state->cached_inputs) {
-            const auto& input_tensor = ctx.GetInput(inp.ort_index);
-            m.add(inp.name.c_str(), migraphx::argument(inp.mgx_shape,
-                                               const_cast<void*>(input_tensor.GetTensorRawData())));
-          }
-
-          // Rebind outputs - direct iteration, uses pre-allocated shape vectors
-          for (std::size_t i = 0; i < mgx_state->cached_outputs.size(); ++i) {
-            const auto& out = mgx_state->cached_outputs[i];
-            const auto& ort_shape = mgx_state->cached_output_ort_shapes[i];
-            auto output_tensor = ctx.GetOutput(out.output_index, ort_shape.data(), ort_shape.size());
-            m.add(out.name.c_str(), migraphx::argument(out.mgx_shape,
-                                               output_tensor.GetTensorMutableRawData()));
-          }
-
-          // Run directly - minimal overhead path
-          run_migraphx_program(mgx_state->mgx_sem_ptr, api, context, ctx, prog, m,
-                               mgx_state->cached_prog_output_indices);
-          return Status::OK();
-        }
+      if (execute_ultra_fast_path(mgx_state, api, context, ctx)) {
+        return Status::OK();
       }
 
       // ═══════════════════════════════════════════════════════════════════════
       // Build input shape hash - only computed when shapes change
       // ═══════════════════════════════════════════════════════════════════════
+      const auto& map_input_name_index = mgx_state->input_name_indexes;
       std::vector<std::int64_t> all_input_shapes;
-      all_input_shapes.reserve(map_input_name_index.size() * 4);  // Pre-allocate
+      all_input_shapes.reserve(map_input_name_index.size() * 4);
       for (const auto& [name, index] : map_input_name_index) {
         const auto& shape = ctx.GetInput(index).GetTensorTypeAndShapeInfo().GetShape();
         all_input_shapes.insert(all_input_shapes.end(), shape.begin(), shape.end());
@@ -2213,78 +2337,15 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       // ═══════════════════════════════════════════════════════════════════════
       // FAST PATH: Check cached programs for this shape hash
       // ═══════════════════════════════════════════════════════════════════════
-      if (!mgx_state->defer_compilation && mgx_state->cached_programs_ref.has_value()) {
-        auto& cached_programs = mgx_state->cached_programs_ref.value().get();
-        auto prog_it = cached_programs.find(current_hash);
-        if (prog_it != cached_programs.end()) {
-          // Found cached program - use it and populate caches
-          prog = prog_it->second;
-
-          // Get shapes once
-          auto param_shapes = prog.get_parameter_shapes();
-          auto output_shapes = prog.get_output_shapes();
-
-          // Populate optimized caches for ultra-fast path
-          populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index);
-
-          // Bind inputs/outputs
-          auto [m, prog_output_indices] = handle_program_input_outputs(
-              param_shapes, output_shapes, map_input_name_index, ctx);
-
-          mgx_state->cached_prog_params = std::move(m);
-          mgx_state->cached_prog_output_indices = std::move(prog_output_indices);
-          mgx_state->last_input_shapes_raw = std::move(all_input_shapes);  // Store for quick comparison
-          mgx_state->last_input_shape_hash = current_hash;
-          mgx_state->caches_valid = true;
-
-          run_migraphx_program(mgx_state->mgx_sem_ptr, api, context, ctx, prog,
-                               mgx_state->cached_prog_params.value(),
-                               mgx_state->cached_prog_output_indices);
-          return Status::OK();
-        }
+      if (execute_fast_path(mgx_state, api, context, ctx, current_hash, all_input_shapes)) {
+        return Status::OK();
       }
 
       // ═══════════════════════════════════════════════════════════════════════
       // STANDARD PATH: Shape checking and potential recompilation
       // ═══════════════════════════════════════════════════════════════════════
-      auto [input_shape_match, param_shapes, input_shapes] = handle_input_shape(
-          mgx_state->defer_compilation, map_input_name_index, ctx, cmp_options, prog);
-
-      if (!input_shape_match) {
-        // Invalidate caches before recompilation
-        mgx_state->caches_valid = false;
-
-        handle_input_shape_mismatch(
-            mgx_state,
-            model_cache_path_,
-            model_path_,
-            mxr_filename_prefix,
-            ctx,
-            param_shapes,
-            input_shapes);
-
-        // Re-fetch param_shapes after recompilation
-        param_shapes = prog.get_parameter_shapes();
-      }
-
-      // Fetch output shapes once
-      auto output_shapes = prog.get_output_shapes();
-
-      // Populate optimized caches for ultra-fast path
-      populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index);
-
-      // Bind inputs and allocate outputs
-      auto [m, prog_output_indices] = handle_program_input_outputs(
-          param_shapes, output_shapes, map_input_name_index, ctx);
-
-      // Complete cache population
-      mgx_state->cached_prog_params = m;
-      mgx_state->cached_prog_output_indices = prog_output_indices;
-      mgx_state->last_input_shapes_raw = std::move(all_input_shapes);  // Store for quick comparison
-      mgx_state->last_input_shape_hash = current_hash;
-      mgx_state->caches_valid = true;
-
-      run_migraphx_program(mgx_state->mgx_sem_ptr, api, context, ctx, prog, m, prog_output_indices);
+      execute_standard_path(mgx_state, api, context, ctx, current_hash, std::move(all_input_shapes),
+                            model_cache_path_, model_path_, mxr_filename_prefix);
 
       return Status::OK();
     };
