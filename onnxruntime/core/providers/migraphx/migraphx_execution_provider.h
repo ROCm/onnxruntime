@@ -68,6 +68,18 @@ struct MIGraphXFuncState {
   size_t max_dynamic_batch;
   // Reference to the cached programs map for this node (keyed by input shape hash)
   std::optional<std::reference_wrapper<std::unordered_map<std::string, migraphx::program>>> cached_programs_ref = std::nullopt;
+  
+  // Dynamic batch support
+  bool has_dynamic_batch = false;
+  std::vector<std::size_t> power_of_two_batch_sizes;
+  
+  // Padded input buffers for dynamic batching (allocated on GPU)
+  struct PaddedBuffer {
+    void* data = nullptr;          // GPU buffer pointer
+    std::size_t size_bytes = 0;    // Buffer size in bytes
+    migraphx::shape mgx_shape;     // Padded MIGraphX shape
+  };
+  std::vector<PaddedBuffer> padded_input_buffers;  // One per input when padding is active
 
   // ═══════════════════════════════════════════════════════════════════════════
   // PERFORMANCE CACHES - Avoid redundant MIGraphX API calls per inference
