@@ -1184,23 +1184,29 @@ static std::pair<std::vector<std::string>, std::vector<std::string>> get_io_name
 // Useful to default to EP to trigger the compile if file doesn't exist or loading fails.
 bool load_precompiled_model(migraphx::program& prog, const std::filesystem::path& path) try {
   if (!path.empty() && exists(path)) {
-    LOGS_DEFAULT(VERBOSE) << "Attempting to load model at:" << path.string();
+    LOGS_DEFAULT(WARNING) << "[load_precompiled_model] Attempting to load model from disk: " << path.string();
     prog = migraphx::load(path.string().c_str());
-    LOGS_DEFAULT(VERBOSE) << "load model : Success";
+    LOGS_DEFAULT(WARNING) << "[load_precompiled_model] ✓ Successfully loaded model from disk";
     return true;
   }
+  LOGS_DEFAULT(WARNING) << "[load_precompiled_model] Cache file does not exist: " 
+                        << (path.empty() ? "(no path specified)" : path.string());
+  return false;
+} catch (const std::exception& e) {
+  LOGS_DEFAULT(WARNING) << "[load_precompiled_model] ✗ Failed to load model from disk: " << e.what();
   return false;
 } catch (...) {
+  LOGS_DEFAULT(WARNING) << "[load_precompiled_model] ✗ Failed to load model from disk (unknown exception)";
   return false;
 }
 
 void save_compiled_model(const migraphx::program& prog, const std::filesystem::path& path) {
   if (!path.empty()) {
-    LOGS_DEFAULT(VERBOSE) << "Model Save at " << path.string() << ": Begin";
+    LOGS_DEFAULT(WARNING) << "[save_compiled_model] Saving compiled model to disk: " << path.string();
     migraphx::file_options fo;
     fo.set_file_format("msgpack");
     save(prog, path.string().c_str(), fo);
-    LOGS_DEFAULT(VERBOSE) << "Model Save: Complete";
+    LOGS_DEFAULT(WARNING) << "[save_compiled_model] ✓ Model saved successfully";
   }
 }
 
@@ -1593,12 +1599,18 @@ static migraphx::program load_or_compile_model(
 {
   migraphx::program prog;
 
+  LOGS_DEFAULT(WARNING) << "[load_or_compile_model] ==== ENTERING ====";
+  LOGS_DEFAULT(WARNING) << "[load_or_compile_model] Cache file: " << (cache_file.empty() ? "(none)" : cache_file.string());
+  LOGS_DEFAULT(WARNING) << "[load_or_compile_model] Batch size: " << (batch_size > 0 ? std::to_string(batch_size) : "(default)");
+
   if (!load_precompiled_model(prog, cache_file)) {
+    // Cache miss - need to compile
     if (batch_size > 0) {
-      LOGS_DEFAULT(VERBOSE) << "[LoadOrCompile] Cache miss for batch size " << batch_size << ", compiling...";
+      LOGS_DEFAULT(WARNING) << "[load_or_compile_model] ✗ CACHE MISS for batch size " << batch_size << " - COMPILING...";
     } else {
-      LOGS_DEFAULT(VERBOSE) << "[LoadOrCompile] Cache miss, compiling...";
+      LOGS_DEFAULT(WARNING) << "[load_or_compile_model] ✗ CACHE MISS - COMPILING...";
     }
+    LOGS_DEFAULT(WARNING) << "[load_or_compile_model] Compilation started (this may take a while)...";
 
     prog = CompileProgramWithBatch(
         onnx_string,
@@ -1618,18 +1630,23 @@ static migraphx::program load_or_compile_model(
         all_input_base_shapes,
         batch_size);
 
+    LOGS_DEFAULT(WARNING) << "[load_or_compile_model] Compilation finished";
+    
     save_compiled_model(prog, cache_file);
     if (!cache_file.empty()) {
-      LOGS_DEFAULT(VERBOSE) << "[LoadOrCompile] Saved compiled model to: " << cache_file.string();
+      LOGS_DEFAULT(WARNING) << "[load_or_compile_model] Saved compiled model to disk: " << cache_file.string();
     }
   } else {
+    // Cache hit - loaded from disk
     if (batch_size > 0) {
-      LOGS_DEFAULT(VERBOSE) << "[LoadOrCompile] Cache hit for batch size " << batch_size;
+      LOGS_DEFAULT(WARNING) << "[load_or_compile_model] ✓ CACHE HIT - LOADING FROM DISK for batch size " << batch_size;
     } else {
-      LOGS_DEFAULT(VERBOSE) << "[LoadOrCompile] Cache hit! Loaded from: " << cache_file.string();
+      LOGS_DEFAULT(WARNING) << "[load_or_compile_model] ✓ CACHE HIT - LOADING FROM DISK";
     }
+    LOGS_DEFAULT(WARNING) << "[load_or_compile_model] Loaded precompiled model from: " << cache_file.string();
   }
 
+  LOGS_DEFAULT(WARNING) << "[load_or_compile_model] ==== EXITING ====";
   return prog;
 }
 
@@ -1660,19 +1677,139 @@ static void run_migraphx_program(
   bool needs_slicing = (original_batch_size > 0 && padded_batch_size > 0 && 
                         original_batch_size < padded_batch_size);
 
+  LOGS_DEFAULT(WARNING) << "[run_migraphx_program] ==== ENTERING ====";
   LOGS_DEFAULT(WARNING) << "[run_migraphx_program] original_batch_size=" << original_batch_size 
                         << ", padded_batch_size=" << padded_batch_size 
                         << ", needs_slicing=" << needs_slicing;
+  LOGS_DEFAULT(WARNING) << "[run_migraphx_program] prog_output_indices.size()=" << prog_output_indices.size();
+  if (!prog_output_indices.empty()) {
+    std::ostringstream ss;
+    ss << "[";
+    for (size_t i = 0; i < prog_output_indices.size(); ++i) {
+      if (i > 0) ss << ", ";
+      ss << prog_output_indices[i];
+    }
+    ss << "]";
+    LOGS_DEFAULT(WARNING) << "[run_migraphx_program] prog_output_indices=" << ss.str();
+  }
 
-  // In case of input parameters are reused as output parameter call hipMemcpy
+  // Process ALL outputs for proper slicing when needed
   auto output_num = prog_outputs->size();
-  LOGS_DEFAULT(WARNING) << "[run_migraphx_program] Number of outputs: " << output_num;
+  LOGS_DEFAULT(WARNING) << "[run_migraphx_program] Number of MIGraphX outputs: " << output_num;
   
-  if (prog_output_indices.size() < output_num) {
-    std::unordered_set<std::size_t> prog_output_indices_set(prog_output_indices.begin(), prog_output_indices.end());
+  std::unordered_set<std::size_t> prog_output_indices_set(prog_output_indices.begin(), prog_output_indices.end());
+  std::vector<std::size_t> outputs_to_copy;  // Outputs that need memcpy (not pre-allocated)
+  
+  for (std::size_t i = 0; i < output_num; ++i) {
+    if (prog_output_indices_set.count(i) == 0) {
+      outputs_to_copy.push_back(i);
+    }
+  }
+  
+  LOGS_DEFAULT(WARNING) << "[run_migraphx_program] Pre-allocated outputs (in prog_output_indices): " 
+                        << prog_output_indices_set.size();
+  LOGS_DEFAULT(WARNING) << "[run_migraphx_program] Outputs to copy (not pre-allocated): " 
+                        << outputs_to_copy.size();
+  
+  // First, handle pre-allocated outputs (need slicing but were already bound)
+  // NOTE: This is a problematic state! Pre-allocated outputs should NOT exist when slicing is needed.
+  // The proper solution is to use temp buffers in handle_program_input_outputs when needs_slicing=true.
+  // This code handles the case defensively by copying sliced data to newly allocated ORT outputs.
+  if (needs_slicing && !prog_output_indices_set.empty()) {
+    LOGS_DEFAULT(WARNING) << "[run_migraphx_program] ⚠️  WARNING: Handling " << prog_output_indices_set.size() 
+                         << " pre-allocated outputs with slicing";
+    LOGS_DEFAULT(WARNING) << "[run_migraphx_program] ⚠️  This indicates handle_program_input_outputs did NOT use temp buffers!";
+    LOGS_DEFAULT(WARNING) << "[run_migraphx_program] ⚠️  Pre-allocated outputs should be empty when slicing is needed.";
+    
     for (std::size_t i = 0; i < output_num; ++i) {
-      if (prog_output_indices_set.count(i) > 0)
-        continue;
+      if (prog_output_indices_set.count(i) > 0) {
+        // This output was pre-allocated with padded shape - need to copy sliced data
+        auto gpu_res = (*prog_outputs)[i];
+        migraphx::shape res_shape = gpu_res.get_shape();
+        auto res_lens = res_shape.lengths();
+        
+        LOGS_DEFAULT(WARNING) << "[run_migraphx_program] Pre-allocated output " << i 
+                             << " MIGraphX shape: [" << [&]() {
+          std::ostringstream ss;
+          for (size_t j = 0; j < res_lens.size(); ++j) {
+            if (j > 0) ss << ", ";
+            ss << res_lens[j];
+          }
+          return ss.str();
+        }() << "]";
+        
+        // Create sliced shape for ORT output
+        std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
+        if (!ort_shape.empty() && static_cast<std::size_t>(ort_shape[0]) != original_batch_size) {
+          ort_shape[0] = static_cast<int64_t>(original_batch_size);
+          
+          LOGS_DEFAULT(WARNING) << "[run_migraphx_program] Slicing pre-allocated output " << i 
+                               << " from batch size " << padded_batch_size << " to " << original_batch_size;
+          
+          LOGS_DEFAULT(WARNING) << "[run_migraphx_program] Output " << i << " ORT shape (after slicing): [" << [&]() {
+            std::ostringstream ss;
+            for (size_t j = 0; j < ort_shape.size(); ++j) {
+              if (j > 0) ss << ", ";
+              ss << ort_shape[j];
+            }
+            return ss.str();
+          }() << "]";
+          
+          // Calculate bytes to copy (sliced portion only)
+          std::size_t bytes_per_batch = res_shape.bytes() / padded_batch_size;
+          std::size_t bytes_to_copy = bytes_per_batch * original_batch_size;
+          
+          LOGS_DEFAULT(WARNING) << "[run_migraphx_program] Bytes per batch: " << bytes_per_batch
+                               << ", total bytes to copy: " << bytes_to_copy;
+          
+          // Allocate temp buffer for sliced data on GPU
+          void* temp_sliced_buffer = nullptr;
+          auto hip_status = hipMalloc(&temp_sliced_buffer, bytes_to_copy);
+          if (hip_status != hipSuccess) {
+            LOGS_DEFAULT(ERROR) << "[run_migraphx_program] hipMalloc failed for sliced output buffer!";
+            ORT_THROW("hipMalloc failed for sliced output buffer");
+          }
+          
+          // Copy sliced data from MIGraphX output to temp buffer
+          LOGS_DEFAULT(WARNING) << "[run_migraphx_program] Copying sliced data to temp buffer...";
+          HIP_CALL_THROW(hipMemcpyWithStream(temp_sliced_buffer,
+                                             gpu_res.data(),
+                                             bytes_to_copy,
+                                             hipMemcpyDeviceToDevice,
+                                             static_cast<hipStream_t>(rocm_stream)));
+          
+          // Synchronize to ensure copy is complete before allocating ORT output
+          HIP_CALL_THROW(hipStreamSynchronize(static_cast<hipStream_t>(rocm_stream)));
+          
+          // Now allocate the ORT output tensor with the SLICED shape
+          // This should work because we're allocating fresh (not re-using the padded buffer)
+          LOGS_DEFAULT(WARNING) << "[run_migraphx_program] Allocating ORT output with sliced shape...";
+          auto output_tensor = ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
+          void* output_data = output_tensor.GetTensorMutableRawData();
+          
+          // Copy from temp buffer to ORT output
+          LOGS_DEFAULT(WARNING) << "[run_migraphx_program] Copying from temp buffer to ORT output...";
+          HIP_CALL_THROW(hipMemcpyWithStream(output_data,
+                                             temp_sliced_buffer,
+                                             bytes_to_copy,
+                                             hipMemcpyDeviceToDevice,
+                                             static_cast<hipStream_t>(rocm_stream)));
+          
+          // Free temporary buffer
+          hipFree(temp_sliced_buffer);
+          
+          LOGS_DEFAULT(WARNING) << "[run_migraphx_program] ✓ Successfully sliced pre-allocated output " << i;
+        } else {
+          // No slicing needed for this output (batch dimension matches)
+          LOGS_DEFAULT(WARNING) << "[run_migraphx_program] Output " << i << " batch dim already matches, no slicing needed";
+        }
+      }
+    }
+  }
+  
+  // Now handle outputs that need memcpy (not pre-allocated)
+  if (prog_output_indices.size() < output_num) {
+    for (std::size_t i : outputs_to_copy) {
       auto gpu_res = (*prog_outputs)[i];
       migraphx::shape res_shape = gpu_res.get_shape();
       auto res_lens = res_shape.lengths();
@@ -1850,22 +1987,36 @@ static int compute_output_index(const std::string_view sv) {
 
 // Overload: Handle program inputs and outputs binding with pre-cached output shapes
 // This avoids calling prog.get_output_shapes() when shapes are already cached
+// When needs_slicing is true, allocates temporary GPU buffers for outputs instead of binding directly
 static
 std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program_input_outputs(
     const migraphx::program_parameter_shapes& param_shapes,
     const migraphx::shapes& output_shapes,
     const std::unordered_map<std::string, std::size_t>& map_input_name_index,
-    const Ort::KernelContext& ctx)
+    const Ort::KernelContext& ctx,
+    bool needs_slicing = false,
+    std::vector<void*>* temp_output_buffers = nullptr)
 {
+  LOGS_DEFAULT(WARNING) << "[handle_program_input_outputs] ==== ENTERING ====";
+  LOGS_DEFAULT(WARNING) << "[handle_program_input_outputs] needs_slicing=" << needs_slicing 
+                        << ", temp_output_buffers=" << (temp_output_buffers != nullptr ? "valid" : "nullptr");
+  LOGS_DEFAULT(WARNING) << "[handle_program_input_outputs] param_shapes.size()=" << param_shapes.size()
+                        << ", output_shapes.size()=" << output_shapes.size();
+  
   migraphx::program_parameters m;
   std::vector<std::size_t> prog_output_indices;
   prog_output_indices.reserve(output_shapes.size());
+
+  std::size_t input_count = 0;
+  std::size_t output_count = 0;
+  std::size_t temp_buffer_count = 0;
 
   if (param_shapes.size() > 0) {
     for (const auto& name : param_shapes.names()) {
       auto it = map_input_name_index.find(name);
       if (it != map_input_name_index.end()) {
         // Input parameter
+        input_count++;
         const auto& input_tensor = ctx.GetInput(it->second);
         const auto& mgx_s = param_shapes[name];
         m.add(name, migraphx::argument(mgx_s,
@@ -1874,27 +2025,69 @@ std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program
         // Output parameter
         const auto output_index = compute_output_index(name);
         if (output_index != -1) {
-          prog_output_indices.push_back(static_cast<std::size_t>(output_index));
-          const auto& lens = output_shapes[output_index].lengths();
-          const std::vector<int64_t> ort_output_shape(lens.begin(), lens.end());
-          auto output_tensor = ctx.GetOutput(output_index, ort_output_shape.data(), ort_output_shape.size());
+          output_count++;
           const auto& mgx_arg_shape = param_shapes[name];
-          m.add(name, migraphx::argument(mgx_arg_shape, output_tensor.GetTensorMutableRawData()));
+          
+          LOGS_DEFAULT(WARNING) << "[handle_program_input_outputs] Processing output '" << name 
+                                << "' (index=" << output_index << ")"
+                                << ", needs_slicing=" << needs_slicing 
+                                << ", temp_output_buffers=" << (temp_output_buffers != nullptr ? "valid" : "nullptr");
+          
+          if (needs_slicing && temp_output_buffers != nullptr) {
+            // When slicing, allocate temporary GPU buffer for padded output
+            // Don't add to prog_output_indices since these aren't pre-allocated ORT outputs
+            std::size_t output_size_bytes = mgx_arg_shape.bytes();
+            void* temp_buffer = nullptr;
+            auto hip_status = hipMalloc(&temp_buffer, output_size_bytes);
+            if (hip_status != hipSuccess) {
+              ORT_THROW("hipMalloc failed for temporary output buffer");
+            }
+            temp_output_buffers->push_back(temp_buffer);
+            temp_buffer_count++;
+            m.add(name, migraphx::argument(mgx_arg_shape, temp_buffer));
+            LOGS_DEFAULT(WARNING) << "[handle_program_input_outputs] ✓ Allocated TEMP BUFFER for output " 
+                                  << output_index << " '" << name << "' (" << output_size_bytes << " bytes)"
+                                  << " - NOT adding to prog_output_indices";
+          } else {
+            // Normal path: bind directly to ORT output tensor
+            LOGS_DEFAULT(WARNING) << "[handle_program_input_outputs] Using NORMAL PATH for output " 
+                                  << output_index << " '" << name << "'"
+                                  << " - adding to prog_output_indices";
+            prog_output_indices.push_back(static_cast<std::size_t>(output_index));
+            const auto& lens = output_shapes[output_index].lengths();
+            const std::vector<int64_t> ort_output_shape(lens.begin(), lens.end());
+            auto output_tensor = ctx.GetOutput(output_index, ort_output_shape.data(), ort_output_shape.size());
+            m.add(name, migraphx::argument(mgx_arg_shape, output_tensor.GetTensorMutableRawData()));
+          }
         }
       }
     }
   }
+  
+  LOGS_DEFAULT(WARNING) << "[handle_program_input_outputs] ==== SUMMARY ====";
+  LOGS_DEFAULT(WARNING) << "[handle_program_input_outputs] Processed " << input_count << " inputs, " 
+                        << output_count << " outputs";
+  LOGS_DEFAULT(WARNING) << "[handle_program_input_outputs] Temp buffers allocated: " << temp_buffer_count;
+  LOGS_DEFAULT(WARNING) << "[handle_program_input_outputs] prog_output_indices.size()=" << prog_output_indices.size();
+  LOGS_DEFAULT(WARNING) << "[handle_program_input_outputs] ==== EXITING ====";
+  
   return {m, prog_output_indices};
 }
 
 // Helper: Populate optimized caches for ultra-fast path
 // This separates inputs from outputs, pre-computes indices, and pre-allocates output shapes
+// When slicing is needed, stores sliced output shapes instead of padded shapes
 static void populate_ultra_fast_caches(
     MIGraphXFuncState* mgx_state,
     const migraphx::program_parameter_shapes& param_shapes,
     const migraphx::shapes& output_shapes,
-    const std::unordered_map<std::string, std::size_t>& map_input_name_index)
+    const std::unordered_map<std::string, std::size_t>& map_input_name_index,
+    std::size_t original_batch_size = 0,
+    std::size_t padded_batch_size = 0)
 {
+  bool needs_slicing = (original_batch_size > 0 && padded_batch_size > 0 && 
+                        original_batch_size < padded_batch_size);
+  
   // Clear existing caches
   mgx_state->cached_inputs.clear();
   mgx_state->cached_outputs.clear();
@@ -1919,19 +2112,69 @@ static void populate_ultra_fast_caches(
         // This is an output parameter
         const int output_index = compute_output_index(name);
         if (output_index != -1) {
-          MIGraphXFuncState::CachedOutputParam out;
-          out.name = name;
-          out.output_index = output_index;
-          out.mgx_shape = param_shapes[name];
-          mgx_state->cached_outputs.push_back(std::move(out));
+          // When slicing, don't cache outputs (ultra-fast path won't be used)
+          if (!needs_slicing) {
+            MIGraphXFuncState::CachedOutputParam out;
+            out.name = name;
+            out.output_index = output_index;
+            out.mgx_shape = param_shapes[name];
+            mgx_state->cached_outputs.push_back(std::move(out));
 
-          // Pre-allocate ORT-format output shape vector
-          const auto& lens = output_shapes[output_index].lengths();
-          mgx_state->cached_output_ort_shapes.emplace_back(lens.begin(), lens.end());
+            // Pre-allocate ORT-format output shape vector
+            const auto& lens = output_shapes[output_index].lengths();
+            mgx_state->cached_output_ort_shapes.emplace_back(lens.begin(), lens.end());
+          }
         }
       }
     }
   }
+}
+
+// Helper: Build input shapes vector in cached_inputs order (MIGraphX parameter order)
+// This ensures consistency between how shapes are stored and how they're compared in ultra-fast path
+static std::vector<std::int64_t> build_input_shapes_in_cached_order(
+    MIGraphXFuncState* mgx_state,
+    Ort::KernelContext& ctx,
+    std::size_t padded_batch_size = 0)
+{
+  std::vector<std::int64_t> shapes;
+  shapes.reserve(mgx_state->cached_inputs.size() * 4);  // Estimate average 4 dims per input
+  
+  LOGS_DEFAULT(WARNING) << "[build_input_shapes_in_cached_order] Building shapes in cached_inputs order";
+  LOGS_DEFAULT(WARNING) << "[build_input_shapes_in_cached_order] cached_inputs.size()=" << mgx_state->cached_inputs.size()
+                        << ", padded_batch_size=" << padded_batch_size;
+  
+  // Log first few input names to verify ordering
+  if (mgx_state->cached_inputs.size() > 0) {
+    std::ostringstream input_order_ss;
+    input_order_ss << "[build_input_shapes_in_cached_order] Input order (first 5): ";
+    for (size_t i = 0; i < std::min(mgx_state->cached_inputs.size(), static_cast<size_t>(5)); ++i) {
+      if (i > 0) input_order_ss << ", ";
+      input_order_ss << mgx_state->cached_inputs[i].name;
+    }
+    if (mgx_state->cached_inputs.size() > 5) input_order_ss << ", ...";
+    LOGS_DEFAULT(WARNING) << input_order_ss.str();
+  }
+  
+  for (const auto& cached_inp : mgx_state->cached_inputs) {
+    auto input_tensor = ctx.GetInput(cached_inp.ort_index);
+    auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+    const auto tensor_shape = tensor_info.GetShape();
+    
+    if (!tensor_shape.empty()) {
+      if (padded_batch_size > 0) {
+        // Use padded batch size for first dimension
+        shapes.push_back(static_cast<std::int64_t>(padded_batch_size));
+        shapes.insert(shapes.end(), tensor_shape.begin() + 1, tensor_shape.end());
+      } else {
+        // Use original shape
+        shapes.insert(shapes.end(), tensor_shape.begin(), tensor_shape.end());
+      }
+    }
+  }
+  
+  LOGS_DEFAULT(WARNING) << "[build_input_shapes_in_cached_order] Built " << shapes.size() << " shape dimensions";
+  return shapes;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1950,15 +2193,36 @@ static bool execute_ultra_fast_path(
   LOGS_DEFAULT(WARNING) << "[ULTRA_FAST_PATH] caches_valid = " << mgx_state->caches_valid;
   LOGS_DEFAULT(WARNING) << "[ULTRA_FAST_PATH] last_input_shapes_raw.size() = " 
                         << mgx_state->last_input_shapes_raw.size();
+  LOGS_DEFAULT(WARNING) << "[ULTRA_FAST_PATH] cached_outputs.size() = " 
+                        << mgx_state->cached_outputs.size();
   
   if (!mgx_state->caches_valid || mgx_state->last_input_shapes_raw.empty()) {
     LOGS_DEFAULT(WARNING) << "[ULTRA_FAST_PATH] Caches not valid or empty - skipping";
+    return false;
+  }
+  
+  // Ultra-fast path not supported when outputs need dynamic slicing
+  if (mgx_state->cached_outputs.empty()) {
+    LOGS_DEFAULT(WARNING) << "[ULTRA_FAST_PATH] No cached outputs (slicing mode) - skipping";
     return false;
   }
 
   // Quick shape comparison
   LOGS_DEFAULT(WARNING) << "[ULTRA_FAST_PATH] Performing shape comparison";
   LOGS_DEFAULT(WARNING) << "[ULTRA_FAST_PATH] Number of cached inputs: " << mgx_state->cached_inputs.size();
+  
+  // Log first few input names to verify ordering consistency
+  if (mgx_state->cached_inputs.size() > 0) {
+    std::ostringstream input_order_ss;
+    input_order_ss << "[ULTRA_FAST_PATH] Input order (first 5): ";
+    for (size_t i = 0; i < std::min(mgx_state->cached_inputs.size(), static_cast<size_t>(5)); ++i) {
+      if (i > 0) input_order_ss << ", ";
+      input_order_ss << mgx_state->cached_inputs[i].name;
+    }
+    if (mgx_state->cached_inputs.size() > 5) input_order_ss << ", ...";
+    LOGS_DEFAULT(WARNING) << input_order_ss.str();
+  }
+  
   bool shapes_match = true;
   std::size_t offset = 0;
   const auto& last_shapes = mgx_state->last_input_shapes_raw;
@@ -2265,18 +2529,12 @@ static bool execute_fast_path(
   auto param_shapes = prog.get_parameter_shapes();
   auto output_shapes = prog.get_output_shapes();
 
-  // Populate optimized caches for ultra-fast path
-  populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index);
-
-  // Bind inputs/outputs
-  auto [m, prog_output_indices] = handle_program_input_outputs(
-      param_shapes, output_shapes, map_input_name_index, ctx);
-
-  mgx_state->cached_prog_params = std::move(m);
-  mgx_state->cached_prog_output_indices = std::move(prog_output_indices);
-  mgx_state->last_input_shapes_raw = std::move(all_input_shapes);
-  mgx_state->last_input_shape_hash = current_hash;
-  mgx_state->caches_valid = true;
+  bool needs_slicing = (original_batch_size > 0 && padded_batch_size > 0 && 
+                        original_batch_size < padded_batch_size);
+  
+  // Populate optimized caches for ultra-fast path (disabled when slicing)
+  populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index,
+                            original_batch_size, padded_batch_size);
 
   // Allocate and pad inputs if needed for dynamic batching
   bool using_padded_inputs = false;
@@ -2286,16 +2544,42 @@ static bool execute_fast_path(
     auto rocm_stream = static_cast<hipStream_t>(rocm_stream_ptr);
     using_padded_inputs = allocate_and_pad_inputs(mgx_state, ctx, original_batch_size, 
                                                   padded_batch_size, rocm_stream);
-    
-    // Rebind padded inputs to program parameters
-    if (using_padded_inputs && mgx_state->padded_input_buffers.size() == mgx_state->cached_inputs.size()) {
-      LOGS_DEFAULT(WARNING) << "[FAST_PATH] Rebinding padded input buffers";
-      auto& prog_params = mgx_state->cached_prog_params.value();
-      for (size_t i = 0; i < mgx_state->cached_inputs.size(); ++i) {
-        const auto& inp = mgx_state->cached_inputs[i];
-        const auto& padded_buf = mgx_state->padded_input_buffers[i];
-        prog_params.add(inp.name.c_str(), migraphx::argument(padded_buf.mgx_shape, padded_buf.data));
-      }
+  }
+
+  // Bind inputs/outputs (use temp buffers for outputs when slicing)
+  LOGS_DEFAULT(WARNING) << "[FAST_PATH] Calling handle_program_input_outputs with needs_slicing=" << needs_slicing;
+  std::vector<void*> temp_output_buffers;
+  auto [m, prog_output_indices] = handle_program_input_outputs(
+      param_shapes, output_shapes, map_input_name_index, ctx, needs_slicing, &temp_output_buffers);
+
+  LOGS_DEFAULT(WARNING) << "[FAST_PATH] handle_program_input_outputs returned:";
+  LOGS_DEFAULT(WARNING) << "[FAST_PATH]   prog_output_indices.size()=" << prog_output_indices.size();
+  LOGS_DEFAULT(WARNING) << "[FAST_PATH]   temp_output_buffers.size()=" << temp_output_buffers.size();
+  if (needs_slicing && !prog_output_indices.empty()) {
+    LOGS_DEFAULT(WARNING) << "[FAST_PATH]   ⚠️  WARNING: prog_output_indices is NOT empty with slicing enabled!";
+  }
+
+  mgx_state->cached_prog_params = std::move(m);
+  mgx_state->cached_prog_output_indices = std::move(prog_output_indices);
+  
+  // IMPORTANT: Build last_input_shapes_raw in cached_inputs order (MIGraphX parameter order)
+  // This ensures ultra-fast path shape comparison uses consistent ordering
+  mgx_state->last_input_shapes_raw = build_input_shapes_in_cached_order(
+      mgx_state, ctx, using_padded_inputs ? padded_batch_size : 0);
+  LOGS_DEFAULT(WARNING) << "[FAST_PATH] Built last_input_shapes_raw in cached_inputs order, size=" 
+                        << mgx_state->last_input_shapes_raw.size();
+  
+  mgx_state->last_input_shape_hash = current_hash;
+  mgx_state->caches_valid = true;
+
+  // Rebind padded inputs to program parameters
+  if (using_padded_inputs && mgx_state->padded_input_buffers.size() == mgx_state->cached_inputs.size()) {
+    LOGS_DEFAULT(WARNING) << "[FAST_PATH] Rebinding padded input buffers";
+    auto& prog_params = mgx_state->cached_prog_params.value();
+    for (size_t i = 0; i < mgx_state->cached_inputs.size(); ++i) {
+      const auto& inp = mgx_state->cached_inputs[i];
+      const auto& padded_buf = mgx_state->padded_input_buffers[i];
+      prog_params.add(inp.name.c_str(), migraphx::argument(padded_buf.mgx_shape, padded_buf.data));
     }
   }
 
@@ -2305,6 +2589,13 @@ static bool execute_fast_path(
                        mgx_state->cached_prog_params.value(),
                        mgx_state->cached_prog_output_indices,
                        original_batch_size, padded_batch_size);
+  
+  // Free temporary output buffers
+  for (void* buf : temp_output_buffers) {
+    if (buf != nullptr) {
+      hipFree(buf);
+    }
+  }
   
   // Free padded buffers after execution
   if (using_padded_inputs) {
@@ -2619,8 +2910,14 @@ static void execute_standard_path(
       }
     }
     
-    if (needs_padding && padded_batch_size > 0) {
-      LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] Building padded shape key for cache lookup";
+    // We need to fetch from cache whether padding is needed or not
+    // Even when batch size matches exactly, we still use cached compiled programs
+    if (padded_batch_size > 0) {
+      if (needs_padding) {
+        LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] Building padded shape key for cache lookup (needs padding)";
+      } else {
+        LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] Building shape key for cache lookup (exact match, no padding)";
+      }
       // Update the shape hash and all_input_shapes to use the padded batch size
       std::vector<std::int64_t> padded_shapes;
       padded_shapes.reserve(all_input_shapes.size());
@@ -2648,74 +2945,135 @@ static void execute_standard_path(
                           << cached_progs.size() << ")";
         auto prog_it = cached_progs.find(padded_hash);
         if (prog_it != cached_progs.end()) {
-          LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] ✓✓✓ CACHE HIT for padded batch size " 
-                             << padded_batch_size;
+          LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] ✓✓✓ CACHE HIT for batch size " 
+                             << padded_batch_size << (needs_padding ? " (will pad)" : " (exact match, no padding)");
           prog = prog_it->second;
           
-          // Get shapes for the padded program
+          // Get shapes for the cached program
           auto param_shapes = prog.get_parameter_shapes();
           auto output_shapes = prog.get_output_shapes();
           
-          // Populate caches
-          populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index);
+          LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] Cached program param_shapes.size()=" 
+                               << param_shapes.size() << ", output_shapes.size()=" << output_shapes.size();
           
-          // Rebuild padded_shapes in cached_inputs order (MIGraphX parameter order)
-          // This ensures consistency with ultra-fast path shape comparison
-          padded_shapes.clear();
-          padded_shapes.reserve(mgx_state->cached_inputs.size() * 2);
-          for (const auto& cached_inp : mgx_state->cached_inputs) {
-            auto input_tensor = ctx.GetInput(cached_inp.ort_index);
-            auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
-            const auto tensor_shape = tensor_info.GetShape();
+          if (needs_padding) {
+            // ============ PADDING PATH: Batch size needs to be padded ============
+            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] Taking PADDING path";
             
-            if (!tensor_shape.empty()) {
-              padded_shapes.push_back(static_cast<std::int64_t>(padded_batch_size));
-              padded_shapes.insert(padded_shapes.end(), tensor_shape.begin() + 1, tensor_shape.end());
+            // Populate caches (with slicing info so ultra-fast path is disabled)
+            populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index,
+                                      original_batch_size, padded_batch_size);
+            
+            // Rebuild padded_shapes in cached_inputs order (MIGraphX parameter order)
+            // This ensures consistency with ultra-fast path shape comparison
+            padded_shapes.clear();
+            padded_shapes.reserve(mgx_state->cached_inputs.size() * 2);
+            for (const auto& cached_inp : mgx_state->cached_inputs) {
+              auto input_tensor = ctx.GetInput(cached_inp.ort_index);
+              auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+              const auto tensor_shape = tensor_info.GetShape();
+              
+              if (!tensor_shape.empty()) {
+                padded_shapes.push_back(static_cast<std::int64_t>(padded_batch_size));
+                padded_shapes.insert(padded_shapes.end(), tensor_shape.begin() + 1, tensor_shape.end());
+              }
             }
-          }
-          LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] Rebuilt padded_shapes in cached_inputs order";
-          
-          // Bind inputs and outputs
-          auto [m, prog_output_indices] = handle_program_input_outputs(
-              param_shapes, output_shapes, map_input_name_index, ctx);
-          
-          mgx_state->cached_prog_params = m;
-          mgx_state->cached_prog_output_indices = prog_output_indices;
-          mgx_state->last_input_shapes_raw = std::move(padded_shapes);
-          mgx_state->last_input_shape_hash = padded_hash;
-          mgx_state->caches_valid = true;
-          
-          // Allocate and pad inputs for dynamic batching
-          void* rocm_stream_ptr;
-          Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream_ptr));
-          auto rocm_stream = static_cast<hipStream_t>(rocm_stream_ptr);
-          bool using_padded_inputs = allocate_and_pad_inputs(mgx_state, ctx, original_batch_size, 
-                                                             padded_batch_size, rocm_stream);
-          
-          // Rebind padded inputs to program parameters
-          if (using_padded_inputs && mgx_state->padded_input_buffers.size() == mgx_state->cached_inputs.size()) {
-            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] Rebinding padded input buffers";
-            for (size_t i = 0; i < mgx_state->cached_inputs.size(); ++i) {
-              const auto& inp = mgx_state->cached_inputs[i];
-              const auto& padded_buf = mgx_state->padded_input_buffers[i];
-              m.add(inp.name.c_str(), migraphx::argument(padded_buf.mgx_shape, padded_buf.data));
+            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] Rebuilt padded_shapes in cached_inputs order";
+            
+            // Allocate and pad inputs for dynamic batching
+            void* rocm_stream_ptr;
+            Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream_ptr));
+            auto rocm_stream = static_cast<hipStream_t>(rocm_stream_ptr);
+            bool using_padded_inputs = allocate_and_pad_inputs(mgx_state, ctx, original_batch_size, 
+                                                               padded_batch_size, rocm_stream);
+            
+            // Bind inputs and outputs with temporary output buffers (for slicing)
+            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] Calling handle_program_input_outputs with needs_slicing=true";
+            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] param_shapes.size()=" << param_shapes.size()
+                                 << ", output_shapes.size()=" << output_shapes.size();
+            std::vector<void*> temp_output_buffers;
+            auto [m, prog_output_indices] = handle_program_input_outputs(
+                param_shapes, output_shapes, map_input_name_index, ctx, true, &temp_output_buffers);
+            
+            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] handle_program_input_outputs returned:";
+            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch]   prog_output_indices.size()=" << prog_output_indices.size();
+            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch]   temp_output_buffers.size()=" << temp_output_buffers.size();
+            if (!prog_output_indices.empty()) {
+              LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch]   ⚠️  WARNING: prog_output_indices is NOT empty!";
+              LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch]   ⚠️  This means outputs were pre-allocated instead of using temp buffers!";
             }
+            
+            mgx_state->cached_prog_params = m;
+            mgx_state->cached_prog_output_indices = prog_output_indices;
+            mgx_state->last_input_shapes_raw = std::move(padded_shapes);
+            mgx_state->last_input_shape_hash = padded_hash;
+            mgx_state->caches_valid = true;
+            
+            // Rebind padded inputs to program parameters
+            if (using_padded_inputs && mgx_state->padded_input_buffers.size() == mgx_state->cached_inputs.size()) {
+              LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] Rebinding padded input buffers";
+              for (size_t i = 0; i < mgx_state->cached_inputs.size(); ++i) {
+                const auto& inp = mgx_state->cached_inputs[i];
+                const auto& padded_buf = mgx_state->padded_input_buffers[i];
+                m.add(inp.name.c_str(), migraphx::argument(padded_buf.mgx_shape, padded_buf.data));
+              }
+            }
+            
+            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] Running with output slicing enabled";
+            // Run with slicing enabled
+            run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, 
+                                prog_output_indices, original_batch_size, padded_batch_size);
+            
+            // Free temporary output buffers
+            for (void* buf : temp_output_buffers) {
+              if (buf != nullptr) {
+                hipFree(buf);
+              }
+            }
+            
+            // Free padded buffers after execution
+            if (using_padded_inputs) {
+              free_padded_inputs(mgx_state);
+            }
+            
+            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] ==== EXITING execute_standard_path (padded path) ====";
+            return;
+          } else {
+            // ============ EXACT MATCH PATH: Batch size matches exactly, no padding needed ============
+            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] Taking EXACT MATCH path (no padding/slicing)";
+            
+            // Populate caches for ultra-fast path (no slicing needed)
+            populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index);
+            
+            // Bind inputs and allocate outputs (no slicing)
+            auto [m, prog_output_indices] = handle_program_input_outputs(
+                param_shapes, output_shapes, map_input_name_index, ctx);
+            
+            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] handle_program_input_outputs returned:";
+            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch]   prog_output_indices.size()=" << prog_output_indices.size();
+            
+            // Complete cache population
+            mgx_state->cached_prog_params = m;
+            mgx_state->cached_prog_output_indices = prog_output_indices;
+            
+            // IMPORTANT: Build last_input_shapes_raw in cached_inputs order (MIGraphX parameter order)
+            // This ensures ultra-fast path shape comparison uses consistent ordering
+            mgx_state->last_input_shapes_raw = build_input_shapes_in_cached_order(mgx_state, ctx, 0);
+            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] Built last_input_shapes_raw in cached_inputs order, size=" 
+                                  << mgx_state->last_input_shapes_raw.size();
+            
+            mgx_state->last_input_shape_hash = current_hash;
+            mgx_state->caches_valid = true;
+            
+            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] Running program (exact batch match, no padding/slicing)";
+            run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, prog_output_indices, 
+                                0, 0);  // Pass 0,0 for batch sizes to indicate no slicing needed
+            
+            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] ==== EXITING execute_standard_path (exact match path) ====";
+            return;
           }
-          
-          LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] Running with output slicing enabled";
-          // Run with slicing enabled
-          run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, 
-                              prog_output_indices, original_batch_size, padded_batch_size);
-          
-          // Free padded buffers after execution
-          if (using_padded_inputs) {
-            free_padded_inputs(mgx_state);
-          }
-          
-          LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] ==== EXITING execute_standard_path (padded path) ====";
-          return;
         } else {
-          LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] ✗✗✗ CACHE MISS for padded hash " 
+          LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] ✗✗✗ CACHE MISS for hash " 
                                 << padded_hash;
           LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] This shouldn't happen - expected batch "
                                 << padded_batch_size << " to be pre-compiled";
@@ -2761,7 +3119,13 @@ static void execute_standard_path(
   // Complete cache population
   mgx_state->cached_prog_params = m;
   mgx_state->cached_prog_output_indices = prog_output_indices;
-  mgx_state->last_input_shapes_raw = std::move(all_input_shapes);
+  
+  // IMPORTANT: Build last_input_shapes_raw in cached_inputs order (MIGraphX parameter order)
+  // This ensures ultra-fast path shape comparison uses consistent ordering
+  mgx_state->last_input_shapes_raw = build_input_shapes_in_cached_order(mgx_state, ctx, 0);
+  LOGS_DEFAULT(WARNING) << "[STANDARD_PATH] Built last_input_shapes_raw in cached_inputs order, size=" 
+                        << mgx_state->last_input_shapes_raw.size();
+  
   mgx_state->last_input_shape_hash = current_hash;
   mgx_state->caches_valid = true;
 
