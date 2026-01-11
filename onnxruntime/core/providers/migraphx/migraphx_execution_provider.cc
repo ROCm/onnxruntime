@@ -1508,6 +1508,13 @@ static void clear_cached_mgx_shapes(MIGraphXFuncState* mgx_state) {
   mgx_state->cached_mgx_output_shapes.reset();
   mgx_state->ultra_fast_caches_populated = false;
   mgx_state->cached_program_hash.clear();
+  
+  // Clear ultra-fast slicing caches
+  mgx_state->ultra_fast_slicing_enabled = false;
+  mgx_state->cached_slicing_outputs.clear();
+  mgx_state->cached_sliced_output_ort_shapes.clear();
+  mgx_state->slicing_original_batch_size = 0;
+  mgx_state->slicing_padded_batch_size = 0;
 }
 
 // Allocate or reuse temporary output buffers for slicing mode
@@ -2019,42 +2026,67 @@ static void run_migraphx_program(
         return ss.str();
       }() << "]";
       
-      // Adjust output shape if slicing is needed
-      std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
-      if (needs_slicing && !ort_shape.empty()) {
-        ort_shape[0] = original_batch_size;  // Slice batch dimension
-        LOGS_DEFAULT(VERBOSE) << "[run_migraphx_program] Slicing output " << i << " from batch size " 
-                             << padded_batch_size << " to " << original_batch_size;
-      }
+      // For shape to request from ORT - start with padded (MIGraphX) shape
+      // This handles io_binding case where outputs are pre-bound with padded shapes
+      std::vector<int64_t> padded_ort_shape{res_lens.begin(), res_lens.end()};
       
-      LOGS_DEFAULT(VERBOSE) << "[run_migraphx_program] Output " << i << " ORT shape (after slicing): [" << [&]() {
-        std::ostringstream ss;
-        for (size_t j = 0; j < ort_shape.size(); ++j) {
-          if (j > 0) ss << ", ";
-          ss << ort_shape[j];
-        }
-        return ss.str();
-      }() << "]";
-      
-      auto output_tensor = ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
-      void* output_data = output_tensor.GetTensorMutableRawData();
-
       // Calculate bytes to copy (slice if needed)
       std::size_t bytes_to_copy = res_shape.bytes();
       if (needs_slicing && res_lens.size() > 0) {
-        // Calculate bytes per batch element
-        std::size_t elements_per_batch = 1;
-        for (std::size_t j = 1; j < res_lens.size(); ++j) {
-          elements_per_batch *= res_lens[j];
-        }
         bytes_to_copy = (res_shape.bytes() / padded_batch_size) * original_batch_size;
-        LOGS_DEFAULT(VERBOSE) << "[run_migraphx_program] Copying " << bytes_to_copy 
+        LOGS_DEFAULT(VERBOSE) << "[run_migraphx_program] Will copy " << bytes_to_copy 
                              << " bytes (sliced from " << res_shape.bytes() << " bytes)";
-      } else {
-        LOGS_DEFAULT(VERBOSE) << "[run_migraphx_program] Copying " << bytes_to_copy 
-                             << " bytes (no slicing)";
+      }
+      
+      // Try to get output tensor - first try with padded shape (for io_binding compatibility)
+      // If that fails with shape mismatch, try with sliced shape (for non-io_binding case)
+      void* output_data = nullptr;
+      bool got_output = false;
+      
+      // First attempt: padded shape (works with io_binding that pre-bound padded outputs)
+      try {
+        auto output_tensor = ctx.GetOutput(i, padded_ort_shape.data(), padded_ort_shape.size());
+        output_data = output_tensor.GetTensorMutableRawData();
+        got_output = true;
+        LOGS_DEFAULT(VERBOSE) << "[run_migraphx_program] Got output " << i << " with padded shape [" << [&]() {
+        std::ostringstream ss;
+          for (size_t j = 0; j < padded_ort_shape.size(); ++j) {
+          if (j > 0) ss << ", ";
+            ss << padded_ort_shape[j];
+        }
+        return ss.str();
+      }() << "]";
+      } catch (const std::exception& e) {
+        LOGS_DEFAULT(VERBOSE) << "[run_migraphx_program] Padded shape failed: " << e.what();
+      }
+      
+      // Second attempt: sliced shape (for non-io_binding case where we want fresh allocation)
+      if (!got_output && needs_slicing && !padded_ort_shape.empty()) {
+        std::vector<int64_t> sliced_ort_shape = padded_ort_shape;
+        sliced_ort_shape[0] = static_cast<int64_t>(original_batch_size);
+        
+        try {
+          auto output_tensor = ctx.GetOutput(i, sliced_ort_shape.data(), sliced_ort_shape.size());
+          output_data = output_tensor.GetTensorMutableRawData();
+          got_output = true;
+          LOGS_DEFAULT(VERBOSE) << "[run_migraphx_program] Got output " << i << " with sliced shape [" << [&]() {
+            std::ostringstream ss;
+            for (size_t j = 0; j < sliced_ort_shape.size(); ++j) {
+              if (j > 0) ss << ", ";
+              ss << sliced_ort_shape[j];
+        }
+            return ss.str();
+          }() << "]";
+        } catch (const std::exception& e) {
+          LOGS_DEFAULT(VERBOSE) << "[run_migraphx_program] Sliced shape also failed: " << e.what();
+        }
+      }
+      
+      if (!got_output) {
+        ORT_THROW("Failed to get output tensor for index ", i, " with either padded or sliced shape");
       }
 
+      LOGS_DEFAULT(VERBOSE) << "[run_migraphx_program] Copying " << bytes_to_copy << " bytes";
       HIP_CALL_THROW(hipMemcpyWithStream(output_data,
                                          gpu_res.data(),
                                          bytes_to_copy,
@@ -2163,6 +2195,13 @@ static void handle_input_shape_mismatch(
   mgx_state->cached_prog_output_indices.clear();
   mgx_state->last_input_shapes_raw.clear();
   mgx_state->last_input_shape_hash.clear();
+  
+  // Also clear ultra-fast slicing caches
+  mgx_state->ultra_fast_slicing_enabled = false;
+  mgx_state->cached_slicing_outputs.clear();
+  mgx_state->cached_sliced_output_ort_shapes.clear();
+  mgx_state->slicing_original_batch_size = 0;
+  mgx_state->slicing_padded_batch_size = 0;
 
   param_shapes = prog.get_parameter_shapes();
   mgx_state->defer_compilation = false;
@@ -2271,7 +2310,7 @@ std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program
 
 // Helper: Populate optimized caches for ultra-fast path
 // This separates inputs from outputs, pre-computes indices, and pre-allocates output shapes
-// When slicing is needed, stores sliced output shapes instead of padded shapes
+// When slicing is needed, populates slicing caches to enable ultra-fast slicing mode
 static void populate_ultra_fast_caches(
     MIGraphXFuncState* mgx_state,
     const migraphx::program_parameter_shapes& param_shapes,
@@ -2287,11 +2326,18 @@ static void populate_ultra_fast_caches(
   mgx_state->cached_inputs.clear();
   mgx_state->cached_outputs.clear();
   mgx_state->cached_output_ort_shapes.clear();
+  
+  // Clear slicing caches
+  mgx_state->cached_slicing_outputs.clear();
+  mgx_state->cached_sliced_output_ort_shapes.clear();
+  mgx_state->ultra_fast_slicing_enabled = false;
 
   // Reserve space for outputs
   mgx_state->cached_outputs.reserve(output_shapes.size());
   mgx_state->cached_output_ort_shapes.reserve(output_shapes.size());
 
+  std::size_t temp_buffer_idx = 0;  // Track temp buffer index for slicing mode
+  
   // Separate inputs from outputs
   if (param_shapes.size() > 0) {
     for (const auto& name : param_shapes.names()) {
@@ -2307,8 +2353,24 @@ static void populate_ultra_fast_caches(
         // This is an output parameter
         const int output_index = compute_output_index(name);
         if (output_index != -1) {
-          // When slicing, don't cache outputs (ultra-fast path won't be used)
-          if (!needs_slicing) {
+          if (needs_slicing) {
+            // ULTRA-FAST SLICING MODE: Cache output info for slicing scenarios
+            MIGraphXFuncState::CachedSlicingOutput slicing_out;
+            slicing_out.name = name;
+            slicing_out.output_index = output_index;
+            slicing_out.padded_mgx_shape = param_shapes[name];
+            slicing_out.temp_buffer_idx = temp_buffer_idx++;
+            mgx_state->cached_slicing_outputs.push_back(std::move(slicing_out));
+
+            // Pre-compute SLICED output shape (original batch size, not padded)
+            const auto& padded_lens = output_shapes[output_index].lengths();
+            std::vector<int64_t> sliced_shape(padded_lens.begin(), padded_lens.end());
+            if (!sliced_shape.empty()) {
+              sliced_shape[0] = static_cast<int64_t>(original_batch_size);
+            }
+            mgx_state->cached_sliced_output_ort_shapes.push_back(std::move(sliced_shape));
+          } else {
+            // Normal mode: Cache output info for direct ORT binding
             MIGraphXFuncState::CachedOutputParam out;
             out.name = name;
             out.output_index = output_index;
@@ -2322,6 +2384,17 @@ static void populate_ultra_fast_caches(
         }
       }
     }
+  }
+  
+  // Set slicing mode state
+  if (needs_slicing && !mgx_state->cached_slicing_outputs.empty()) {
+    mgx_state->slicing_original_batch_size = original_batch_size;
+    mgx_state->slicing_padded_batch_size = padded_batch_size;
+    // ultra_fast_slicing_enabled will be set to true after temp buffers are allocated
+    LOGS_DEFAULT(VERBOSE) << "[populate_ultra_fast_caches] Populated " 
+                          << mgx_state->cached_slicing_outputs.size() 
+                          << " slicing outputs (original_batch=" << original_batch_size 
+                          << ", padded_batch=" << padded_batch_size << ")";
   }
 }
 
@@ -2377,6 +2450,7 @@ static std::vector<std::int64_t> build_input_shapes_in_cached_order(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Ultra-fast path: Shapes unchanged from last run - just rebind pointers and execute
+// Supports both normal mode (direct output binding) and slicing mode (temp buffers + copy)
 // Returns true if executed successfully, false if shapes don't match
 static bool execute_ultra_fast_path(
     MIGraphXFuncState* mgx_state,
@@ -2390,16 +2464,27 @@ static bool execute_ultra_fast_path(
                         << mgx_state->last_input_shapes_raw.size();
   LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH] cached_outputs.size() = " 
                         << mgx_state->cached_outputs.size();
+  LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH] ultra_fast_slicing_enabled = " 
+                        << mgx_state->ultra_fast_slicing_enabled;
   
   if (!mgx_state->caches_valid || mgx_state->last_input_shapes_raw.empty()) {
     LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH] Caches not valid or empty - skipping";
     return false;
   }
   
-  // Ultra-fast path not supported when outputs need dynamic slicing
-  if (mgx_state->cached_outputs.empty()) {
-    LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH] No cached outputs (slicing mode) - skipping";
+  // Determine which mode we're in
+  bool use_slicing_mode = mgx_state->ultra_fast_slicing_enabled && 
+                          !mgx_state->cached_slicing_outputs.empty() &&
+                          !mgx_state->temp_output_buffers.empty();
+  
+  // Need either cached_outputs (normal mode) or slicing mode enabled
+  if (mgx_state->cached_outputs.empty() && !use_slicing_mode) {
+    LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH] No cached outputs and slicing mode not enabled - skipping";
     return false;
+  }
+  
+  if (use_slicing_mode) {
+    LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH] *** ULTRA-FAST SLICING MODE ***";
   }
 
   // Quick shape comparison
@@ -2545,6 +2630,26 @@ static bool execute_ultra_fast_path(
     LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH] Shapes don't match - failing";
     return false;
   }
+  
+  // For ultra-fast slicing mode, verify original batch size matches cached value
+  // This is required because cached_sliced_output_ort_shapes are pre-computed for a specific original batch size
+  if (use_slicing_mode && original_batch_size != mgx_state->slicing_original_batch_size) {
+    LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH][SLICING] Original batch size changed: current=" 
+                          << original_batch_size << " vs cached=" << mgx_state->slicing_original_batch_size
+                          << " - falling back to fast path";
+    return false;
+  }
+  
+  // CRITICAL: If slicing is needed but slicing mode is not enabled, fall back to fast path
+  // This happens when caches were populated with a non-slicing batch size (e.g., batch=4)
+  // and now we have a request that needs slicing (e.g., batch=3 padded to 4)
+  bool needs_slicing_now = (padded_batch_size > original_batch_size);
+  if (needs_slicing_now && !use_slicing_mode) {
+    LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH] Slicing needed (orig=" << original_batch_size 
+                          << ", padded=" << padded_batch_size 
+                          << ") but slicing mode not enabled - falling back to fast path";
+    return false;
+  }
 
   // Shapes unchanged (or compatible with padding) - rebind pointers and run directly
   LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH] ✓ Shapes match! Rebinding and executing";
@@ -2579,24 +2684,106 @@ static bool execute_ultra_fast_path(
     }
   }
 
-  // Rebind outputs - direct iteration, uses pre-allocated shape vectors
-  for (std::size_t i = 0; i < mgx_state->cached_outputs.size(); ++i) {
-    const auto& out = mgx_state->cached_outputs[i];
-    const auto& ort_shape = mgx_state->cached_output_ort_shapes[i];
-    auto output_tensor = ctx.GetOutput(out.output_index, ort_shape.data(), ort_shape.size());
-    m.add(out.name.c_str(), migraphx::argument(out.mgx_shape,
-                                       output_tensor.GetTensorMutableRawData()));
-  }
+  if (use_slicing_mode) {
+    // ULTRA-FAST SLICING MODE: Rebind outputs to cached temp buffers
+    LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH][SLICING] Rebinding " 
+                          << mgx_state->cached_slicing_outputs.size() << " outputs to temp buffers";
+    for (std::size_t i = 0; i < mgx_state->cached_slicing_outputs.size(); ++i) {
+      const auto& slicing_out = mgx_state->cached_slicing_outputs[i];
+      const auto& temp_buf = mgx_state->temp_output_buffers[slicing_out.temp_buffer_idx];
+      m.add(slicing_out.name.c_str(), migraphx::argument(slicing_out.padded_mgx_shape, temp_buf.data));
+    }
+    
+    // Run MIGraphX with padded outputs (no slicing in run_migraphx_program since outputs are temp buffers)
+    LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH][SLICING] Running MIGraphX (padded execution)";
+    std::vector<std::size_t> empty_prog_output_indices;  // Empty since we handle outputs manually
+    run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m,
+                         empty_prog_output_indices, 0, 0);  // Pass 0,0 to disable slicing in run_migraphx_program
+    
+    // Now copy sliced data from temp buffers to ORT outputs
+    LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH][SLICING] Copying sliced outputs to ORT tensors";
+    void* rocm_stream_ptr;
+    Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream_ptr));
+    auto rocm_stream = static_cast<hipStream_t>(rocm_stream_ptr);
+    
+    for (std::size_t i = 0; i < mgx_state->cached_slicing_outputs.size(); ++i) {
+      const auto& slicing_out = mgx_state->cached_slicing_outputs[i];
+      const auto& temp_buf = mgx_state->temp_output_buffers[slicing_out.temp_buffer_idx];
+      const auto& sliced_ort_shape = mgx_state->cached_sliced_output_ort_shapes[i];
+      
+      // Calculate bytes to copy (only original_batch_size worth of data)
+      std::size_t bytes_to_copy = (temp_buf.size_bytes / mgx_state->slicing_padded_batch_size) 
+                                  * mgx_state->slicing_original_batch_size;
+      
+      // Build padded shape for io_binding compatibility
+      std::vector<int64_t> padded_ort_shape = sliced_ort_shape;
+      if (!padded_ort_shape.empty()) {
+        padded_ort_shape[0] = static_cast<int64_t>(mgx_state->slicing_padded_batch_size);
+      }
+      
+      // Try to get output tensor - first try padded shape (for io_binding), then sliced
+      void* output_data = nullptr;
+      bool got_output = false;
+      
+      // First attempt: padded shape (io_binding may have pre-bound with padded shape)
+      try {
+        auto output_tensor = ctx.GetOutput(slicing_out.output_index, 
+                                           padded_ort_shape.data(), padded_ort_shape.size());
+        output_data = output_tensor.GetTensorMutableRawData();
+        got_output = true;
+        LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH][SLICING] Got output " << slicing_out.output_index 
+                              << " with padded shape";
+      } catch (const std::exception& e) {
+        LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH][SLICING] Padded shape failed, trying sliced: " << e.what();
+      }
+      
+      // Second attempt: sliced shape (for non-io_binding case)
+      if (!got_output) {
+        try {
+          auto output_tensor = ctx.GetOutput(slicing_out.output_index, 
+                                             sliced_ort_shape.data(), sliced_ort_shape.size());
+          output_data = output_tensor.GetTensorMutableRawData();
+          got_output = true;
+          LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH][SLICING] Got output " << slicing_out.output_index 
+                                << " with sliced shape";
+        } catch (const std::exception& e) {
+          ORT_THROW("Failed to get output tensor for index ", slicing_out.output_index, 
+                    " with either padded or sliced shape: ", e.what());
+        }
+      }
+      
+      LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH][SLICING] Output " << slicing_out.output_index 
+                            << ": copying " << bytes_to_copy << " bytes (sliced from " 
+                            << temp_buf.size_bytes << " bytes)";
+      
+      HIP_CALL_THROW(hipMemcpyWithStream(output_data,
+                                         temp_buf.data,
+                                         bytes_to_copy,
+                                         hipMemcpyDeviceToDevice,
+                                         rocm_stream));
+    }
+    
+    LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH][SLICING] ✓ Complete";
+  } else {
+    // NORMAL MODE: Rebind outputs - direct iteration, uses pre-allocated shape vectors
+    for (std::size_t i = 0; i < mgx_state->cached_outputs.size(); ++i) {
+      const auto& out = mgx_state->cached_outputs[i];
+      const auto& ort_shape = mgx_state->cached_output_ort_shapes[i];
+      auto output_tensor = ctx.GetOutput(out.output_index, ort_shape.data(), ort_shape.size());
+      m.add(out.name.c_str(), migraphx::argument(out.mgx_shape,
+                                         output_tensor.GetTensorMutableRawData()));
+    }
 
-  // Run directly - minimal overhead path (with slicing if needed)
-  LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH] Running (original_batch=" << original_batch_size 
-                     << ", padded=" << padded_batch_size << ")";
-  run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m,
-                       mgx_state->cached_prog_output_indices,
-                       original_batch_size, padded_batch_size);
+    // Run directly - minimal overhead path
+    LOGS_DEFAULT(VERBOSE) << "[ULTRA_FAST_PATH] Running (original_batch=" << original_batch_size 
+                       << ", padded=" << padded_batch_size << ")";
+    run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m,
+                         mgx_state->cached_prog_output_indices,
+                         original_batch_size, padded_batch_size);
+  }
   
-  // NOTE: Padded buffers are kept for reuse - they will be freed when batch size changes
-  // or when the state is destroyed
+  // NOTE: Padded buffers and temp output buffers are kept for reuse
+  // They will be freed when batch size changes or when the state is destroyed
   
   return true;
 }
@@ -2793,6 +2980,12 @@ static bool execute_fast_path(
   if (needs_slicing) {
     temp_output_buffer_ptrs = get_or_allocate_temp_output_buffers(
         mgx_state, param_shapes, output_shapes, map_input_name_index, padded_batch_size);
+    
+    // Enable ultra-fast slicing mode for subsequent runs
+    if (!temp_output_buffer_ptrs.empty() && !mgx_state->cached_slicing_outputs.empty()) {
+      mgx_state->ultra_fast_slicing_enabled = true;
+      LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] ✓ Ultra-fast slicing mode ENABLED for subsequent runs";
+    }
   }
 
   // Bind inputs/outputs (use temp buffers for outputs when slicing)
@@ -3200,7 +3393,7 @@ static void execute_standard_path(
             // ============ PADDING PATH: Batch size needs to be padded ============
             LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Taking PADDING path";
             
-            // Populate caches (with slicing info so ultra-fast path is disabled)
+            // Populate caches (with slicing info for ultra-fast slicing mode)
             populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index,
                                       original_batch_size, padded_batch_size);
             
@@ -3227,17 +3420,26 @@ static void execute_standard_path(
             bool using_padded_inputs = allocate_and_pad_inputs(mgx_state, ctx, original_batch_size, 
                                                                padded_batch_size, rocm_stream);
             
+            // Get or allocate temp output buffers (reusable for ultra-fast slicing mode)
+            std::vector<void*> temp_output_buffer_ptrs = get_or_allocate_temp_output_buffers(
+                mgx_state, param_shapes, output_shapes, map_input_name_index, padded_batch_size);
+            
+            // Enable ultra-fast slicing mode for subsequent runs
+            if (!temp_output_buffer_ptrs.empty() && !mgx_state->cached_slicing_outputs.empty()) {
+              mgx_state->ultra_fast_slicing_enabled = true;
+              LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] ✓ Ultra-fast slicing mode ENABLED";
+            }
+            
             // Bind inputs and outputs with temporary output buffers (for slicing)
             LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Calling handle_program_input_outputs with needs_slicing=true";
             LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] param_shapes.size()=" << param_shapes.size()
                                  << ", output_shapes.size()=" << output_shapes.size();
-            std::vector<void*> temp_output_buffers;
             auto [m, prog_output_indices] = handle_program_input_outputs(
-                param_shapes, output_shapes, map_input_name_index, ctx, true, &temp_output_buffers);
+                param_shapes, output_shapes, map_input_name_index, ctx, true, &temp_output_buffer_ptrs);
             
             LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] handle_program_input_outputs returned:";
             LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch]   prog_output_indices.size()=" << prog_output_indices.size();
-            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch]   temp_output_buffers.size()=" << temp_output_buffers.size();
+            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch]   temp_output_buffer_ptrs.size()=" << temp_output_buffer_ptrs.size();
             if (!prog_output_indices.empty()) {
               LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch]   ⚠️  WARNING: prog_output_indices is NOT empty!";
               LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch]   ⚠️  This means outputs were pre-allocated instead of using temp buffers!";
@@ -3264,15 +3466,8 @@ static void execute_standard_path(
             run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, 
                                 prog_output_indices, original_batch_size, padded_batch_size);
             
-            // Free temporary output buffers
-            for (void* buf : temp_output_buffers) {
-              if (buf != nullptr) {
-                (void)hipFree(buf);
-              }
-            }
-            
-            // NOTE: Padded buffers are kept for reuse - they will be freed when batch size changes
-            // or when the state is destroyed
+            // NOTE: Temp output buffers and padded input buffers are kept for reuse
+            // They will be freed when batch size changes or when the state is destroyed
             
             LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] ==== EXITING execute_standard_path (padded path) ====";
             return;

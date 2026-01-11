@@ -155,6 +155,28 @@ struct MIGraphXFuncState {
   
   // Track padded batch size for temp output buffers
   std::size_t temp_output_padded_batch_size = 0;
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ULTRA-FAST SLICING MODE: Enable ultra-fast path even when slicing is needed
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  // Cached output parameter info for SLICING mode (different from cached_outputs)
+  // These store padded shapes and temp buffer associations for ultra-fast rebinding
+  struct CachedSlicingOutput {
+    std::string name;              // Parameter name (owns the string)
+    int output_index;              // ORT output index
+    migraphx::shape padded_mgx_shape;  // Padded MIGraphX shape (full padded batch)
+    std::size_t temp_buffer_idx;   // Index into temp_output_buffers
+  };
+  std::vector<CachedSlicingOutput> cached_slicing_outputs;
+  
+  // Slicing mode state
+  bool ultra_fast_slicing_enabled = false;   // True when slicing caches are populated
+  std::size_t slicing_original_batch_size = 0;  // Original batch size for slicing calc
+  std::size_t slicing_padded_batch_size = 0;    // Padded batch size used for compilation
+  
+  // Pre-computed sliced output shapes for ORT allocation (avoids computation per inference)
+  std::vector<std::vector<int64_t>> cached_sliced_output_ort_shapes;
 };
 
 // Logical device representation.
