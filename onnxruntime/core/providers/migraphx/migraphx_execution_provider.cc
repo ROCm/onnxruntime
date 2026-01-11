@@ -1463,21 +1463,6 @@ static bool allocate_and_pad_inputs(
   return true;
 }
 
-// Free padded input buffers
-static void free_padded_inputs(MIGraphXFuncState* mgx_state) {
-  for (auto& buf : mgx_state->padded_input_buffers) {
-    if (buf.data != nullptr) {
-      (void)hipFree(buf.data);  // Don't throw on cleanup
-      buf.data = nullptr;
-    }
-  }
-  mgx_state->padded_input_buffers.clear();
-  
-  // Clear batch tracking when freeing buffers
-  mgx_state->last_original_batch_size = 0;
-  mgx_state->last_padded_batch_size = 0;
-}
-
 // Helper: Extract output index from MIGraphX output parameter name
 // MIGraphX names outputs as "#output_0", "#output_1", etc.
 static int compute_output_index(const std::string_view sv) {
@@ -3162,7 +3147,6 @@ static void execute_standard_path(
       std::vector<std::int64_t> padded_shapes;
       padded_shapes.reserve(all_input_shapes.size());
       
-      std::size_t shape_offset = 0;
       for (const auto& [name, index] : map_input_name_index) {
         auto input_tensor = ctx.GetInput(index);
         auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
