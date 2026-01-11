@@ -124,6 +124,37 @@ struct MIGraphXFuncState {
 
   // Flag indicating caches are valid
   bool caches_valid = false;
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // OPTIMIZATION: Cached MIGraphX API results (avoid redundant API calls)
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  // Cached program parameter shapes (from prog.get_parameter_shapes())
+  std::optional<migraphx::program_parameter_shapes> cached_mgx_param_shapes;
+  
+  // Cached output shapes (from prog.get_output_shapes())
+  std::optional<migraphx::shapes> cached_mgx_output_shapes;
+  
+  // Flag indicating ultra-fast caches are populated (avoid redundant populate calls)
+  bool ultra_fast_caches_populated = false;
+  
+  // Track which program hash the cached shapes belong to (invalidate when program changes)
+  std::string cached_program_hash;
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // OPTIMIZATION: Reusable temporary output buffers (for slicing mode)
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  // Temporary output buffers for slicing (allocated at padded size)
+  struct TempOutputBuffer {
+    void* data = nullptr;           // GPU buffer pointer
+    std::size_t size_bytes = 0;     // Buffer size in bytes
+    migraphx::shape mgx_shape;      // Padded MIGraphX shape
+  };
+  std::vector<TempOutputBuffer> temp_output_buffers;
+  
+  // Track padded batch size for temp output buffers
+  std::size_t temp_output_padded_batch_size = 0;
 };
 
 // Logical device representation.

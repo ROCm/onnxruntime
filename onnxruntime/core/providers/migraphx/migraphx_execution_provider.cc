@@ -1478,6 +1478,114 @@ static void free_padded_inputs(MIGraphXFuncState* mgx_state) {
   mgx_state->last_padded_batch_size = 0;
 }
 
+// Helper: Extract output index from MIGraphX output parameter name
+// MIGraphX names outputs as "#output_0", "#output_1", etc.
+static int compute_output_index(const std::string_view sv) {
+  constexpr std::string_view out_name_prefix = "#output_";
+  const auto pos = sv.find(out_name_prefix);
+  if (pos == std::string_view::npos) {
+    return -1;
+  }
+  const auto index_str = sv.substr(pos + out_name_prefix.length());
+  return ToInteger(Trim(index_str, std::isdigit));
+}
+
+// Free temporary output buffers
+static void free_temp_output_buffers(MIGraphXFuncState* mgx_state) {
+  for (auto& buf : mgx_state->temp_output_buffers) {
+    if (buf.data != nullptr) {
+      hipFree(buf.data);  // Don't throw on cleanup
+      buf.data = nullptr;
+    }
+  }
+  mgx_state->temp_output_buffers.clear();
+  mgx_state->temp_output_padded_batch_size = 0;
+}
+
+// Clear cached MIGraphX shapes (call when program changes)
+static void clear_cached_mgx_shapes(MIGraphXFuncState* mgx_state) {
+  mgx_state->cached_mgx_param_shapes.reset();
+  mgx_state->cached_mgx_output_shapes.reset();
+  mgx_state->ultra_fast_caches_populated = false;
+  mgx_state->cached_program_hash.clear();
+}
+
+// Allocate or reuse temporary output buffers for slicing mode
+// Returns vector of raw pointers for use with handle_program_input_outputs
+static std::vector<void*> get_or_allocate_temp_output_buffers(
+    MIGraphXFuncState* mgx_state,
+    const migraphx::program_parameter_shapes& param_shapes,
+    const migraphx::shapes& output_shapes,
+    const std::unordered_map<std::string, std::size_t>& map_input_name_index,
+    std::size_t padded_batch_size)
+{
+  // Check if we can reuse existing buffers
+  bool can_reuse = (
+      mgx_state->temp_output_padded_batch_size == padded_batch_size &&
+      !mgx_state->temp_output_buffers.empty()
+  );
+  
+  if (can_reuse) {
+    LOGS_DEFAULT(VERBOSE) << "[get_or_allocate_temp_output_buffers] ✓✓✓ REUSING " 
+                          << mgx_state->temp_output_buffers.size() << " temp output buffers";
+    // Return raw pointers from existing buffers
+    std::vector<void*> ptrs;
+    ptrs.reserve(mgx_state->temp_output_buffers.size());
+    for (const auto& buf : mgx_state->temp_output_buffers) {
+      ptrs.push_back(buf.data);
+    }
+    return ptrs;
+  }
+  
+  // Free old buffers if they exist
+  free_temp_output_buffers(mgx_state);
+  
+  LOGS_DEFAULT(VERBOSE) << "[get_or_allocate_temp_output_buffers] Allocating NEW temp output buffers";
+  
+  // Count outputs and allocate
+  std::vector<void*> ptrs;
+  for (const auto& name : param_shapes.names()) {
+    // Skip inputs
+    if (map_input_name_index.find(name) != map_input_name_index.end()) {
+      continue;
+    }
+    
+    // This is an output
+    const auto output_index = compute_output_index(name);
+    if (output_index != -1) {
+      const auto& mgx_shape = param_shapes[name];
+      std::size_t size_bytes = mgx_shape.bytes();
+      
+      void* buffer = nullptr;
+      auto hip_status = hipMalloc(&buffer, size_bytes);
+      if (hip_status != hipSuccess) {
+        // Clean up any allocated buffers on failure
+        for (auto& buf : mgx_state->temp_output_buffers) {
+          if (buf.data) hipFree(buf.data);
+        }
+        mgx_state->temp_output_buffers.clear();
+        ORT_THROW("hipMalloc failed for temporary output buffer");
+      }
+      
+      MIGraphXFuncState::TempOutputBuffer temp_buf;
+      temp_buf.data = buffer;
+      temp_buf.size_bytes = size_bytes;
+      temp_buf.mgx_shape = mgx_shape;
+      mgx_state->temp_output_buffers.push_back(temp_buf);
+      ptrs.push_back(buffer);
+      
+      LOGS_DEFAULT(VERBOSE) << "[get_or_allocate_temp_output_buffers] Allocated output " 
+                            << output_index << ": " << size_bytes << " bytes";
+    }
+  }
+  
+  mgx_state->temp_output_padded_batch_size = padded_batch_size;
+  LOGS_DEFAULT(VERBOSE) << "[get_or_allocate_temp_output_buffers] Allocated " 
+                        << mgx_state->temp_output_buffers.size() << " temp output buffers";
+  
+  return ptrs;
+}
+
 // Order matters here especially if the program uses mixed quantization
 // Calibrate on full precision for int8/fp8 and then quantize down to fp16
 void calibrate_and_quantize(migraphx::program& prog,
@@ -2060,17 +2168,7 @@ static void handle_input_shape_mismatch(
   mgx_state->defer_compilation = false;
 }
 
-// Helper: Extract output index from MIGraphX output parameter name
-// MIGraphX names outputs as "#output_0", "#output_1", etc.
-static int compute_output_index(const std::string_view sv) {
-  constexpr std::string_view out_name_prefix = "#output_";
-  const auto pos = sv.find(out_name_prefix);
-  if (pos == std::string_view::npos) {
-    return -1;
-  }
-  const auto index_str = sv.substr(pos + out_name_prefix.length());
-  return ToInteger(Trim(index_str, std::isdigit));
-}
+
 
 // Overload: Handle program inputs and outputs binding with pre-cached output shapes
 // This avoids calling prog.get_output_shapes() when shapes are already cached
@@ -2121,20 +2219,30 @@ std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program
                                 << ", temp_output_buffers=" << (temp_output_buffers != nullptr ? "valid" : "nullptr");
           
           if (needs_slicing && temp_output_buffers != nullptr) {
-            // When slicing, allocate temporary GPU buffer for padded output
+            // When slicing, use pre-allocated temp buffer or allocate new one
             // Don't add to prog_output_indices since these aren't pre-allocated ORT outputs
             std::size_t output_size_bytes = mgx_arg_shape.bytes();
             void* temp_buffer = nullptr;
-            auto hip_status = hipMalloc(&temp_buffer, output_size_bytes);
-            if (hip_status != hipSuccess) {
-              ORT_THROW("hipMalloc failed for temporary output buffer");
+            
+            // OPTIMIZATION: Check if buffer is already pre-allocated
+            if (temp_buffer_count < temp_output_buffers->size()) {
+              // Use pre-allocated buffer from previous run
+              temp_buffer = (*temp_output_buffers)[temp_buffer_count];
+              LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] ✓ REUSING pre-allocated TEMP BUFFER for output " 
+                                    << output_index << " '" << name << "' (" << output_size_bytes << " bytes)";
+            } else {
+              // Allocate new buffer (first run or buffer list is empty)
+              auto hip_status = hipMalloc(&temp_buffer, output_size_bytes);
+              if (hip_status != hipSuccess) {
+                ORT_THROW("hipMalloc failed for temporary output buffer");
+              }
+              temp_output_buffers->push_back(temp_buffer);
+              LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] ✓ Allocated NEW TEMP BUFFER for output " 
+                                    << output_index << " '" << name << "' (" << output_size_bytes << " bytes)";
             }
-            temp_output_buffers->push_back(temp_buffer);
             temp_buffer_count++;
             m.add(name, migraphx::argument(mgx_arg_shape, temp_buffer));
-            LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] ✓ Allocated TEMP BUFFER for output " 
-                                  << output_index << " '" << name << "' (" << output_size_bytes << " bytes)"
-                                  << " - NOT adding to prog_output_indices";
+            LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] - NOT adding to prog_output_indices";
           } else {
             // Normal path: bind directly to ORT output tensor
             LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] Using NORMAL PATH for output " 
@@ -2603,23 +2711,70 @@ static bool execute_fast_path(
     return false;
   }
 
+  // Determine which hash was used to find the program
+  // This is needed to detect program changes and invalidate caches
+  std::string effective_program_hash = current_hash;
+  if (needs_padding && padded_batch_size > 0) {
+    // If we used padded hash, compute it for tracking
+    std::vector<std::int64_t> padded_shapes_for_hash_tracking;
+    for (const auto& [name, index] : mgx_state->input_name_indexes) {
+      auto input_tensor = ctx.GetInput(index);
+      auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+      const auto tensor_shape = tensor_info.GetShape();
+      if (!tensor_shape.empty()) {
+        padded_shapes_for_hash_tracking.push_back(static_cast<std::int64_t>(padded_batch_size));
+        padded_shapes_for_hash_tracking.insert(padded_shapes_for_hash_tracking.end(), 
+                                               tensor_shape.begin() + 1, tensor_shape.end());
+      }
+    }
+    effective_program_hash = make_hash(padded_shapes_for_hash_tracking);
+  }
+
   // Found cached program - use it and populate caches
-  LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Using cached program, populating caches";
+  LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Using cached program (hash: " << effective_program_hash << ")";
   auto& prog = mgx_state->prog;
   prog = prog_it->second;
 
   const auto& map_input_name_index = mgx_state->input_name_indexes;
 
-  // Get shapes once
-  auto param_shapes = prog.get_parameter_shapes();
-  auto output_shapes = prog.get_output_shapes();
+  // ═══════════════════════════════════════════════════════════════════════════
+  // OPTIMIZATION 1: Cache MIGraphX API results (avoid redundant API calls)
+  // Check if program changed - if so, invalidate caches
+  // ═══════════════════════════════════════════════════════════════════════════
+  bool program_changed = (mgx_state->cached_program_hash != effective_program_hash);
+  
+  if (program_changed) {
+    LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Program changed (old: " << mgx_state->cached_program_hash 
+                          << ", new: " << effective_program_hash << ") - clearing caches";
+    clear_cached_mgx_shapes(mgx_state);
+    free_temp_output_buffers(mgx_state);
+    mgx_state->cached_program_hash = effective_program_hash;
+  }
+  
+  if (!mgx_state->cached_mgx_param_shapes.has_value()) {
+    LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Caching MIGraphX shapes (first time or after program change)";
+    mgx_state->cached_mgx_param_shapes = prog.get_parameter_shapes();
+    mgx_state->cached_mgx_output_shapes = prog.get_output_shapes();
+  } else {
+    LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] ✓ Using cached MIGraphX shapes";
+  }
+  const auto& param_shapes = mgx_state->cached_mgx_param_shapes.value();
+  const auto& output_shapes = mgx_state->cached_mgx_output_shapes.value();
 
   bool needs_slicing = (original_batch_size > 0 && padded_batch_size > 0 && 
                         original_batch_size < padded_batch_size);
   
-  // Populate optimized caches for ultra-fast path (disabled when slicing)
-  populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index,
-                            original_batch_size, padded_batch_size);
+  // ═══════════════════════════════════════════════════════════════════════════
+  // OPTIMIZATION 2: Skip populate_ultra_fast_caches when already populated
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (!mgx_state->ultra_fast_caches_populated) {
+    LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Populating ultra-fast caches (first time)";
+    populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index,
+                              original_batch_size, padded_batch_size);
+    mgx_state->ultra_fast_caches_populated = true;
+  } else {
+    LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] ✓ Ultra-fast caches already populated";
+  }
 
   // Allocate and pad inputs if needed for dynamic batching
   bool using_padded_inputs = false;
@@ -2631,15 +2786,24 @@ static bool execute_fast_path(
                                                   padded_batch_size, rocm_stream);
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // OPTIMIZATION 3: Reuse temp output buffers when slicing
+  // ═══════════════════════════════════════════════════════════════════════════
+  std::vector<void*> temp_output_buffer_ptrs;
+  if (needs_slicing) {
+    temp_output_buffer_ptrs = get_or_allocate_temp_output_buffers(
+        mgx_state, param_shapes, output_shapes, map_input_name_index, padded_batch_size);
+  }
+
   // Bind inputs/outputs (use temp buffers for outputs when slicing)
   LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Calling handle_program_input_outputs with needs_slicing=" << needs_slicing;
-  std::vector<void*> temp_output_buffers;
   auto [m, prog_output_indices] = handle_program_input_outputs(
-      param_shapes, output_shapes, map_input_name_index, ctx, needs_slicing, &temp_output_buffers);
+      param_shapes, output_shapes, map_input_name_index, ctx, needs_slicing, 
+      needs_slicing ? &temp_output_buffer_ptrs : nullptr);
 
   LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] handle_program_input_outputs returned:";
   LOGS_DEFAULT(VERBOSE) << "[FAST_PATH]   prog_output_indices.size()=" << prog_output_indices.size();
-  LOGS_DEFAULT(VERBOSE) << "[FAST_PATH]   temp_output_buffers.size()=" << temp_output_buffers.size();
+  LOGS_DEFAULT(VERBOSE) << "[FAST_PATH]   temp_output_buffer_ptrs.size()=" << temp_output_buffer_ptrs.size();
   if (needs_slicing && !prog_output_indices.empty()) {
     LOGS_DEFAULT(VERBOSE) << "[FAST_PATH]   ⚠️  WARNING: prog_output_indices is NOT empty with slicing enabled!";
   }
@@ -2675,15 +2839,8 @@ static bool execute_fast_path(
                        mgx_state->cached_prog_output_indices,
                        original_batch_size, padded_batch_size);
   
-  // Free temporary output buffers
-  for (void* buf : temp_output_buffers) {
-    if (buf != nullptr) {
-      hipFree(buf);
-    }
-  }
-  
-  // NOTE: Padded buffers are kept for reuse - they will be freed when batch size changes
-  // or when the state is destroyed
+  // NOTE: Temp output buffers are kept for reuse - they will be freed when batch size changes
+  // NOTE: Padded input buffers are also kept for reuse
   
   LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Complete";
   return true;
