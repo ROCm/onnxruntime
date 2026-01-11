@@ -1271,6 +1271,7 @@ static void pad_input_tensor(const void* src_data, void* dst_data,
 
 // Allocate padded input buffers and pad the data for dynamic batching
 // Returns true if padding was applied, false otherwise
+// OPTIMIZATION: Reuses existing buffers if padded batch size matches
 static bool allocate_and_pad_inputs(
     MIGraphXFuncState* mgx_state,
     Ort::KernelContext& ctx,
@@ -1282,7 +1283,79 @@ static bool allocate_and_pad_inputs(
     return false;  // No padding needed
   }
   
-  LOGS_DEFAULT(WARNING) << "[allocate_and_pad_inputs] Allocating and padding inputs: original=" 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // OPTIMIZATION: Check if we can reuse existing padded buffers
+  // ═══════════════════════════════════════════════════════════════════════════
+  bool can_reuse_buffers = (
+      mgx_state->last_padded_batch_size == padded_batch_size &&
+      !mgx_state->padded_input_buffers.empty() &&
+      mgx_state->padded_input_buffers.size() == mgx_state->cached_inputs.size()
+  );
+  
+  if (can_reuse_buffers) {
+    LOGS_DEFAULT(VERBOSE) << "[allocate_and_pad_inputs] ✓✓✓ REUSING existing padded buffers "
+                          << "(original=" << original_batch_size << ", padded=" << padded_batch_size << ")";
+    
+    // Just copy new data into existing buffers - skip allocation
+    for (size_t i = 0; i < mgx_state->cached_inputs.size(); ++i) {
+      const auto& cached_inp = mgx_state->cached_inputs[i];
+      auto input_tensor = ctx.GetInput(cached_inp.ort_index);
+      auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+      const auto tensor_shape = tensor_info.GetShape();
+      
+      if (tensor_shape.empty()) continue;
+      
+      auto& padded_buf = mgx_state->padded_input_buffers[i];
+      
+      // Calculate elements per batch
+      std::size_t elements_per_batch = 1;
+      for (std::size_t j = 1; j < tensor_shape.size(); ++j) {
+        elements_per_batch *= tensor_shape[j];
+      }
+      
+      // Calculate element size from tensor type
+      std::size_t element_size_bytes;
+      switch (tensor_info.GetElementType()) {
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
+          element_size_bytes = sizeof(float);
+          break;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16:
+          element_size_bytes = sizeof(uint16_t);
+          break;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT64:
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE:
+          element_size_bytes = sizeof(int64_t);
+          break;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT32:
+          element_size_bytes = sizeof(int32_t);
+          break;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16:
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16:
+          element_size_bytes = sizeof(int16_t);
+          break;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:
+          element_size_bytes = sizeof(int8_t);
+          break;
+        default:
+          element_size_bytes = sizeof(float);  // Fallback to float
+          break;
+      }
+      
+      // Reuse existing buffer - just pad with new data
+      const void* original_data = input_tensor.GetTensorRawData();
+      pad_input_tensor(original_data, padded_buf.data, original_batch_size, padded_batch_size,
+                      element_size_bytes, elements_per_batch, stream);
+    }
+    
+    // Update original batch tracking (padded batch is already correct)
+    mgx_state->last_original_batch_size = original_batch_size;
+    
+    return true;
                         << original_batch_size << ", padded=" << padded_batch_size;
   
   // Free old buffers if they exist
@@ -1375,7 +1448,10 @@ static bool allocate_and_pad_inputs(
                          << "': " << padded_bytes << " bytes";
   }
   
-  LOGS_DEFAULT(WARNING) << "[allocate_and_pad_inputs] Allocated " 
+  // Update batch tracking
+  mgx_state->last_original_batch_size = original_batch_size;
+  mgx_state->last_padded_batch_size = padded_batch_size;
+  
                         << mgx_state->padded_input_buffers.size() << " padded buffers";
   return true;
 }
@@ -1389,6 +1465,10 @@ static void free_padded_inputs(MIGraphXFuncState* mgx_state) {
     }
   }
   mgx_state->padded_input_buffers.clear();
+  
+  // Clear batch tracking when freeing buffers
+  mgx_state->last_original_batch_size = 0;
+  mgx_state->last_padded_batch_size = 0;
 }
 
 // Order matters here especially if the program uses mixed quantization
@@ -2400,10 +2480,8 @@ static bool execute_ultra_fast_path(
                        mgx_state->cached_prog_output_indices,
                        original_batch_size, padded_batch_size);
   
-  // Free padded buffers after execution
-  if (using_padded_inputs) {
-    free_padded_inputs(mgx_state);
-  }
+  // NOTE: Padded buffers are kept for reuse - they will be freed when batch size changes
+  // or when the state is destroyed
   
   return true;
 }
@@ -2597,12 +2675,9 @@ static bool execute_fast_path(
     }
   }
   
-  // Free padded buffers after execution
-  if (using_padded_inputs) {
-    free_padded_inputs(mgx_state);
-  }
+  // NOTE: Padded buffers are kept for reuse - they will be freed when batch size changes
+  // or when the state is destroyed
   
-  LOGS_DEFAULT(WARNING) << "[FAST_PATH] Complete";
   return true;
 }
 
@@ -3031,12 +3106,8 @@ static void execute_standard_path(
               }
             }
             
-            // Free padded buffers after execution
-            if (using_padded_inputs) {
-              free_padded_inputs(mgx_state);
-            }
-            
-            LOGS_DEFAULT(WARNING) << "[STANDARD_PATH][DynamicBatch] ==== EXITING execute_standard_path (padded path) ====";
+            // NOTE: Padded buffers are kept for reuse - they will be freed when batch size changes
+            // or when the state is destroyed
             return;
           } else {
             // ============ EXACT MATCH PATH: Batch size matches exactly, no padding needed ============

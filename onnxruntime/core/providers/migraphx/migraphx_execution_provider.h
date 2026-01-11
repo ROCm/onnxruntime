@@ -81,6 +81,10 @@ struct MIGraphXFuncState {
   };
   std::vector<PaddedBuffer> padded_input_buffers;  // One per input when padding is active
 
+  // Track last batch sizes to avoid re-allocation when batch size is unchanged
+  std::size_t last_original_batch_size = 0;  // Original batch size from last run
+  std::size_t last_padded_batch_size = 0;    // Padded batch size from last run
+
   // ═══════════════════════════════════════════════════════════════════════════
   // PERFORMANCE CACHES - Avoid redundant MIGraphX API calls per inference
   // ═══════════════════════════════════════════════════════════════════════════
