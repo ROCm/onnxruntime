@@ -1467,7 +1467,7 @@ static bool allocate_and_pad_inputs(
 static void free_padded_inputs(MIGraphXFuncState* mgx_state) {
   for (auto& buf : mgx_state->padded_input_buffers) {
     if (buf.data != nullptr) {
-      hipFree(buf.data);  // Don't throw on cleanup
+      (void)hipFree(buf.data);  // Don't throw on cleanup
       buf.data = nullptr;
     }
   }
@@ -1494,7 +1494,7 @@ static int compute_output_index(const std::string_view sv) {
 static void free_temp_output_buffers(MIGraphXFuncState* mgx_state) {
   for (auto& buf : mgx_state->temp_output_buffers) {
     if (buf.data != nullptr) {
-      hipFree(buf.data);  // Don't throw on cleanup
+      (void)hipFree(buf.data);  // Don't throw on cleanup
       buf.data = nullptr;
     }
   }
@@ -1561,7 +1561,7 @@ static std::vector<void*> get_or_allocate_temp_output_buffers(
       if (hip_status != hipSuccess) {
         // Clean up any allocated buffers on failure
         for (auto& buf : mgx_state->temp_output_buffers) {
-          if (buf.data) hipFree(buf.data);
+          if (buf.data) (void)hipFree(buf.data);
         }
         mgx_state->temp_output_buffers.clear();
         ORT_THROW("hipMalloc failed for temporary output buffer");
@@ -1991,7 +1991,7 @@ static void run_migraphx_program(
                                              static_cast<hipStream_t>(rocm_stream)));
           
           // Free temporary buffer
-          hipFree(temp_sliced_buffer);
+          (void)hipFree(temp_sliced_buffer);
           
           LOGS_DEFAULT(VERBOSE) << "[run_migraphx_program] ✓ Successfully sliced pre-allocated output " << i;
         } else {
@@ -3267,7 +3267,7 @@ static void execute_standard_path(
             // Free temporary output buffers
             for (void* buf : temp_output_buffers) {
               if (buf != nullptr) {
-                hipFree(buf);
+                (void)hipFree(buf);
               }
             }
             
