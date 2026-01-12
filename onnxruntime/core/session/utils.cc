@@ -137,6 +137,13 @@ static OrtStatus* CreateSessionAndLoadModelImpl(_In_ const OrtSessionOptions* op
   // quick check here to decide load path. InferenceSession will provide error message for invalid values.
   // TODO: Could move to a helper
   const Env& os_env = Env::Default();  // OS environment (!= ORT environment)
+#ifdef USE_MIGRAPHX
+#ifdef _WIN32
+  ::SetEnvironmentVariable("MIGRAPHX_MLIR_USE_SPECIFIC_OPS", "attention");
+#else
+  setenv("MIGRAPHX_MLIR_USE_SPECIFIC_OPS", "attention", 1);
+#endif
+#endif
   bool load_config_from_model =
       os_env.GetEnvironmentVar(inference_session_utils::kOrtLoadConfigFromModelEnvVar) == "1";
 

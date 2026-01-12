@@ -7,7 +7,6 @@
 #include "core/graph/model.h"
 
 #include "test/test_environment.h"
-#include "test/util/include/asserts.h"
 
 using ONNX_NAMESPACE::Utils::DataTypeUtils;
 using namespace ONNX_NAMESPACE;
@@ -179,7 +178,8 @@ static void CreateNodeRemovalGraph(Model& model, bool removal_allowed, bool test
   if_node.AddAttribute("then_branch", then_branch);
   if_node.AddAttribute("else_branch", else_branch);
 
-  ASSERT_STATUS_OK(graph.Resolve());
+  auto status = graph.Resolve();
+  ASSERT_TRUE(status.IsOK()) << status.ErrorMessage();
 }
 
 static void CheckNodeRemovalSubgraphUpdate(const std::string& new_name, const Graph& subgraph) {

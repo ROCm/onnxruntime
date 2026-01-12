@@ -38,7 +38,6 @@ struct ProviderHost;
 struct ProviderHostCPU;
 
 class ExternalDataInfo;
-
 class PhiloxGenerator;
 using ProviderType = const std::string&;
 class RandomGenerator;
@@ -71,25 +70,11 @@ struct IteratorHolder {
   bool operator!=(const IteratorHolder& p) const { return p_->operator!=(*p.p_); }
 
   void operator++() { p_->operator++(); }
-  TResult& operator*() { return p_->operator*(); }
+  const TResult& operator*() { return p_->operator*(); }
   T* operator->() { return p_.get(); }
 
  private:
   std::unique_ptr<T> p_;
-};
-
-struct TensorProto_ConstIterator {
-  virtual ~TensorProto_ConstIterator() = default;
-  virtual bool operator!=(const TensorProto_ConstIterator& p) const = 0;
-  virtual void operator++() = 0;
-  virtual const ONNX_NAMESPACE::TensorProto& operator*() const = 0;
-};
-
-struct TensorProto_Iterator {
-  virtual ~TensorProto_Iterator() = default;
-  virtual bool operator!=(const TensorProto_Iterator& p) const = 0;
-  virtual void operator++() = 0;
-  virtual ONNX_NAMESPACE::TensorProto& operator*() const = 0;
 };
 
 struct NodeAttributes_Iterator {
@@ -383,7 +368,6 @@ struct ProviderHost {
 
   // TypeProto
   virtual std::unique_ptr<ONNX_NAMESPACE::TypeProto> TypeProto__construct() = 0;
-  virtual void TypeProto__operator_delete(ONNX_NAMESPACE::TypeProto* p) = 0;
   virtual void TypeProto__CopyFrom(ONNX_NAMESPACE::TypeProto* p, const ONNX_NAMESPACE::TypeProto* other) = 0;
   virtual bool TypeProto__has_tensor_type(const ONNX_NAMESPACE::TypeProto* p) = 0;
   virtual const ONNX_NAMESPACE::TypeProto_Tensor& TypeProto__tensor_type(const ONNX_NAMESPACE::TypeProto* p) = 0;
@@ -441,8 +425,7 @@ struct ProviderHost {
   // GraphProto
   virtual std::unique_ptr<ONNX_NAMESPACE::GraphProto> GraphProto__construct() = 0;
   virtual void GraphProto__operator_delete(ONNX_NAMESPACE::GraphProto* p) = 0;
-  virtual ONNX_NAMESPACE::GraphProto& GraphProto__operator_assign(ONNX_NAMESPACE::GraphProto* p, const ONNX_NAMESPACE::GraphProto& v) = 0;
-  virtual ONNX_NAMESPACE::GraphProto& GraphProto__operator_move_assign(ONNX_NAMESPACE::GraphProto* p, ONNX_NAMESPACE::GraphProto&& v) = 0;
+  virtual void GraphProto__operator_assign(ONNX_NAMESPACE::GraphProto* p, const ONNX_NAMESPACE::GraphProto& v) = 0;
 
   virtual const ONNX_NAMESPACE::ValueInfoProto& GraphProto__input(const ONNX_NAMESPACE::GraphProto* p, int index) = 0;
   virtual ONNX_NAMESPACE::ValueInfoProtos* GraphProto__mutable_input(ONNX_NAMESPACE::GraphProto* p) = 0;
@@ -495,8 +478,7 @@ struct ProviderHost {
   // TensorProto
   virtual std::unique_ptr<ONNX_NAMESPACE::TensorProto> TensorProto__construct() = 0;
   virtual void TensorProto__operator_delete(ONNX_NAMESPACE::TensorProto* p) = 0;
-  virtual ONNX_NAMESPACE::TensorProto& TensorProto__operator_assign(ONNX_NAMESPACE::TensorProto* p, const ONNX_NAMESPACE::TensorProto& v) = 0;
-  virtual ONNX_NAMESPACE::TensorProto& TensorProto__operator_move_assign(ONNX_NAMESPACE::TensorProto* p, ONNX_NAMESPACE::TensorProto&& v) = 0;
+  virtual void TensorProto__operator_assign(ONNX_NAMESPACE::TensorProto* p, const ONNX_NAMESPACE::TensorProto& v) = 0;
   virtual bool TensorProto__has_name(const ONNX_NAMESPACE::TensorProto* p) = 0;
   virtual void TensorProto__set_name(ONNX_NAMESPACE::TensorProto* p, const ::std::string& name) = 0;
   virtual const ::std::string& TensorProto__name(const ONNX_NAMESPACE::TensorProto* p) = 0;
@@ -525,12 +507,8 @@ struct ProviderHost {
 
   // TensorProtos
   virtual ONNX_NAMESPACE::TensorProto* TensorProtos__Add(ONNX_NAMESPACE::TensorProtos* p) = 0;
-  virtual int TensorProtos__size(const ONNX_NAMESPACE::TensorProtos* p) = 0;
+  virtual int TensorProtos__size(ONNX_NAMESPACE::TensorProtos* p) = 0;
   virtual ONNX_NAMESPACE::TensorProto& TensorProtos__at(ONNX_NAMESPACE::TensorProtos* p, int index) = 0;
-  virtual std::unique_ptr<TensorProto_ConstIterator> TensorProtos__begin(const ONNX_NAMESPACE::TensorProtos* p) = 0;
-  virtual std::unique_ptr<TensorProto_ConstIterator> TensorProtos__end(const ONNX_NAMESPACE::TensorProtos* p) = 0;
-  virtual std::unique_ptr<TensorProto_Iterator> TensorProtos__begin(ONNX_NAMESPACE::TensorProtos* p) = 0;
-  virtual std::unique_ptr<TensorProto_Iterator> TensorProtos__end(ONNX_NAMESPACE::TensorProtos* p) = 0;
 
   // TensorShapeProto_Dimension
   virtual int TensorShapeProto_Dimension__value_case(const ONNX_NAMESPACE::TensorShapeProto_Dimension* p) = 0;
@@ -842,8 +820,10 @@ struct ProviderHost {
   virtual const std::vector<MLDataType>& DataTypeImpl__AllTensorTypes() = 0;
   virtual const std::vector<MLDataType>& DataTypeImpl__AllTensorTypesIRv4() = 0;
   virtual const std::vector<MLDataType>& DataTypeImpl__AllTensorTypesIRv9() = 0;
+#if !defined(DISABLE_FLOAT4_TYPES)
   virtual const std::vector<MLDataType>& DataTypeImpl__AllTensorTypesIRv10() = 0;
   virtual const std::vector<MLDataType>& DataTypeImpl__AllTensorTypesIRv11() = 0;
+#endif
 
   virtual const std::vector<MLDataType>& DataTypeImpl__AllIEEEFloatTensorTypes() = 0;
 
@@ -1000,9 +980,6 @@ struct ProviderHost {
 
   virtual bool Utils__HasExternalDataInMemory(const ONNX_NAMESPACE::TensorProto& ten_proto) = 0;
 
-  virtual Status Utils__ValidateExternalDataPath(const std::filesystem::path& base_path,
-                                                 const std::filesystem::path& location) = 0;
-
   // Model
   virtual std::unique_ptr<Model> Model__construct(ONNX_NAMESPACE::ModelProto&& model_proto, const PathString& model_path,
                                                   const IOnnxRuntimeOpSchemaRegistryList* local_registries,
@@ -1139,15 +1116,6 @@ struct ProviderHost {
                                                          const std::string& name, bool load_inline) = 0;
 
   virtual Status GraphUtils__ConvertInMemoryDataToInline(Graph& graph, const std::string& name) = 0;
-
-  // ExternalDataInfo
-  virtual void ExternalDataInfo__operator_delete(ExternalDataInfo*) = 0;
-  virtual const PathString& ExternalDataInfo__GetRelPath(const ExternalDataInfo*) const = 0;
-  virtual int64_t ExternalDataInfo__GetOffset(const ExternalDataInfo*) const = 0;
-  virtual size_t ExternalDataInfo__GetLength(const ExternalDataInfo*) const = 0;
-  virtual const std::string& ExternalDataInfo__GetChecksum(const ExternalDataInfo*) const = 0;
-  virtual Status ExternalDataInfo__Create(const ONNX_NAMESPACE::StringStringEntryProtos& input,
-                                          std::unique_ptr<ExternalDataInfo>& out) = 0;
 
   // Initializer
   virtual Initializer* Initializer__constructor(ONNX_NAMESPACE::TensorProto_DataType data_type,
