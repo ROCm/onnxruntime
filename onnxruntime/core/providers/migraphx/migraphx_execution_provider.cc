@@ -3424,6 +3424,211 @@ static std::unordered_map<std::string, std::size_t> get_input_name_map(
   return input_name_index;
 }
 
+// Helper: Check if model has dynamic batch support (only batch dimension is symbolic)
+// and precompile models for all power-of-two batch sizes if conditions are met.
+// This is called during state creation to eagerly compile all batch size variants
+// when caching is enabled, avoiding runtime compilation latency.
+// Returns true if precompilation was performed, false otherwise.
+static bool preempt_dynamic_batch_compile(
+    MIGraphXFuncState* mgx_state,
+    const std::filesystem::path& model_cache_path,
+    const std::filesystem::path& model_path,
+    const std::string& mxr_filename_prefix,
+    const std::vector<std::string>& input_names,
+    const std::vector<const NodeArg*>& input_tensors,
+    const InitializedTensorSet& initializers,
+    const std::set<std::string>& model_input_names)
+{
+  LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] ==== ENTERING ====";
+  LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] max_dynamic_batch = " << mgx_state->max_dynamic_batch;
+  LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] model_cache_dir = " 
+                        << (mgx_state->model_cache_dir.empty() ? "(empty)" : mgx_state->model_cache_dir.string());
+  LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] has_dynamic_batch = " << mgx_state->has_dynamic_batch;
+
+  // Conditions that must be met:
+  // 1. max_dynamic_batch > 0
+  // 2. model_cache_dir is not empty (caching enabled)
+  // 3. has_dynamic_batch is true
+  if (mgx_state->max_dynamic_batch == 0) {
+    LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] Skipping: max_dynamic_batch is 0";
+    return false;
+  }
+  if (mgx_state->model_cache_dir.empty()) {
+    LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] Skipping: model_cache_dir is empty";
+    return false;
+  }
+  if (!mgx_state->has_dynamic_batch) {
+    LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] Skipping: dynamic batch not enabled";
+    return false;
+  }
+
+  // Check all inputs to see if only batch dimension is symbolic (can precompile)
+  std::vector<std::string> precompile_input_names;
+  std::vector<std::vector<std::int64_t>> all_input_base_shapes;
+
+  LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] Checking " << input_names.size() << " inputs for symbolic dimensions";
+
+  for (size_t i = 0; i < input_names.size(); ++i) {
+    const auto& name = input_names[i];
+
+    // Skip initializers/constants - they don't need batch dimension handling
+    if (initializers.count(name) > 0) {
+      LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] Skipping '" << name << "' (initializer/constant)";
+      continue;
+    }
+
+    // Skip if not a model input parameter
+    if (model_input_names.count(name) == 0) {
+      LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] Skipping '" << name << "' (not a model input)";
+      continue;
+    }
+
+    if (i >= input_tensors.size()) {
+      LOGS_DEFAULT(WARNING) << "[preempt_dynamic_batch_compile] Input tensor index out of range for '" << name << "'";
+      continue;
+    }
+
+    auto tensor_shape = input_tensors[i]->Shape();
+    if (tensor_shape == nullptr || tensor_shape->dim_size() == 0) {
+      LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] Cannot precompile: no shape info for '" << name << "'";
+      return false;  // Can't precompile without shape info
+    }
+
+    std::vector<std::int64_t> base_shape;
+    bool has_non_batch_symbolic = false;
+
+    LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] Input '" << name << "' has " 
+                          << tensor_shape->dim_size() << " dimensions";
+
+    for (int j = 0; j < tensor_shape->dim_size(); ++j) {
+      const auto& dim = tensor_shape->dim(j);
+      
+      if (j == 0) {
+        // Batch dimension (dim 0) - can be symbolic, we'll vary this
+        if (dim.has_dim_value()) {
+          LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile]   dim[" << j << "] (batch) = " << dim.dim_value() << " (static)";
+        } else {
+          LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile]   dim[" << j << "] (batch) = symbolic";
+        }
+        continue;  // Don't add to base_shape
+      }
+
+      if (dim.has_dim_value()) {
+        base_shape.push_back(dim.dim_value());
+        LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile]   dim[" << j << "] = " << dim.dim_value();
+      } else {
+        // Non-batch dimension is symbolic - cannot precompile statically
+        has_non_batch_symbolic = true;
+        LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile]   dim[" << j << "] = symbolic (NON-BATCH!)";
+        break;
+      }
+    }
+
+    if (has_non_batch_symbolic) {
+      LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] Cannot precompile: input '" << name 
+                            << "' has non-batch symbolic dimensions";
+      return false;
+    }
+
+    precompile_input_names.push_back(name);
+    all_input_base_shapes.push_back(base_shape);
+    
+    LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] Input '" << name << "' base shape: [" << [&]() {
+      std::ostringstream ss;
+      for (size_t k = 0; k < base_shape.size(); ++k) {
+        if (k > 0) ss << ", ";
+        ss << base_shape[k];
+      }
+      return ss.str();
+    }() << "]";
+  }
+
+  if (precompile_input_names.empty()) {
+    LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] No valid inputs found for precompilation";
+    return false;
+  }
+
+  LOGS_DEFAULT(INFO) << "[preempt_dynamic_batch_compile] ✓ Model eligible for precompilation";
+  LOGS_DEFAULT(INFO) << "[preempt_dynamic_batch_compile] Precompiling " 
+                     << mgx_state->power_of_two_batch_sizes.size()
+                     << " power-of-two batch models for " << precompile_input_names.size() << " inputs";
+
+  // Compile a model for each power-of-two batch size
+  for (const auto& batch_size : mgx_state->power_of_two_batch_sizes) {
+    LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] ---- Processing batch size: " << batch_size << " ----";
+
+    // Build cache key for this batch size
+    // Must match the order used in compile_dynamic_batch_models and execute_fast_path
+    std::vector<std::int64_t> batch_shape_key;
+    for (size_t i = 0; i < precompile_input_names.size(); ++i) {
+      batch_shape_key.push_back(static_cast<std::int64_t>(batch_size));
+      batch_shape_key.insert(batch_shape_key.end(),
+                            all_input_base_shapes[i].begin(),
+                            all_input_base_shapes[i].end());
+    }
+    auto cache_hash = make_hash(batch_shape_key);
+
+    LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] Cache hash for batch " << batch_size << ": " << cache_hash;
+
+    // Check if already in memory cache
+    if (mgx_state->cached_programs_ref.has_value()) {
+      auto& cached_progs = mgx_state->cached_programs_ref.value().get();
+      if (cached_progs.find(cache_hash) != cached_progs.end()) {
+        LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] ✓ Batch " << batch_size 
+                              << " already in memory cache, skipping";
+        continue;
+      }
+    }
+
+    // Build cache file path
+    std::filesystem::path batch_cache_file;
+    if (!model_cache_path.empty()) {
+      batch_cache_file = model_cache_path / (mxr_filename_prefix + cache_hash + ".mxr");
+      LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] Disk cache file: " << batch_cache_file.string();
+    }
+
+    // Compile or load the model for this batch size using existing helper
+    LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] Calling load_or_compile_model for batch " << batch_size;
+    migraphx::program batch_prog = load_or_compile_model(
+        batch_cache_file,
+        mgx_state->onnx_string,
+        mgx_state->options,
+        mgx_state->t,
+        mgx_state->fp16_enable,
+        mgx_state->bf16_enable,
+        mgx_state->int8_enable,
+        mgx_state->fp8_enable,
+        mgx_state->int8_calibration_cache_available,
+        mgx_state->dynamic_range_map,
+        mgx_state->exhaustive_tune,
+        model_path,
+        nullptr,  // ctx not needed for precompilation
+        nullptr,  // map_input_name_index not needed
+        precompile_input_names,
+        all_input_base_shapes,
+        batch_size);
+
+    // Store in memory cache
+    if (mgx_state->cached_programs_ref.has_value()) {
+      mgx_state->cached_programs_ref.value().get()[cache_hash] = batch_prog;
+      LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] ✓ Stored program for batch size " << batch_size
+                            << " in memory cache with hash " << cache_hash;
+    }
+  }
+
+  // Disable further dynamic batch compilation at runtime (already done)
+  LOGS_DEFAULT(INFO) << "[preempt_dynamic_batch_compile] Setting max_dynamic_batch to 0 to disable runtime compilation";
+  mgx_state->max_dynamic_batch = 0;
+
+  // Disable defer_compilation since we've now precompiled
+  mgx_state->defer_compilation = false;
+  LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] Set defer_compilation = false";
+
+  LOGS_DEFAULT(INFO) << "[preempt_dynamic_batch_compile] ✓ Precompilation complete";
+  LOGS_DEFAULT(VERBOSE) << "[preempt_dynamic_batch_compile] ==== EXITING (success) ====";
+  return true;
+}
+
 constexpr std::uint64_t MIGraphX_Version =
     ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
 
@@ -3492,6 +3697,14 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     }
 
     NodeComputeInfo compute_info;
+    // Capture copies needed for preempt_dynamic_batch_compile (lambda outlives this scope)
+    std::vector<std::string> captured_input_names = input_names;
+    std::vector<const NodeArg*> captured_input_tensor = input_tensor;
+    // InitializedTensorSet is a map reference - copy it
+    InitializedTensorSet captured_initializers = initializers;
+    std::set<std::string> captured_model_input_names = node_session_input_names;
+    std::string captured_mxr_prefix = mxr_filename_prefix;
+    
     compute_info.create_state_func = [=](ComputeContext* context, FunctionState* state) {
       std::unique_ptr<MIGraphXFuncState> p = std::make_unique<MIGraphXFuncState>();
       *p = {context->allocate_func, context->release_func, context->allocator_handle, map_progs_[context->node_name],
@@ -3508,6 +3721,20 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         LOGS_DEFAULT(INFO) << "[Compile] Dynamic batch enabled for node '" << context->node_name 
                            << "' with max_dynamic_batch=" << max_dynamic_batch_
                            << ", generated " << p->power_of_two_batch_sizes.size() << " power-of-two batch sizes";
+        
+        // Preemptively compile all power-of-two batch models if:
+        // 1. Model cache is enabled
+        // 2. Model only has batch dimension as symbolic (no other symbolic dims)
+        // This avoids runtime compilation latency on first inference
+        preempt_dynamic_batch_compile(
+            p.get(),
+            model_cache_path_,
+            model_path_,
+            captured_mxr_prefix,
+            captured_input_names,
+            captured_input_tensor,
+            captured_initializers,
+            captured_model_input_names);
       }
       
       *state = p.release();
