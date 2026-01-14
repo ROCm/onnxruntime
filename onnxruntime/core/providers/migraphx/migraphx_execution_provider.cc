@@ -751,7 +751,7 @@ std::unique_ptr<IndexedSubGraph> MIGraphXExecutionProvider::GetSubGraph(const st
 
         if (target_op_type == "If" || target_op_type == "Loop" || target_op_type == "Scan") {
           const auto& src_output_idx = it->GetSrcArgIndex();
-          if (src_output_idx < node->OutputDefs().size()) {
+          if (static_cast<std::size_t>(src_output_idx) < node->OutputDefs().size()) {
             const auto* output_def = node->OutputDefs()[src_output_idx];
             if (output_def && fused_outputs.find(output_def) == fused_outputs.end() && erased.find(output_def) == erased.end()) {
               fused_outputs_to_add[output_def] = output_order++;
@@ -2274,7 +2274,6 @@ static bool execute_ultra_fast_path(
   std::size_t original_batch_size = 0;
   std::size_t padded_batch_size = 0;
   bool is_first = true;
-  int input_idx = 0;
 
   for (const auto& inp : mgx_state->cached_inputs) {
     const auto& shape = ctx.GetInput(inp.ort_index).GetTensorTypeAndShapeInfo().GetShape();
@@ -2306,7 +2305,7 @@ static bool execute_ultra_fast_path(
       }
       
       // All current inputs should have the same batch size (original_batch_size)
-      if (shape[0] != original_batch_size) {
+      if (static_cast<std::size_t>(shape[0]) != original_batch_size) {
         shapes_match = false;
         break;
       }
