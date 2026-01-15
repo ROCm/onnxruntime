@@ -3646,6 +3646,201 @@ static inline void precompile_static_model(
   LOGS_DEFAULT(INFO) << "[precompile_static_model] ✓ Static model precompiled and cached";
 }
 
+// Encapsulates precompilation decision logic from Compile()
+// Returns true if compilation should be deferred to runtime, false if precompilation succeeded
+static inline bool handle_precompilation_decision(
+    const std::string& node_name,
+    const std::vector<std::string>& input_names,
+    const std::vector<const NodeArg*>& input_tensor,
+    const InitializedTensorSet& initializers,
+    const std::unordered_map<std::string, std::size_t>& input_name_index,
+    const std::string& onnx_string_buffer,
+    migraphx::onnx_options& options,
+    const migraphx::target& t,
+    bool fp16_enable,
+    bool bf16_enable,
+    bool int8_enable,
+    bool fp8_enable,
+    bool int8_calibration_cache_available,
+    std::unordered_map<std::string, float>& dynamic_range_map,
+    bool exhaustive_tune,
+    const std::filesystem::path& model_path,
+    const std::filesystem::path& model_cache_path,
+    const std::string& mxr_filename_prefix,
+    std::unordered_map<std::string, migraphx::program>& cached_programs,
+    std::size_t max_dynamic_batch)
+{
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PRECOMPILATION: Compile models during Compile() phase instead of compute_func()
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 
+  // Precompilation rules:
+  // 1. max_dynamic_batch > 0 AND all non-batch dims are concrete:
+  //    -> Precompile all power-of-two batch models (symbolic batch dim is OK)
+  // 2. max_dynamic_batch > 0 AND some non-batch dims are symbolic:
+  //    -> Defer to runtime (cannot precompile without concrete non-batch shapes)
+  // 3. max_dynamic_batch == 0 AND all dims are concrete:
+  //    -> Precompile static model with concrete shapes
+  // 4. max_dynamic_batch == 0 AND some dims are symbolic:
+  //    -> Defer to runtime (cannot precompile with symbolic dimensions)
+  //
+  // IMPORTANT: We do NOT default symbolic dimensions to any value.
+  // Precompilation only happens when we have concrete shapes from the graph.
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ════════════════════════════════════════════════════";
+  LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Starting precompilation decision for node '" << node_name << "'";
+  LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] max_dynamic_batch = " << max_dynamic_batch;
+  LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Number of inputs: " << input_names.size();
+  LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Number of input tensors: " << input_tensor.size();
+  LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Number of initializers: " << initializers.size();
+  
+  // Check if model has only dynamic batch dimension (other dims are static)
+  bool only_dynamic_batch = has_only_dynamic_batch_dimension(input_names, input_tensor, initializers);
+  LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] only_dynamic_batch = " << (only_dynamic_batch ? "true" : "false");
+  
+  if (max_dynamic_batch > 0) {
+    LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Mode: DYNAMIC BATCH (max_dynamic_batch=" << max_dynamic_batch << ")";
+    
+    // Dynamic batch mode - try to precompile if all non-batch dimensions are concrete
+    if (only_dynamic_batch) {
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Model has only dynamic batch dimension - attempting to extract base shapes";
+      
+      // Extract base shapes - this will FAIL if any non-batch dim is symbolic
+      auto [shapes_valid, ordered_names, base_shapes] = extract_base_shapes_from_graph(
+          input_names, input_tensor, initializers, input_name_index);
+      
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] extract_base_shapes_from_graph result: shapes_valid=" 
+                            << (shapes_valid ? "true" : "false");
+      
+      if (shapes_valid) {
+        
+        // All non-batch dimensions are concrete - precompile all power-of-two batch models
+        auto power_of_two_batch_sizes = generate_power_of_two_batch_sizes(max_dynamic_batch);
+        
+        std::ostringstream batch_ss;
+        batch_ss << "[";
+        for (std::size_t i = 0; i < power_of_two_batch_sizes.size(); ++i) {
+          if (i > 0) batch_ss << ", ";
+          batch_ss << power_of_two_batch_sizes[i];
+        }
+        batch_ss << "]";
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Power-of-two batch sizes to compile: " << batch_ss.str();
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] >>> STARTING DYNAMIC BATCH PRECOMPILATION <<<";
+        
+        precompile_all_dynamic_batch_models(
+            power_of_two_batch_sizes,
+            ordered_names,
+            base_shapes,
+            onnx_string_buffer,
+            options,
+            t,
+            fp16_enable,
+            bf16_enable,
+            int8_enable,
+            fp8_enable,
+            int8_calibration_cache_available,
+            dynamic_range_map,
+            exhaustive_tune,
+            model_path,
+            model_cache_path,
+            mxr_filename_prefix,
+            cached_programs);
+        
+        // Precompilation complete - disable deferred compilation
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ✓✓✓ Dynamic batch precompilation COMPLETE for node '" 
+                              << node_name << "'";
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] defer_compilation set to FALSE";
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] cached_programs size: " << cached_programs.size();
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ════════════════════════════════════════════════════";
+        return false;  // No need to defer
+      } else {
+        // Non-batch dimensions contain symbolic values - cannot precompile
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ✗ CANNOT PRECOMPILE: Non-batch dimensions contain symbolic values";
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Deferring compilation to runtime for node '" << node_name << "'";
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] defer_compilation set to TRUE";
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ════════════════════════════════════════════════════";
+        return true;  // Defer to runtime
+      }
+    } else {
+      // Model has multiple dynamic dimensions (not just batch) - defer to runtime
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ✗ CANNOT PRECOMPILE: Model has non-batch dynamic dimensions";
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Deferring compilation to runtime for node '" << node_name << "'";
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] defer_compilation set to TRUE";
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ════════════════════════════════════════════════════";
+      return true;  // Defer to runtime
+    }
+  } else {
+    LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Mode: STATIC (max_dynamic_batch=0)";
+    
+    // Static model (max_dynamic_batch == 0) - only precompile if ALL dimensions are concrete
+    // Check if any dimension is symbolic
+    bool has_symbolic_dims = false;
+    std::string symbolic_info;
+    for (std::size_t i = 0; i < input_names.size(); ++i) {
+      if (initializers.count(input_names[i]) > 0) continue;  // Skip initializers
+      if (i < input_tensor.size()) {
+        auto tensor_shape = input_tensor[i]->Shape();
+        if (tensor_shape != nullptr) {
+          for (int j = 0; j < tensor_shape->dim_size(); ++j) {
+            if (!tensor_shape->dim(j).has_dim_value()) {
+              has_symbolic_dims = true;
+              symbolic_info = "Input '" + input_names[i] + "' dim " + std::to_string(j);
+              LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Found symbolic dimension: " << symbolic_info;
+              break;
+            }
+          }
+        }
+      }
+      if (has_symbolic_dims) break;
+    }
+    
+    LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] has_symbolic_dims = " << (has_symbolic_dims ? "true" : "false");
+    
+    if (!has_symbolic_dims) {
+      // All dimensions are concrete - precompile static model
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] All dimensions are concrete - precompiling static model";
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] >>> STARTING STATIC MODEL PRECOMPILATION <<<";
+      
+      precompile_static_model(
+          input_names,
+          input_tensor,
+          initializers,
+          input_name_index,
+          onnx_string_buffer,
+          options,
+          t,
+          fp16_enable,
+          bf16_enable,
+          int8_enable,
+          fp8_enable,
+          int8_calibration_cache_available,
+          dynamic_range_map,
+          exhaustive_tune,
+          model_path,
+          model_cache_path,
+          mxr_filename_prefix,
+          cached_programs);
+      
+      // Precompilation complete - disable deferred compilation
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ✓✓✓ Static model precompilation COMPLETE for node '" 
+                            << node_name << "'";
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] defer_compilation set to FALSE";
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] cached_programs size: " << cached_programs.size();
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ════════════════════════════════════════════════════";
+      return false;  // No need to defer
+    } else {
+      // Has symbolic dimensions and max_dynamic_batch == 0 - defer to runtime
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ✗ CANNOT PRECOMPILE: Has symbolic dimensions but max_dynamic_batch=0";
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Symbolic dimension found: " << symbolic_info;
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Deferring compilation to runtime for node '" << node_name << "'";
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] defer_compilation set to TRUE";
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ════════════════════════════════════════════════════";
+      return true;  // Defer to runtime
+    }
+  }
+}
+
 constexpr std::uint64_t MIGraphX_Version =
     ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
 
@@ -3698,214 +3893,28 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       cached_programs_[fused_node.Name()] = std::unordered_map<std::string, migraphx::program>();
     }
     
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PRECOMPILATION: Compile models during Compile() phase instead of compute_func()
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 
-    // Precompilation rules:
-    // 1. max_dynamic_batch > 0 AND all non-batch dims are concrete:
-    //    -> Precompile all power-of-two batch models (symbolic batch dim is OK)
-    // 2. max_dynamic_batch > 0 AND some non-batch dims are symbolic:
-    //    -> Defer to runtime (cannot precompile without concrete non-batch shapes)
-    // 3. max_dynamic_batch == 0 AND all dims are concrete:
-    //    -> Precompile static model with concrete shapes
-    // 4. max_dynamic_batch == 0 AND some dims are symbolic:
-    //    -> Defer to runtime (cannot precompile with symbolic dimensions)
-    //
-    // IMPORTANT: We do NOT default symbolic dimensions to any value.
-    // Precompilation only happens when we have concrete shapes from the graph.
-    // ═══════════════════════════════════════════════════════════════════════════
-    
-    LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ════════════════════════════════════════════════════";
-    LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Starting precompilation decision for node '" << fused_node.Name() << "'";
-    LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] max_dynamic_batch_ = " << max_dynamic_batch_;
-    LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Number of inputs: " << input_names.size();
-    LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Number of input tensors: " << input_tensor.size();
-    LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Number of initializers: " << initializers.size();
-    
-    // Log all input shapes from graph definition
-    for (std::size_t i = 0; i < input_names.size(); ++i) {
-      if (initializers.count(input_names[i]) > 0) {
-        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Input[" << i << "] '" << input_names[i] << "' -> INITIALIZER (skipped)";
-        continue;
-      }
-      if (i < input_tensor.size()) {
-        auto tensor_shape = input_tensor[i]->Shape();
-        if (tensor_shape != nullptr) {
-          std::ostringstream ss;
-          ss << "[";
-          for (int j = 0; j < tensor_shape->dim_size(); ++j) {
-            if (j > 0) ss << ", ";
-            const auto& dim = tensor_shape->dim(j);
-            if (dim.has_dim_value()) {
-              ss << dim.dim_value();
-            } else if (dim.has_dim_param()) {
-              ss << "'" << dim.dim_param() << "'";
-            } else {
-              ss << "?";
-            }
-          }
-          ss << "]";
-          LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Input[" << i << "] '" << input_names[i] << "' shape: " << ss.str();
-        } else {
-          LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Input[" << i << "] '" << input_names[i] << "' shape: NULL";
-        }
-      }
-    }
-    
-    // Check if model has only dynamic batch dimension (other dims are static)
-    bool only_dynamic_batch = has_only_dynamic_batch_dimension(input_names, input_tensor, initializers);
-    LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] only_dynamic_batch = " << (only_dynamic_batch ? "true" : "false");
-    
-    if (max_dynamic_batch_ > 0) {
-      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Mode: DYNAMIC BATCH (max_dynamic_batch=" << max_dynamic_batch_ << ")";
-      
-      // Dynamic batch mode - try to precompile if all non-batch dimensions are concrete
-      if (only_dynamic_batch) {
-        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Model has only dynamic batch dimension - attempting to extract base shapes";
-        
-        // Extract base shapes - this will FAIL if any non-batch dim is symbolic
-        auto [shapes_valid, ordered_names, base_shapes] = extract_base_shapes_from_graph(
-            input_names, input_tensor, initializers, input_name_index);
-        
-        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] extract_base_shapes_from_graph result: shapes_valid=" 
-                              << (shapes_valid ? "true" : "false");
-        
-        if (shapes_valid) {
-          // Log extracted base shapes
-          LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Successfully extracted " << ordered_names.size() << " base shapes:";
-          for (std::size_t i = 0; i < ordered_names.size(); ++i) {
-            std::ostringstream ss;
-            ss << "[";
-            for (std::size_t j = 0; j < base_shapes[i].size(); ++j) {
-              if (j > 0) ss << ", ";
-              ss << base_shapes[i][j];
-            }
-            ss << "]";
-            LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE]   '" << ordered_names[i] << "' base_shape: " << ss.str();
-          }
-          
-          // All non-batch dimensions are concrete - precompile all power-of-two batch models
-          auto power_of_two_batch_sizes = generate_power_of_two_batch_sizes(max_dynamic_batch_);
-          
-          std::ostringstream batch_ss;
-          batch_ss << "[";
-          for (std::size_t i = 0; i < power_of_two_batch_sizes.size(); ++i) {
-            if (i > 0) batch_ss << ", ";
-            batch_ss << power_of_two_batch_sizes[i];
-          }
-          batch_ss << "]";
-          LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Power-of-two batch sizes to compile: " << batch_ss.str();
-          LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] >>> STARTING DYNAMIC BATCH PRECOMPILATION <<<";
-          
-          precompile_all_dynamic_batch_models(
-              power_of_two_batch_sizes,
-              ordered_names,
-              base_shapes,
-              onnx_string_buffer,
-              options,
-              t_,
-              fp16_enable_,
-              bf16_enable_,
-              int8_enable_,
-              fp8_enable_,
-              int8_calibration_cache_available_,
-              dynamic_range_map_,
-              exhaustive_tune_,
-              model_path_,
-              model_cache_path_,
-              mxr_filename_prefix,
-              cached_programs_[fused_node.Name()]);
-          
-          // Precompilation complete - disable deferred compilation
-          map_defer_compilation_[fused_node.Name()] = false;
-          LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ✓✓✓ Dynamic batch precompilation COMPLETE for node '" 
-                                << fused_node.Name() << "'";
-          LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] defer_compilation set to FALSE";
-          LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] cached_programs size: " << cached_programs_[fused_node.Name()].size();
-        } else {
-          // Non-batch dimensions contain symbolic values - cannot precompile
-          LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ✗ CANNOT PRECOMPILE: Non-batch dimensions contain symbolic values";
-          LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Deferring compilation to runtime for node '" << fused_node.Name() << "'";
-          map_defer_compilation_[fused_node.Name()] = true;
-          LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] defer_compilation set to TRUE";
-        }
-      } else {
-        // Model has multiple dynamic dimensions (not just batch) - defer to runtime
-        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ✗ CANNOT PRECOMPILE: Model has non-batch dynamic dimensions";
-        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Deferring compilation to runtime for node '" << fused_node.Name() << "'";
-        map_defer_compilation_[fused_node.Name()] = true;
-        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] defer_compilation set to TRUE";
-      }
-    } else {
-      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Mode: STATIC (max_dynamic_batch=0)";
-      
-      // Static model (max_dynamic_batch == 0) - only precompile if ALL dimensions are concrete
-      // Check if any dimension is symbolic
-      bool has_symbolic_dims = false;
-      std::string symbolic_info;
-      for (std::size_t i = 0; i < input_names.size(); ++i) {
-        if (initializers.count(input_names[i]) > 0) continue;  // Skip initializers
-        if (i < input_tensor.size()) {
-          auto tensor_shape = input_tensor[i]->Shape();
-          if (tensor_shape != nullptr) {
-            for (int j = 0; j < tensor_shape->dim_size(); ++j) {
-              if (!tensor_shape->dim(j).has_dim_value()) {
-                has_symbolic_dims = true;
-                symbolic_info = "Input '" + input_names[i] + "' dim " + std::to_string(j);
-                LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Found symbolic dimension: " << symbolic_info;
-                break;
-              }
-            }
-          }
-        }
-        if (has_symbolic_dims) break;
-      }
-      
-      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] has_symbolic_dims = " << (has_symbolic_dims ? "true" : "false");
-      
-      if (!has_symbolic_dims) {
-        // All dimensions are concrete - precompile static model
-        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] All dimensions are concrete - precompiling static model";
-        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] >>> STARTING STATIC MODEL PRECOMPILATION <<<";
-        
-        precompile_static_model(
-            input_names,
-            input_tensor,
-            initializers,
-            input_name_index,
-            onnx_string_buffer,
-            options,
-            t_,
-            fp16_enable_,
-            bf16_enable_,
-            int8_enable_,
-            fp8_enable_,
-            int8_calibration_cache_available_,
-            dynamic_range_map_,
-            exhaustive_tune_,
-            model_path_,
-            model_cache_path_,
-            mxr_filename_prefix,
-            cached_programs_[fused_node.Name()]);
-        
-        // Precompilation complete - disable deferred compilation
-        map_defer_compilation_[fused_node.Name()] = false;
-        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ✓✓✓ Static model precompilation COMPLETE for node '" 
-                              << fused_node.Name() << "'";
-        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] defer_compilation set to FALSE";
-        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] cached_programs size: " << cached_programs_[fused_node.Name()].size();
-      } else {
-        // Has symbolic dimensions and max_dynamic_batch == 0 - defer to runtime
-        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ✗ CANNOT PRECOMPILE: Has symbolic dimensions but max_dynamic_batch=0";
-        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Symbolic dimension found: " << symbolic_info;
-        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Deferring compilation to runtime for node '" << fused_node.Name() << "'";
-        map_defer_compilation_[fused_node.Name()] = true;
-        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] defer_compilation set to TRUE";
-      }
-    }
-    
-    LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ════════════════════════════════════════════════════";
+    // Perform precompilation decision and execution
+    map_defer_compilation_[fused_node.Name()] = handle_precompilation_decision(
+        fused_node.Name(),
+        input_names,
+        input_tensor,
+        initializers,
+        input_name_index,
+        onnx_string_buffer,
+        options,
+        t_,
+        fp16_enable_,
+        bf16_enable_,
+        int8_enable_,
+        fp8_enable_,
+        int8_calibration_cache_available_,
+        dynamic_range_map_,
+        exhaustive_tune_,
+        model_path_,
+        model_cache_path_,
+        mxr_filename_prefix,
+        cached_programs_[fused_node.Name()],
+        max_dynamic_batch_);
 
     // Create program object (may be empty if precompiled programs are in cache)
     migraphx::program prog;
