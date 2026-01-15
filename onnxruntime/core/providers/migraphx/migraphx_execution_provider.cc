@@ -1185,7 +1185,9 @@ static std::pair<std::vector<std::string>, std::vector<std::string>> get_io_name
 bool load_precompiled_model(migraphx::program& prog, const std::filesystem::path& path) try {
   if (!path.empty() && exists(path)) {
     LOGS_DEFAULT(VERBOSE) << "[load_precompiled_model] Attempting to load model from disk: " << path.string();
-    prog = migraphx::load(path.string().c_str());
+    migraphx::file_options fo;
+    fo.set_file_format("msgpack");
+    prog = migraphx::load(path.string().c_str(), fo);
     LOGS_DEFAULT(VERBOSE) << "[load_precompiled_model] ✓ Successfully loaded model from disk";
     return true;
   }
@@ -1195,7 +1197,7 @@ bool load_precompiled_model(migraphx::program& prog, const std::filesystem::path
 } catch (const std::exception& e) {
   LOGS_DEFAULT(VERBOSE) << "[load_precompiled_model] ✗ Failed to load model from disk: " << e.what();
   return false;
-} catch (...) {
+  } catch (...) {
   LOGS_DEFAULT(VERBOSE) << "[load_precompiled_model] ✗ Failed to load model from disk (unknown exception)";
   return false;
 }
