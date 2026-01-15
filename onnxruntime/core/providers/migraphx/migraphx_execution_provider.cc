@@ -7,9 +7,11 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <iterator>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -3466,6 +3468,7 @@ static inline std::string precompile_model_for_batch(
 
 // Precompile all power-of-two batch models during Compile() phase
 // This moves compilation from compute_func() to initialization time
+// Uses parallel loading to speed up cache loading when multiple batch sizes are needed
 static inline void precompile_all_dynamic_batch_models(
     const std::vector<std::size_t>& power_of_two_batch_sizes,
     const std::vector<std::string>& input_names,
@@ -3486,27 +3489,82 @@ static inline void precompile_all_dynamic_batch_models(
     std::unordered_map<std::string, migraphx::program>& cached_programs)
 {
   LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Precompiling " 
-                     << power_of_two_batch_sizes.size() << " power-of-two batch models...";
+                     << power_of_two_batch_sizes.size() << " power-of-two batch models in parallel...";
+  
+  // Mutex to protect shared cached_programs map
+  std::mutex cache_mutex;
+  
+  // Launch async tasks for each batch size
+  std::vector<std::future<void>> futures;
   
   for (const auto& batch_size : power_of_two_batch_sizes) {
-    precompile_model_for_batch(
-        batch_size,
-        input_names,
-        all_input_base_shapes,
-        onnx_string,
-        options,
-        t,
-        fp16_enable,
-        bf16_enable,
-        int8_enable,
-        fp8_enable,
-        int8_calibration_cache_available,
-        dynamic_range_map,
-        exhaustive_tune,
-        model_path,
-        model_cache_path,
-        mxr_filename_prefix,
-        cached_programs);
+    futures.push_back(std::async(std::launch::async, 
+      [&, batch_size]() {
+        // Build cache key for this batch size
+        std::vector<std::int64_t> batch_shape_key;
+        for (std::size_t i = 0; i < input_names.size(); ++i) {
+          batch_shape_key.push_back(static_cast<std::int64_t>(batch_size));
+          batch_shape_key.insert(batch_shape_key.end(), 
+                                all_input_base_shapes[i].begin(), 
+                                all_input_base_shapes[i].end());
+        }
+        auto cache_hash = make_hash(batch_shape_key);
+        
+        LOGS_DEFAULT(VERBOSE) << "[precompile_model_for_batch] Batch " << batch_size << " -> hash: " << cache_hash;
+        
+        // Check if already cached in memory (thread-safe check)
+        {
+          std::lock_guard<std::mutex> lock(cache_mutex);
+          if (cached_programs.find(cache_hash) != cached_programs.end()) {
+            LOGS_DEFAULT(VERBOSE) << "[precompile_model_for_batch] ✓ Batch " << batch_size << " already cached";
+            return;
+          }
+        }
+        
+        // Build disk cache file path
+        std::filesystem::path batch_cache_file;
+        if (!model_cache_path.empty()) {
+          batch_cache_file = model_cache_path / (mxr_filename_prefix + cache_hash + ".mxr");
+        }
+        
+        LOGS_DEFAULT(VERBOSE) << "[precompile_model_for_batch] Compiling/loading batch " << batch_size << "...";
+        
+        // Create thread-local copy of options to avoid race conditions
+        migraphx::onnx_options local_options = options;
+        
+        // Load or compile the model (most time-consuming part)
+        migraphx::program batch_prog = load_or_compile_model(
+            batch_cache_file,
+            onnx_string,
+            local_options,  // Use thread-local copy
+            t,
+            fp16_enable,
+            bf16_enable,
+            int8_enable,
+            fp8_enable,
+            int8_calibration_cache_available,
+            dynamic_range_map,  // Read-only access
+            exhaustive_tune,
+            model_path,
+            nullptr,  // ctx not needed for precompilation
+            nullptr,  // map_input_name_index not needed
+            input_names,
+            all_input_base_shapes,
+            batch_size);
+        
+        // Store in memory cache (thread-safe insertion)
+        {
+          std::lock_guard<std::mutex> lock(cache_mutex);
+          cached_programs[cache_hash] = std::move(batch_prog);
+          LOGS_DEFAULT(VERBOSE) << "[precompile_model_for_batch] ✓ Stored batch " << batch_size << " in cache";
+        }
+      }
+    ));
+  }
+  
+  // Wait for all tasks to complete
+  for (auto& future : futures) {
+    future.get();
   }
   
   LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] ✓ Precompiled " 
