@@ -157,7 +157,8 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
       external_alloc_{info.external_alloc},
       external_free_{info.external_free},
       external_empty_cache_{info.external_empty_cache},
-      max_dynamic_batch_{info.max_dynamic_batch} {
+      max_dynamic_batch_{info.max_dynamic_batch},
+      optimized_batch_{info.optimized_batch} {
   InitProviderOrtApi();
 
   // Set GPU device to be used and read device properties for feature usage.
@@ -182,6 +183,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   GET_ENV_STRING(migraphx_env_vars::kModelCachePath, model_cache_path_);
   GET_ENV_BOOL(migraphx_env_vars::kDumpModelOps, dump_model_ops_);
   GET_ENV_BOOL(migraphx_env_vars::kExhaustiveTune, exhaustive_tune_);
+  GET_ENV(migraphx_env_vars::kOptimizedBatch, optimized_batch_);
 
   // Verify configuration correctness and adjust accordingly.
 
@@ -241,7 +243,8 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
                         << "\n int8_calibration_cache_available: " << int8_calibration_cache_available_
                         << "\n " << migraphx_provider_option::kInt8UseNativeCalibTable << ": " << int8_use_native_calibration_table_
                         << "\n " << migraphx_provider_option::kModelCacheDir << ": " << model_cache_path_
-                        << "\n " << migraphx_provider_option::kModelMaxDynamicBatch << ": " << max_dynamic_batch_;
+                        << "\n " << migraphx_provider_option::kModelMaxDynamicBatch << ": " << max_dynamic_batch_
+                        << "\n " << migraphx_provider_option::kModelOptimizedBatch << ": " << optimized_batch_;
 }
 
 std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators() {
@@ -1214,37 +1217,74 @@ void save_compiled_model(const migraphx::program& prog, const std::filesystem::p
   }
 }
 
-// Generate a vector of power-of-2 batch sizes from 1 up to the nearest power of 2 >= max_batch_size
-// E.g., max_batch_size=100 returns {1, 2, 4, 8, 16, 32, 64, 128}
-static std::vector<std::size_t> generate_power_of_two_batch_sizes(std::size_t max_batch_size) {
+// Generate a vector of power-of-2 batch sizes from min_batch_size up to the nearest power of 2 >= max_batch_size
+// E.g., max_batch_size=100, min_batch_size=0 returns {1, 2, 4, 8, 16, 32, 64, 128}
+// E.g., max_batch_size=100, min_batch_size=8 returns {8, 16, 32, 64, 128}
+// E.g., max_batch_size=0, min_batch_size=8 returns {8} (single optimized batch)
+static std::vector<std::size_t> generate_power_of_two_batch_sizes(std::size_t max_batch_size, std::size_t min_batch_size = 0) {
   std::vector<std::size_t> batch_sizes;
+  
+  // Case 1: Only optimized_batch set (max_batch_size == 0, min_batch_size > 0)
+  // -> Generate single batch size at min_batch_size
+  if (max_batch_size == 0 && min_batch_size > 0) {
+    batch_sizes.push_back(min_batch_size);
+    return batch_sizes;
+  }
+  
+  // Case 2: Neither set -> return empty
   if (max_batch_size == 0) {
     return batch_sizes;
   }
   
+  // Case 3: Both set or only max set
   // Find the nearest power of 2 >= max_batch_size
   std::size_t target = 1;
   while (target < max_batch_size) {
     target *= 2;
   }
   
-  // Generate all powers of 2 up to target
-  for (std::size_t bs = 1; bs <= target; bs *= 2) {
+  // Find the starting power of 2 (>= min_batch_size, or 1 if min_batch_size is 0)
+  std::size_t start = 1;
+  if (min_batch_size > 0) {
+    // Round min_batch_size UP to nearest power of 2
+    start = 1;
+    while (start < min_batch_size) {
+      start *= 2;
+    }
+  }
+  
+  // Generate powers of 2 from start to target
+  for (std::size_t bs = start; bs <= target; bs *= 2) {
     batch_sizes.push_back(bs);
   }
   return batch_sizes;
 }
 
-// Find the smallest power-of-two batch size that is >= the requested batch size
-// Returns 0 if no suitable batch size found in the list
+// Find the smallest batch size that can handle the requested batch size
+// If requested_batch is smaller than all compiled batches, returns the smallest compiled batch
+// (will use padding to reach that size, and slicing to extract results)
+// Returns 0 if the list is empty
 static std::size_t find_nearest_power_of_two_batch(std::size_t requested_batch, 
                                                     const std::vector<std::size_t>& power_of_two_batches) {
+  if (power_of_two_batches.empty()) {
+    return 0;
+  }
+  
+  // If requested is smaller than smallest compiled batch, use smallest (requires padding)
+  if (requested_batch < power_of_two_batches.front()) {
+    return power_of_two_batches.front();
+  }
+  
+  // Find smallest batch >= requested
   for (const auto& bs : power_of_two_batches) {
     if (bs >= requested_batch) {
       return bs;
     }
   }
-  return 0;  // Not found - should not happen if list is properly generated
+  
+  // If requested is larger than all compiled batches, return largest
+  // (this shouldn't happen in normal use when max_dynamic_batch is configured correctly)
+  return power_of_two_batches.back();
 }
 
 // Pad input tensor data to a larger batch size
@@ -3806,7 +3846,8 @@ static inline bool handle_precompilation_decision(
     const std::filesystem::path& model_cache_path,
     const std::string& mxr_filename_prefix,
     std::unordered_map<std::string, migraphx::program>& cached_programs,
-    std::size_t max_dynamic_batch)
+    std::size_t max_dynamic_batch,
+    std::size_t optimized_batch)
 {
   // ═══════════════════════════════════════════════════════════════════════════
   // PRECOMPILATION: Compile models during Compile() phase instead of compute_func()
@@ -3814,12 +3855,16 @@ static inline bool handle_precompilation_decision(
   // 
   // Precompilation rules:
   // 1. max_dynamic_batch > 0 AND all non-batch dims are concrete:
-  //    -> Precompile all power-of-two batch models (symbolic batch dim is OK)
+  //    -> Precompile power-of-two batch models from optimized_batch to max_dynamic_batch
+  //    -> If optimized_batch > 0, batch sizes < optimized_batch use padding/slicing
   // 2. max_dynamic_batch > 0 AND some non-batch dims are symbolic:
   //    -> Defer to runtime (cannot precompile without concrete non-batch shapes)
-  // 3. max_dynamic_batch == 0 AND all dims are concrete:
+  // 3. max_dynamic_batch == 0 AND optimized_batch > 0 AND all non-batch dims concrete:
+  //    -> Precompile single model at optimized_batch size
+  //    -> Enable padding/slicing for smaller batches
+  // 4. max_dynamic_batch == 0 AND optimized_batch == 0 AND all dims are concrete:
   //    -> Precompile static model with concrete shapes
-  // 4. max_dynamic_batch == 0 AND some dims are symbolic:
+  // 5. max_dynamic_batch == 0 AND some dims are symbolic:
   //    -> Defer to runtime (cannot precompile with symbolic dimensions)
   //
   // IMPORTANT: We do NOT default symbolic dimensions to any value.
@@ -3829,6 +3874,7 @@ static inline bool handle_precompilation_decision(
   LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ════════════════════════════════════════════════════";
   LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Starting precompilation decision for node '" << node_name << "'";
   LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] max_dynamic_batch = " << max_dynamic_batch;
+  LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] optimized_batch = " << optimized_batch;
   LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Number of inputs: " << input_names.size();
   LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Number of input tensors: " << input_tensor.size();
   LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Number of initializers: " << initializers.size();
@@ -3837,8 +3883,10 @@ static inline bool handle_precompilation_decision(
   bool only_dynamic_batch = has_only_dynamic_batch_dimension(input_names, input_tensor, initializers);
   LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] only_dynamic_batch = " << (only_dynamic_batch ? "true" : "false");
   
+  // Case 1 & 2: max_dynamic_batch > 0 (dynamic batch mode)
   if (max_dynamic_batch > 0) {
-    LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Mode: DYNAMIC BATCH (max_dynamic_batch=" << max_dynamic_batch << ")";
+    LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Mode: DYNAMIC BATCH (max_dynamic_batch=" << max_dynamic_batch 
+                          << ", optimized_batch=" << optimized_batch << ")";
     
     // Dynamic batch mode - try to precompile if all non-batch dimensions are concrete
     if (only_dynamic_batch) {
@@ -3853,8 +3901,9 @@ static inline bool handle_precompilation_decision(
       
       if (shapes_valid) {
         
-        // All non-batch dimensions are concrete - precompile all power-of-two batch models
-        auto power_of_two_batch_sizes = generate_power_of_two_batch_sizes(max_dynamic_batch);
+        // All non-batch dimensions are concrete - precompile power-of-two batch models
+        // Use optimized_batch as lower bound if set
+        auto power_of_two_batch_sizes = generate_power_of_two_batch_sizes(max_dynamic_batch, optimized_batch);
         
         std::ostringstream batch_ss;
         batch_ss << "[";
@@ -3864,6 +3913,10 @@ static inline bool handle_precompilation_decision(
         }
         batch_ss << "]";
         LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Power-of-two batch sizes to compile: " << batch_ss.str();
+        if (optimized_batch > 0) {
+          LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Batch sizes < " << optimized_batch 
+                                << " will use padding/slicing with smallest compiled batch";
+        }
         LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] >>> STARTING DYNAMIC BATCH PRECOMPILATION <<<";
         
         precompile_all_dynamic_batch_models(
@@ -3908,8 +3961,71 @@ static inline bool handle_precompilation_decision(
       LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ════════════════════════════════════════════════════";
       return true;  // Defer to runtime
     }
-  } else {
-    LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Mode: STATIC (max_dynamic_batch=0)";
+  } 
+  // Case 3: optimized_batch only (max_dynamic_batch == 0, optimized_batch > 0)
+  else if (optimized_batch > 0) {
+    LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Mode: OPTIMIZED BATCH ONLY (optimized_batch=" << optimized_batch << ")";
+    
+    if (only_dynamic_batch) {
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Model has dynamic batch - attempting to extract base shapes";
+      
+      auto [shapes_valid, ordered_names, base_shapes] = extract_base_shapes_from_graph(
+          input_names, input_tensor, initializers, input_name_index);
+      
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] extract_base_shapes_from_graph result: shapes_valid=" 
+                            << (shapes_valid ? "true" : "false");
+      
+      if (shapes_valid) {
+        // Compile single model at optimized_batch size
+        auto power_of_two_batch_sizes = generate_power_of_two_batch_sizes(0, optimized_batch);
+        
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Compiling single model at batch size " << optimized_batch;
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Smaller batches will use padding, results will be sliced";
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] >>> STARTING OPTIMIZED BATCH PRECOMPILATION <<<";
+        
+        precompile_all_dynamic_batch_models(
+            power_of_two_batch_sizes,
+            ordered_names,
+            base_shapes,
+            onnx_string_buffer,
+            options,
+            t,
+            fp16_enable,
+            bf16_enable,
+            int8_enable,
+            fp8_enable,
+            int8_calibration_cache_available,
+            dynamic_range_map,
+            exhaustive_tune,
+            model_path,
+            model_cache_path,
+            mxr_filename_prefix,
+            cached_programs);
+        
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ✓✓✓ Optimized batch precompilation COMPLETE for node '" 
+                              << node_name << "'";
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] defer_compilation set to FALSE";
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] cached_programs size: " << cached_programs.size();
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ════════════════════════════════════════════════════";
+        return false;  // No need to defer
+      } else {
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ✗ CANNOT PRECOMPILE: Non-batch dimensions contain symbolic values";
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Deferring compilation to runtime for node '" << node_name << "'";
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] defer_compilation set to TRUE";
+        LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ════════════════════════════════════════════════════";
+        return true;
+      }
+    } else {
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ✗ CANNOT PRECOMPILE: Model has non-batch dynamic dimensions";
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Deferring compilation to runtime for node '" << node_name << "'";
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] defer_compilation set to TRUE";
+      LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ════════════════════════════════════════════════════";
+      return true;
+    }
+  }
+  // Case 4 & 5: Static model (max_dynamic_batch == 0, optimized_batch == 0)
+  else {
+    LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] Mode: STATIC (max_dynamic_batch=0, optimized_batch=0)";
     
     // Static model (max_dynamic_batch == 0) - only precompile if ALL dimensions are concrete
     // Check if any dimension is symbolic
@@ -4052,7 +4168,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         model_cache_path_,
         mxr_filename_prefix,
         cached_programs_[fused_node.Name()],
-        max_dynamic_batch_);
+        max_dynamic_batch_,
+        optimized_batch_);
 
     // Create program object (may be empty if precompiled programs are in cache)
     migraphx::program prog;
@@ -4070,16 +4187,25 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_mu_,
             map_defer_compilation_[context->node_name], fp16_enable_, bf16_enable_, fp8_enable_, int8_enable_,
             int8_calibration_cache_available_, dynamic_range_map_,
-            model_cache_path_.string(), dump_model_ops_, exhaustive_tune_, max_dynamic_batch_,
+            model_cache_path_.string(), dump_model_ops_, exhaustive_tune_, max_dynamic_batch_, optimized_batch_,
             std::ref(cached_programs_[context->node_name])};
       
-      // Initialize dynamic batch support if max_dynamic_batch > 0
-      if (max_dynamic_batch_ > 0) {
+      // Initialize dynamic batch support if max_dynamic_batch > 0 OR optimized_batch > 0
+      if (max_dynamic_batch_ > 0 || optimized_batch_ > 0) {
         p->has_dynamic_batch = true;
-        p->power_of_two_batch_sizes = generate_power_of_two_batch_sizes(max_dynamic_batch_);
+        p->power_of_two_batch_sizes = generate_power_of_two_batch_sizes(max_dynamic_batch_, optimized_batch_);
+        
+        // Set min_batch_size for runtime padding logic
+        // This is the smallest batch we have a compiled model for
+        if (!p->power_of_two_batch_sizes.empty()) {
+          p->min_batch_size = p->power_of_two_batch_sizes.front();
+        }
+        
         LOGS_DEFAULT(VERBOSE) << "[Compile][CREATE_STATE] Dynamic batch enabled for node '" << context->node_name 
                               << "' with max_dynamic_batch=" << max_dynamic_batch_
-                              << ", generated " << p->power_of_two_batch_sizes.size() << " power-of-two batch sizes";
+                              << ", optimized_batch=" << optimized_batch_
+                              << ", generated " << p->power_of_two_batch_sizes.size() << " batch sizes";
+        LOGS_DEFAULT(VERBOSE) << "[Compile][CREATE_STATE] min_batch_size (for padding)=" << p->min_batch_size;
         LOGS_DEFAULT(VERBOSE) << "[Compile][CREATE_STATE] defer_compilation=" << p->defer_compilation;
       } else {
         LOGS_DEFAULT(VERBOSE) << "[Compile][CREATE_STATE] Static model mode for node '" << context->node_name << "'";

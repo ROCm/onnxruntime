@@ -36,6 +36,7 @@ constexpr auto kINT8UseNativeMIGraphXCalibrationTable = "ORT_MIGRAPHX_INT8_USE_N
 constexpr auto kExhaustiveTune = "ORT_MIGRAPHX_EXHAUSTIVE_TUNE"sv;
 constexpr auto kModelCachePath = "ORT_MIGRAPHX_MODEL_CACHE_PATH"sv;
 constexpr auto kModelMaxDynamicBatch = "ORT_MIGRAPHX_MAX_DYNAMIC_BATCH"sv;
+constexpr auto kOptimizedBatch = "ORT_MIGRAPHX_OPTIMIZED_BATCH"sv;
 }  // namespace migraphx_env_vars
 
 // Tracks which dimensions are symbolic for a given input
@@ -66,12 +67,16 @@ struct MIGraphXFuncState {
   bool dump_model_ops = false;
   bool exhaustive_tune = false;
   size_t max_dynamic_batch;
+  size_t optimized_batch;
   // Reference to the cached programs map for this node (keyed by input shape hash)
   std::optional<std::reference_wrapper<std::unordered_map<std::string, migraphx::program>>> cached_programs_ref = std::nullopt;
   
   // Dynamic batch support
   bool has_dynamic_batch = false;
   std::vector<std::size_t> power_of_two_batch_sizes;
+  
+  // Optimized batch support - when set, batch sizes below this use padding/slicing
+  std::size_t min_batch_size = 0;  // The effective minimum batch size for padding
   
   // Padded input buffers for dynamic batching (allocated on GPU)
   struct PaddedBuffer {
@@ -206,7 +211,8 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
         {std::string{migraphx_provider_option::kGpuExternalFree}, MakeStringWithClassicLocale(external_free_)},
         {std::string{migraphx_provider_option::kGpuExternalEmptyCache}, MakeStringWithClassicLocale(external_empty_cache_)},
         {std::string{migraphx_provider_option::kModelCacheDir}, MakeStringWithClassicLocale(model_cache_path_)},
-        {std::string{migraphx_provider_option::kModelMaxDynamicBatch}, MakeStringWithClassicLocale(max_dynamic_batch_)}};
+        {std::string{migraphx_provider_option::kModelMaxDynamicBatch}, MakeStringWithClassicLocale(max_dynamic_batch_)},
+        {std::string{migraphx_provider_option::kModelOptimizedBatch}, MakeStringWithClassicLocale(optimized_batch_)}};
    }
 
  private:
@@ -247,6 +253,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   void* external_empty_cache_{nullptr};
   bool first_start_ = true;
   size_t max_dynamic_batch_{0};
+  size_t optimized_batch_{0};
 };
 
 }; // namespace onnxruntime
