@@ -2350,6 +2350,13 @@ static bool execute_ultra_fast_path(
     return false;
   }
 
+  // Ultra-fast path doesn't support output slicing because cached_output_ort_shapes
+  // contains padded shapes, not sliced shapes. Fall back to fast path which handles
+  // slicing properly via temp output buffers.
+  if (padded_batch_size > 0 && original_batch_size > 0 && padded_batch_size > original_batch_size) {
+    return false;
+  }
+
   // Shapes unchanged (or compatible with padding) - rebind pointers and run directly
   auto& m = mgx_state->cached_prog_params.value();
   auto& prog = mgx_state->prog;
