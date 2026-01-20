@@ -3475,7 +3475,8 @@ static inline std::string precompile_model_for_batch(
 
 // Precompile all power-of-two batch models during Compile() phase
 // This moves compilation from compute_func() to initialization time
-// Uses parallel loading to speed up cache loading when multiple batch sizes are needed
+// Uses parallel loading to speed up cache loading, but serializes compilation
+// to avoid thread-safety issues in MIGraphX compile()
 static inline void precompile_all_dynamic_batch_models(
     const std::vector<std::size_t>& power_of_two_batch_sizes,
     const std::vector<std::string>& input_names,
@@ -3495,87 +3496,157 @@ static inline void precompile_all_dynamic_batch_models(
     const std::string& mxr_filename_prefix,
     std::unordered_map<std::string, migraphx::program>& cached_programs)
 {
-  LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Precompiling " 
-                     << power_of_two_batch_sizes.size() << " power-of-two batch models in parallel...";
+  LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Processing " 
+                     << power_of_two_batch_sizes.size() << " power-of-two batch models...";
   
-  // Mutex to protect shared cached_programs map
+  // Structure to hold batch info for loading/compiling
+  struct BatchInfo {
+    std::size_t batch_size;
+    std::string cache_hash;
+    std::filesystem::path cache_file;
+  };
+  
+  // Build batch info for all batch sizes
+  std::vector<BatchInfo> batch_infos;
+  for (const auto& batch_size : power_of_two_batch_sizes) {
+    BatchInfo info;
+    info.batch_size = batch_size;
+    
+    // Build cache key for this batch size
+    std::vector<std::int64_t> batch_shape_key;
+    for (std::size_t i = 0; i < input_names.size(); ++i) {
+      batch_shape_key.push_back(static_cast<std::int64_t>(batch_size));
+      batch_shape_key.insert(batch_shape_key.end(), 
+                            all_input_base_shapes[i].begin(), 
+                            all_input_base_shapes[i].end());
+    }
+    info.cache_hash = make_hash(batch_shape_key);
+    
+    // Build disk cache file path
+    if (!model_cache_path.empty()) {
+      info.cache_file = model_cache_path / (mxr_filename_prefix + info.cache_hash + ".mxr");
+    }
+    
+    // Skip if already in memory cache
+    if (cached_programs.find(info.cache_hash) != cached_programs.end()) {
+      LOGS_DEFAULT(VERBOSE) << "[precompile_all_dynamic_batch_models] Batch " << batch_size 
+                            << " already in memory cache, skipping";
+      continue;
+    }
+    
+    batch_infos.push_back(info);
+  }
+  
+  if (batch_infos.empty()) {
+    LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] All models already cached in memory";
+    return;
+  }
+  
+  // ============================================================================
+  // PHASE 1: Parallel loading from disk cache
+  // ============================================================================
+  LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Phase 1: Attempting parallel load from disk cache...";
+  
+  // Mutex to protect shared state
   std::mutex cache_mutex;
   
-  // Launch async tasks for each batch size
-  std::vector<std::future<void>> futures;
+  // Track which batch sizes need compilation (cache misses)
+  std::vector<BatchInfo> needs_compilation;
+  std::mutex compile_list_mutex;
   
-  for (const auto& batch_size : power_of_two_batch_sizes) {
-    futures.push_back(std::async(std::launch::async, 
-      [&, batch_size]() {
-        // Build cache key for this batch size
-        std::vector<std::int64_t> batch_shape_key;
-        for (std::size_t i = 0; i < input_names.size(); ++i) {
-          batch_shape_key.push_back(static_cast<std::int64_t>(batch_size));
-          batch_shape_key.insert(batch_shape_key.end(), 
-                                all_input_base_shapes[i].begin(), 
-                                all_input_base_shapes[i].end());
-        }
-        auto cache_hash = make_hash(batch_shape_key);
+  // Launch async tasks for parallel loading
+  std::vector<std::future<void>> load_futures;
+  
+  for (const auto& info : batch_infos) {
+    load_futures.push_back(std::async(std::launch::async, 
+      [&, info]() {
+        LOGS_DEFAULT(VERBOSE) << "[precompile_all_dynamic_batch_models] Trying to load batch " 
+                              << info.batch_size << " from disk...";
         
-        LOGS_DEFAULT(VERBOSE) << "[precompile_model_for_batch] Batch " << batch_size << " -> hash: " << cache_hash;
+        migraphx::program prog;
+        bool loaded = load_precompiled_model(prog, info.cache_file);
         
-        // Check if already cached in memory (thread-safe check)
-        {
+        if (loaded) {
+          // Cache hit - store in memory cache
           std::lock_guard<std::mutex> lock(cache_mutex);
-          if (cached_programs.find(cache_hash) != cached_programs.end()) {
-            LOGS_DEFAULT(VERBOSE) << "[precompile_model_for_batch] ✓ Batch " << batch_size << " already cached";
-            return;
-          }
-        }
-        
-        // Build disk cache file path
-        std::filesystem::path batch_cache_file;
-        if (!model_cache_path.empty()) {
-          batch_cache_file = model_cache_path / (mxr_filename_prefix + cache_hash + ".mxr");
-        }
-        
-        LOGS_DEFAULT(VERBOSE) << "[precompile_model_for_batch] Compiling/loading batch " << batch_size << "...";
-        
-        // Create thread-local copy of options to avoid race conditions
-        migraphx::onnx_options local_options = options;
-        
-        // Load or compile the model (most time-consuming part)
-        migraphx::program batch_prog = load_or_compile_model(
-            batch_cache_file,
-            onnx_string,
-            local_options,  // Use thread-local copy
-            t,
-            fp16_enable,
-            bf16_enable,
-            int8_enable,
-            fp8_enable,
-            int8_calibration_cache_available,
-            dynamic_range_map,  // Read-only access
-            exhaustive_tune,
-            model_path,
-            nullptr,  // ctx not needed for precompilation
-            nullptr,  // map_input_name_index not needed
-            input_names,
-            all_input_base_shapes,
-            batch_size);
-        
-        // Store in memory cache (thread-safe insertion)
-        {
-          std::lock_guard<std::mutex> lock(cache_mutex);
-          cached_programs[cache_hash] = std::move(batch_prog);
-          LOGS_DEFAULT(VERBOSE) << "[precompile_model_for_batch] ✓ Stored batch " << batch_size << " in cache";
+          cached_programs[info.cache_hash] = std::move(prog);
+          LOGS_DEFAULT(VERBOSE) << "[precompile_all_dynamic_batch_models] ✓ Loaded batch " 
+                                << info.batch_size << " from disk cache";
+        } else {
+          // Cache miss - add to compilation list
+          std::lock_guard<std::mutex> lock(compile_list_mutex);
+          needs_compilation.push_back(info);
+          LOGS_DEFAULT(VERBOSE) << "[precompile_all_dynamic_batch_models] ✗ Batch " 
+                                << info.batch_size << " not in disk cache, needs compilation";
         }
       }
     ));
   }
   
-  // Wait for all tasks to complete
-  for (auto& future : futures) {
+  // Wait for all loading tasks to complete
+  for (auto& future : load_futures) {
     future.get();
   }
   
-  LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] ✓ Precompiled " 
-                     << cached_programs.size() << " models";
+  std::size_t loaded_count = batch_infos.size() - needs_compilation.size();
+  LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Phase 1 complete: " 
+                     << loaded_count << " loaded from cache, " 
+                     << needs_compilation.size() << " need compilation";
+  
+  // ============================================================================
+  // PHASE 2: Sequential compilation for cache misses
+  // ============================================================================
+  if (!needs_compilation.empty()) {
+    LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Phase 2: Compiling " 
+                       << needs_compilation.size() << " models sequentially...";
+    
+    // Sort by batch size for consistent ordering
+    std::sort(needs_compilation.begin(), needs_compilation.end(),
+              [](const BatchInfo& a, const BatchInfo& b) { return a.batch_size < b.batch_size; });
+    
+    for (const auto& info : needs_compilation) {
+      LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Compiling batch size " 
+                         << info.batch_size << "...";
+      
+      // Compile the model (this is the thread-unsafe part that must be serialized)
+      migraphx::program batch_prog = CompileProgramWithBatch(
+          onnx_string,
+          options,
+          t,
+          fp16_enable,
+          bf16_enable,
+          int8_enable,
+          fp8_enable,
+          int8_calibration_cache_available,
+          dynamic_range_map,
+          exhaustive_tune,
+          model_path,
+          nullptr,  // ctx not needed for precompilation
+          nullptr,  // map_input_name_index not needed
+          input_names,
+          all_input_base_shapes,
+          info.batch_size);
+      
+      LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] ✓ Compiled batch size " 
+                         << info.batch_size;
+      
+      // Save to disk cache
+      save_compiled_model(batch_prog, info.cache_file);
+      if (!info.cache_file.empty()) {
+        LOGS_DEFAULT(VERBOSE) << "[precompile_all_dynamic_batch_models] Saved to disk: " 
+                              << info.cache_file.string();
+      }
+      
+      // Store in memory cache
+      cached_programs[info.cache_hash] = std::move(batch_prog);
+    }
+    
+    LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Phase 2 complete: " 
+                       << needs_compilation.size() << " models compiled";
+  }
+  
+  LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] ✓ All " 
+                     << cached_programs.size() << " models ready";
 }
 
 // Precompile static model (no dynamic batching) during Compile() phase
