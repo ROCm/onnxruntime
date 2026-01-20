@@ -47,6 +47,7 @@ void MemoryInfo::Init(const SequentialExecutionPlan* execution_plan,
     tensor_alloc_info_map_[value_idx] = std::move(mem_info);
     tensors_memory_info_map_[mem_info.location];
   }
+  return;
 }
 
 // Record the planned memory information

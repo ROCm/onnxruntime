@@ -127,20 +127,19 @@ static common::Status DeserializeTensorProto(const Env& env, const std::basic_st
       if (utils::HasString(tensor_proto)) {
         return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "string tensor is not supported for copying between allocators");
       }
+
       // deserialize to CPU first for non-CPU allocator, then copy to device
       // for external initializer load on non-CPU device:
       // 1. allocate memory on device - tensor
       // 2. load initializer into CPU memory - deserialized_value,
       //    we will use mmap so no need to allocate memory on CPU in advance
       // 3. copy tensor from CPU to device - deserialized_value -> tensor -> ort_value
-#ifdef USE_MIGRAPHX
       if (device.Type() == OrtDevice::GPU && device.Vendor() == OrtDevice::VendorIds::AMD) {
         ORT_RETURN_IF_ERROR(utils::GetExtDataFromTensorProto(env, proto_path, tensor_proto,
                                                              ort_value,
                                                              &prepacked_for_graph));
         return common::Status::OK();
       }
-#endif
       ORT_RETURN_IF_ERROR(AllocateTensor(memory_buffer, tensor, type, tensor_shape, use_device_allocator_for_initializers, alloc));
 
       OrtValue deserialized_value;

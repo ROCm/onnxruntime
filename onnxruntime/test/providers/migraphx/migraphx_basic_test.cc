@@ -190,7 +190,6 @@ TEST(MIGraphXExecutionProviderTest, canEvalArgument) {
 }
 
 #if defined(WIN32)
-
 static bool SessionHasEp(Ort::Session& session, const char* ep_name) {
   // Access the underlying InferenceSession.
   const OrtSession* ort_session = session;

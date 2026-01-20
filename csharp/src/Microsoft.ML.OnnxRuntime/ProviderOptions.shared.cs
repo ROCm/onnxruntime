@@ -290,6 +290,7 @@ namespace Microsoft.ML.OnnxRuntime
         #endregion
     }
 
+
     /// <summary>
     /// This helper class contains methods to handle values of provider options
     /// </summary>
