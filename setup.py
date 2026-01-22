@@ -470,6 +470,7 @@ else:
     if nightly_build:
         libs.extend(["onnxruntime_pywrapper.dll"])
     migraphx_deps = [
+        "amdhip64_7.dll",
         "amd_comgr0602.dll",
         "amd_comgr0604.dll",
         "amd_comgr0700.dll",
@@ -489,8 +490,7 @@ else:
         "migraphx_device.dll",
         "migraphx_gpu.dll",
         "migraphx_onnx.dll",
-        "migraphx_tf.dll",
-        "amdhip64_7.dll"
+        "migraphx_tf.dll"
     ]
     libs.extend(migraphx_deps)
     # NV TensorRT RTX Libs
