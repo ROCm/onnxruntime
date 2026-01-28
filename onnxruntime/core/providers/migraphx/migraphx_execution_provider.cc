@@ -1703,12 +1703,15 @@ migraphx::program CompileProgramWithBatch(
     const std::unordered_map<std::string, std::size_t>* map_input_name_index = nullptr,
     const std::vector<std::string>& input_names = {},
     const std::vector<std::vector<std::int64_t>>& all_input_base_shapes = {},
-    size_t batch_size = 0)
+    size_t batch_size = 0,
+    size_t max_dynamic_batch = 0)
 {
   LOGS_DEFAULT(VERBOSE) << "[CompileBatch] Starting compilation";
 
   // Set input shapes with the specified batch size for ALL inputs (if provided)
-  if (!input_names.empty() && !all_input_base_shapes.empty() && batch_size > 0) {
+  // Only do this in static batch mode (max_dynamic_batch == 0)
+  // In dynamic batch mode, let the precompilation logic handle shapes
+  if (max_dynamic_batch == 0 && !input_names.empty() && !all_input_base_shapes.empty() && batch_size > 0) {
     LOGS_DEFAULT(VERBOSE) << "[CompileBatch] Setting batch size " << batch_size << " for " << input_names.size() << " inputs";
     for (size_t i = 0; i < input_names.size() && i < all_input_base_shapes.size(); ++i) {
       std::vector<std::size_t> shape_with_batch;
@@ -1728,7 +1731,12 @@ migraphx::program CompileProgramWithBatch(
       LOGS_DEFAULT(VERBOSE) << "[CompileBatch] Input '" << input_names[i] << "' shape: " << ss.str();
     }
   } else {
-    LOGS_DEFAULT(VERBOSE) << "[CompileBatch] Using shapes already configured in options";
+    if (max_dynamic_batch > 0) {
+      LOGS_DEFAULT(VERBOSE) << "[CompileBatch] Dynamic batch mode (max=" << max_dynamic_batch 
+                            << ") - skipping shape override, using precompiled shapes";
+    } else {
+      LOGS_DEFAULT(VERBOSE) << "[CompileBatch] Using shapes already configured in options";
+    }
   }
 
 #ifndef ENABLE_TRAINING_CORE
@@ -1799,7 +1807,8 @@ static migraphx::program load_or_compile_model(
     const std::unordered_map<std::string, std::size_t>* map_input_name_index = nullptr,
     const std::vector<std::string>& input_names = {},
     const std::vector<std::vector<std::int64_t>>& all_input_base_shapes = {},
-    size_t batch_size = 0)
+    size_t batch_size = 0,
+    size_t max_dynamic_batch = 0)
 {
   migraphx::program prog;
 
@@ -1832,7 +1841,8 @@ static migraphx::program load_or_compile_model(
         map_input_name_index,
         input_names,
         all_input_base_shapes,
-        batch_size);
+        batch_size,
+        max_dynamic_batch);
 
     LOGS_DEFAULT(VERBOSE) << "[load_or_compile_model] Compilation finished";
     
@@ -2061,7 +2071,11 @@ static void handle_input_shape_mismatch(
       mgx_state->exhaustive_tune,
       mgx_state->model_cache_dir,
       &ctx,
-      &map_input_name_index);
+      &map_input_name_index,
+      {},  // input_names
+      {},  // all_input_base_shapes  
+      0,   // batch_size
+      mgx_state->max_dynamic_batch);
 
   // Store the compiled/loaded program in the in-memory cached_programs cache
   if (mgx_state->cached_programs_ref.has_value()) {
@@ -2884,7 +2898,8 @@ static void compile_dynamic_batch_models(
         nullptr,  // map_input_name_index not needed
         input_names,
         all_input_base_shapes,
-        batch_size);
+        batch_size,
+        mgx_state->max_dynamic_batch);
     
     // Store in cache
     if (mgx_state->cached_programs_ref.has_value()) {
@@ -3484,7 +3499,8 @@ static inline std::string precompile_model_for_batch(
       nullptr,  // map_input_name_index not needed
       input_names,
       all_input_base_shapes,
-      batch_size);
+      batch_size,
+      0);  // max_dynamic_batch - unused in this dead code path
   
   // Store in memory cache
   cached_programs[cache_hash] = std::move(batch_prog);
@@ -3514,7 +3530,8 @@ static inline void precompile_all_dynamic_batch_models(
     const std::filesystem::path& model_path,
     const std::filesystem::path& model_cache_path,
     const std::string& mxr_filename_prefix,
-    std::unordered_map<std::string, migraphx::program>& cached_programs)
+    std::unordered_map<std::string, migraphx::program>& cached_programs,
+    size_t max_dynamic_batch)
 {
   LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Processing " 
                      << power_of_two_batch_sizes.size() << " power-of-two batch models...";
@@ -3645,7 +3662,8 @@ static inline void precompile_all_dynamic_batch_models(
           nullptr,  // map_input_name_index not needed
           input_names,
           all_input_base_shapes,
-          info.batch_size);
+          info.batch_size,
+          max_dynamic_batch);
       
       LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] ✓ Compiled batch size " 
                          << info.batch_size;
@@ -3797,7 +3815,8 @@ static inline void precompile_static_model(
       nullptr,
       ordered_names,
       base_shapes,
-      static_cast<std::size_t>(batch_size));
+      static_cast<std::size_t>(batch_size),
+      0);  // max_dynamic_batch = 0 for static precompilation
   
   // Store in cache
   cached_programs[cache_hash] = std::move(prog);
@@ -3903,7 +3922,8 @@ static inline bool handle_precompilation_decision(
             model_path,
             model_cache_path,
             mxr_filename_prefix,
-            cached_programs);
+            cached_programs,
+            max_dynamic_batch);
         
         // Precompilation complete - disable deferred compilation
         LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ✓✓✓ Dynamic batch precompilation COMPLETE for node '" 
