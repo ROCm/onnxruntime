@@ -443,10 +443,6 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
         (input_type->tensor_type().elem_type() != ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT8)) {
       return true;
     }
-  } else if (optype == "NonZero") {
-    if (!canEvalNodeArgument(graph_viewer, node, {0}, input_nodes)) {
-      return true;
-    }
   } else if (optype == "OneHot") {
     if (!canEvalNodeArgument(graph_viewer, node, {1}, input_nodes)) {
       return true;
@@ -472,13 +468,6 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
       return true;
     }
 
-  } else if (optype == "Range") {
-    auto arg_num = node->InputDefs().size();
-    std::vector<std::size_t> vec(arg_num);
-    std::iota(vec.begin(), vec.end(), 0);
-    if (!canEvalNodeArgument(graph_viewer, node, vec, input_nodes)) {
-      return true;
-    }
   } else if (optype == "Reshape") {
     const auto& args = node->InputDefs();
     if (args.size() == 2) {
