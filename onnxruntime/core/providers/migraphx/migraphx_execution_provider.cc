@@ -240,12 +240,12 @@ std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators()
       [](OrtDevice::DeviceId device_id) {
         return std::make_unique<MIGraphXAllocator>(device_id, CUDA);
       },
-      GetDeviceId());
+      static_cast<OrtDevice::DeviceId>(GetDeviceId()));
   const AllocatorCreationInfo pinned_allocator_info(
       [](OrtDevice::DeviceId device_id) {
         return std::make_unique<MIGraphXPinnedAllocator>(device_id, CUDA_PINNED);
       },
-      GetDeviceId());
+      static_cast<OrtDevice::DeviceId>(GetDeviceId()));
   return {CreateAllocator(default_memory_info), CreateAllocator(pinned_allocator_info)};
 }
 
@@ -360,13 +360,7 @@ static bool getMIGraphXType(ONNXTensorElementDataType type,
 }
 
 std::vector<int64_t> toVector(const ONNX_NAMESPACE::int64s& nums) {
-  std::vector<int64_t> result;
-  size_t num = nums.size();
-  for (size_t i = 0; i < num; ++i) {
-    result.push_back(nums[i]);
-  }
-
-  return result;
+  return {nums.begin(), nums.end()};
 }
 
 static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* node) {
