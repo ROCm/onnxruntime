@@ -342,7 +342,7 @@ inline std::string_view TrimRight(std::string_view sv, int (*fn)(int) = std::iss
   auto it = std::find_if(sv.rbegin(), sv.rend(), [fn](int ch) {
                 return fn(ch);
               });
-  return sv.substr(0, sv.rend() - it);
+  return sv.substr(0, it.base() - sv.begin());
 }
 
 inline std::string_view Trim(std::string_view sv, int (*fn)(int) = std::isspace) {
