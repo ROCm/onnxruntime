@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -139,6 +140,8 @@ static std::string_view GetArenaExtendStrategyName(ArenaExtendStrategy strategy)
 #define GET_ENV_STRING(variable, value) \
   GET_ENV(variable, value, value = value##env)
 
+static std::vector<std::size_t> parse_compile_batches(const std::string& spec);
+
 MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProviderInfo& info)
     : IExecutionProvider{kMIGraphXExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, OrtDevice::VendorIds::AMD, info.device_id)},
       device_id_{info.device_id},
@@ -158,7 +161,8 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
       external_free_{info.external_free},
       external_empty_cache_{info.external_empty_cache},
       max_dynamic_batch_{info.max_dynamic_batch},
-      max_compiled_models_{info.max_compiled_models} {
+      max_compiled_models_{info.max_compiled_models},
+      compile_batches_{info.compile_batches} {
   InitProviderOrtApi();
 
   // Set GPU device to be used and read device properties for feature usage.
@@ -194,6 +198,27 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   GET_ENV_BOOL(migraphx_env_vars::kDumpModelOps, dump_model_ops_);
   GET_ENV_BOOL(migraphx_env_vars::kExhaustiveTune, exhaustive_tune_);
   GET_ENV(migraphx_env_vars::kMaxCompiledModels, max_compiled_models_, max_compiled_models_ = std::stoul(max_compiled_models_env));
+  GET_ENV_STRING(migraphx_env_vars::kCompileBatches, compile_batches_);
+
+  // If compile_batches is set, auto-derive max_dynamic_batch from the spec's max value
+  if (!compile_batches_.empty()) {
+    auto explicit_sizes = parse_compile_batches(compile_batches_);
+    if (!explicit_sizes.empty()) {
+      std::size_t derived_max = explicit_sizes.back();
+      if (max_dynamic_batch_ == 0) {
+        max_dynamic_batch_ = derived_max;
+        LOGS_DEFAULT(INFO) << "[MIGraphX] compile_batches set: auto-derived max_dynamic_batch=" << derived_max;
+      } else if (max_dynamic_batch_ < derived_max) {
+        LOGS_DEFAULT(WARNING) << "[MIGraphX] compile_batches max (" << derived_max
+                              << ") exceeds max_dynamic_batch (" << max_dynamic_batch_
+                              << "). Updating max_dynamic_batch to " << derived_max;
+        max_dynamic_batch_ = derived_max;
+      }
+      LOGS_DEFAULT(INFO) << "[MIGraphX] compile_batches='" << compile_batches_
+                         << "', effective max_dynamic_batch=" << max_dynamic_batch_
+                         << ", batch count=" << explicit_sizes.size();
+    }
+  }
 
   // Verify configuration correctness and adjust accordingly.
 
@@ -253,7 +278,8 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
                         << "\n int8_calibration_cache_available: " << int8_calibration_cache_available_
                         << "\n " << migraphx_provider_option::kInt8UseNativeCalibTable << ": " << int8_use_native_calibration_table_
                         << "\n " << migraphx_provider_option::kModelCacheDir << ": " << model_cache_path_
-                        << "\n " << migraphx_provider_option::kModelMaxDynamicBatch << ": " << max_dynamic_batch_;
+                        << "\n " << migraphx_provider_option::kModelMaxDynamicBatch << ": " << max_dynamic_batch_
+                        << "\n " << migraphx_provider_option::kCompileBatches << ": " << (compile_batches_.empty() ? "(not set)" : compile_batches_);
 }
 
 std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators() {
@@ -1218,32 +1244,87 @@ static std::pair<std::vector<std::string>, std::vector<std::string>> get_io_name
 // Useful to default to EP to trigger the compile if file doesn't exist or loading fails.
 bool load_precompiled_model(migraphx::program& prog, const std::filesystem::path& path) try {
   if (!path.empty() && exists(path)) {
-    LOGS_DEFAULT(VERBOSE) << "[load_precompiled_model] Attempting to load model from disk: " << path.string();
+    auto file_sz = std::filesystem::file_size(path);
+    LOGS_DEFAULT(INFO) << "[load_precompiled_model] Loading model from disk: " << path.string()
+                       << " (file size: " << file_sz << " bytes, "
+                       << (file_sz / (1024.0 * 1024.0)) << " MB)";
     migraphx::file_options fo;
     fo.set_file_format("msgpack");
     prog = migraphx::load(path.string().c_str(), fo);
-    LOGS_DEFAULT(VERBOSE) << "[load_precompiled_model] ✓ Successfully loaded model from disk";
+    LOGS_DEFAULT(INFO) << "[load_precompiled_model] Loaded model from disk: " << path.string()
+                       << " (file size: " << file_sz << " bytes, "
+                       << (file_sz / (1024.0 * 1024.0)) << " MB)";
     return true;
   }
   LOGS_DEFAULT(VERBOSE) << "[load_precompiled_model] Cache file does not exist: " 
                         << (path.empty() ? "(no path specified)" : path.string());
   return false;
 } catch (const std::exception& e) {
-  LOGS_DEFAULT(VERBOSE) << "[load_precompiled_model] ✗ Failed to load model from disk: " << e.what();
+  LOGS_DEFAULT(WARNING) << "[load_precompiled_model] Failed to load model from disk: " << e.what();
   return false;
   } catch (...) {
-  LOGS_DEFAULT(VERBOSE) << "[load_precompiled_model] ✗ Failed to load model from disk (unknown exception)";
+  LOGS_DEFAULT(WARNING) << "[load_precompiled_model] Failed to load model from disk (unknown exception)";
   return false;
 }
 
 void save_compiled_model(const migraphx::program& prog, const std::filesystem::path& path) {
   if (!path.empty()) {
-    LOGS_DEFAULT(VERBOSE) << "[save_compiled_model] Saving compiled model to disk: " << path.string();
+    LOGS_DEFAULT(INFO) << "[save_compiled_model] Saving compiled model to disk: " << path.string();
     migraphx::file_options fo;
     fo.set_file_format("msgpack");
     save(prog, path.string().c_str(), fo);
-    LOGS_DEFAULT(VERBOSE) << "[save_compiled_model] ✓ Model saved successfully";
+    if (std::filesystem::exists(path)) {
+      auto file_sz = std::filesystem::file_size(path);
+      LOGS_DEFAULT(INFO) << "[save_compiled_model] Saved: " << path.string()
+                         << " (file size: " << file_sz << " bytes, "
+                         << (file_sz / (1024.0 * 1024.0)) << " MB)";
+    }
   }
+}
+
+// Parse compile_batches specification: a comma-separated list of explicit batch sizes.
+// Example: "1,4,8,16,32" compiles exactly those five batch sizes.
+// Values are deduplicated and sorted in ascending order.
+// At runtime the existing pad logic selects the smallest compiled batch >= the request.
+static std::vector<std::size_t> parse_compile_batches(const std::string& spec) {
+  std::vector<std::size_t> batch_sizes;
+  if (spec.empty()) return batch_sizes;
+
+  std::istringstream iss(spec);
+  std::string token;
+  while (std::getline(iss, token, ',')) {
+    if (token.empty()) continue;
+    try {
+      auto val = std::stoull(token);
+      if (val == 0) {
+        LOGS_DEFAULT(WARNING) << "[MIGraphX] compile_batches: skipping zero-valued entry";
+        continue;
+      }
+      batch_sizes.push_back(static_cast<std::size_t>(val));
+    } catch (const std::exception& e) {
+      LOGS_DEFAULT(WARNING) << "[MIGraphX] compile_batches: could not parse '" << token
+                            << "' as an integer (" << e.what() << "). Skipping.";
+    }
+  }
+
+  if (batch_sizes.empty()) {
+    LOGS_DEFAULT(WARNING) << "[MIGraphX] compile_batches: no valid batch sizes in '" << spec << "'. Ignoring.";
+    return batch_sizes;
+  }
+
+  std::sort(batch_sizes.begin(), batch_sizes.end());
+  batch_sizes.erase(std::unique(batch_sizes.begin(), batch_sizes.end()), batch_sizes.end());
+
+  std::ostringstream oss;
+  oss << "[MIGraphX] compile_batches '" << spec << "' -> [";
+  for (std::size_t i = 0; i < batch_sizes.size(); ++i) {
+    if (i > 0) oss << ", ";
+    oss << batch_sizes[i];
+  }
+  oss << "] (count=" << batch_sizes.size() << ")";
+  LOGS_DEFAULT(INFO) << oss.str();
+
+  return batch_sizes;
 }
 
 // Generate a vector of batch sizes to compile based on max_compiled_models setting
@@ -1296,28 +1377,36 @@ static std::vector<std::size_t> generate_compiled_batch_sizes(std::size_t max_ba
   return batch_sizes;
 }
 
-// Find the smallest compiled batch size >= requested_batch
-// Uses the same evenly-spaced scheme as generate_compiled_batch_sizes
-static std::size_t find_nearest_compiled_batch_size(std::size_t requested_batch,
-                                                           std::size_t max_batch_size,
-                                                           std::size_t max_compiled_models) {
-  if (max_batch_size == 0) {
-    return 0;
+// Overload: if compile_batches spec is given, use it; otherwise fall back to evenly-spaced scheme.
+static std::vector<std::size_t> generate_compiled_batch_sizes(
+    std::size_t max_batch_size, std::size_t max_compiled_models,
+    const std::string& compile_batches_spec) {
+  if (!compile_batches_spec.empty()) {
+    auto batch_sizes = parse_compile_batches(compile_batches_spec);
+    if (!batch_sizes.empty()) {
+      LOGS_DEFAULT(INFO) << "[MIGraphX] Using compile_batches specification '" << compile_batches_spec
+                         << "' (overrides max_compiled_models=" << max_compiled_models << ")";
+      return batch_sizes;
+    }
+    LOGS_DEFAULT(WARNING) << "[MIGraphX] compile_batches parse failed, falling back to evenly-spaced scheme";
   }
+  return generate_compiled_batch_sizes(max_batch_size, max_compiled_models);
+}
 
-  if (max_compiled_models == 1) {
-    return max_batch_size;
+// Find the smallest compiled batch size >= requested_batch from pre-computed vector.
+// The vector must be sorted in ascending order.
+static std::size_t find_nearest_compiled_batch_size(
+    std::size_t requested_batch,
+    const std::vector<std::size_t>& compiled_batch_sizes) {
+  if (compiled_batch_sizes.empty()) {
+    return requested_batch;
   }
-
-  // Walk the evenly-spaced batch sizes and return the first one >= requested_batch
-  std::size_t n = max_compiled_models;
-  for (std::size_t i = 0; i < n; ++i) {
-    std::size_t bs = 1 + (max_batch_size - 1) * i / (n - 1);
+  for (const auto& bs : compiled_batch_sizes) {
     if (bs >= requested_batch) {
       return bs;
     }
   }
-  return max_batch_size;
+  return compiled_batch_sizes.back();
 }
 
 // Pad input tensor data to a larger batch size
@@ -2372,7 +2461,7 @@ static bool execute_ultra_fast_path(
         if (shape[0] != last_shapes[offset]) {
           // Batch size changed - check if we can use padding
           std::size_t required_padded = find_nearest_compiled_batch_size(
-              original_batch_size, mgx_state->max_dynamic_batch, mgx_state->max_compiled_models);
+              original_batch_size, mgx_state->compiled_batch_sizes);
           
           if (required_padded != padded_batch_size) {
             shapes_match = false;
@@ -2517,8 +2606,7 @@ static bool execute_fast_path(
       if (!tensor_shape.empty()) {
         original_batch_size = static_cast<std::size_t>(tensor_shape[0]);
         padded_batch_size = find_nearest_compiled_batch_size(original_batch_size,
-                                                                    mgx_state->max_dynamic_batch,
-                                                                    mgx_state->max_compiled_models);
+                                                                    mgx_state->compiled_batch_sizes);
         needs_padding = (padded_batch_size > original_batch_size);
         LOGS_DEFAULT(VERBOSE) << "[FAST_PATH][DynamicBatch] Original batch: " << original_batch_size
                               << ", padded: " << padded_batch_size << ", needs_padding: " << needs_padding;
@@ -3020,8 +3108,7 @@ static void execute_standard_path(
       if (!tensor_shape.empty()) {
         original_batch_size = static_cast<std::size_t>(tensor_shape[0]);
         padded_batch_size = find_nearest_compiled_batch_size(original_batch_size,
-                                                                    mgx_state->max_dynamic_batch,
-                                                                    mgx_state->max_compiled_models);
+                                                                    mgx_state->compiled_batch_sizes);
         needs_padding = (padded_batch_size > original_batch_size);
         
         LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Original batch size: " << original_batch_size;
@@ -3720,7 +3807,32 @@ static inline void precompile_all_dynamic_batch_models(
                        << needs_compilation.size() << " models compiled";
   }
   
-  LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] ✓ All " 
+  // Summary: report total disk and in-memory cache sizes
+  {
+    std::size_t total_disk_bytes = 0;
+    std::size_t disk_file_count = 0;
+    for (const auto& batch_size : compiled_batch_sizes) {
+      std::vector<std::int64_t> bsk;
+      for (std::size_t i = 0; i < input_names.size(); ++i) {
+        bsk.push_back(static_cast<std::int64_t>(batch_size));
+        bsk.insert(bsk.end(), all_input_base_shapes[i].begin(), all_input_base_shapes[i].end());
+      }
+      auto hash = make_hash(bsk);
+      if (!model_cache_path.empty()) {
+        auto fpath = model_cache_path / (mxr_filename_prefix + hash + ".mxr");
+        if (std::filesystem::exists(fpath)) {
+          total_disk_bytes += std::filesystem::file_size(fpath);
+          ++disk_file_count;
+        }
+      }
+    }
+    LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] === CACHE SUMMARY ===";
+    LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] In-memory programs: " << cached_programs.size();
+    LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Disk cache files: " << disk_file_count
+                       << ", total disk size: " << total_disk_bytes << " bytes ("
+                       << (total_disk_bytes / (1024.0 * 1024.0)) << " MB)";
+  }
+  LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] All " 
                      << cached_programs.size() << " models ready";
 }
 
@@ -3882,7 +3994,8 @@ static inline bool handle_precompilation_decision(
     const std::string& mxr_filename_prefix,
     std::unordered_map<std::string, migraphx::program>& cached_programs,
     std::size_t max_dynamic_batch,
-    std::size_t max_compiled_models)
+    std::size_t max_compiled_models,
+    const std::string& compile_batches_spec)
 {
   // ═══════════════════════════════════════════════════════════════════════════
   // PRECOMPILATION: Compile models during Compile() phase instead of compute_func()
@@ -3930,7 +4043,7 @@ static inline bool handle_precompilation_decision(
       if (shapes_valid) {
         
         // All non-batch dimensions are concrete - precompile all batch models
-        auto compiled_batch_sizes = generate_compiled_batch_sizes(max_dynamic_batch, max_compiled_models);
+        auto compiled_batch_sizes = generate_compiled_batch_sizes(max_dynamic_batch, max_compiled_models, compile_batches_spec);
         
         std::ostringstream batch_ss;
         batch_ss << "[";
@@ -4129,7 +4242,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         mxr_filename_prefix,
         cached_programs_[fused_node.Name()],
         max_dynamic_batch_,
-        max_compiled_models_);
+        max_compiled_models_,
+        compile_batches_);
 
     // Create program object (may be empty if precompiled programs are in cache)
     migraphx::program prog;
@@ -4153,11 +4267,22 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       // Initialize dynamic batch support if max_dynamic_batch > 0
       if (max_dynamic_batch_ > 0) {
         p->has_dynamic_batch = true;
-        p->compiled_batch_sizes = generate_compiled_batch_sizes(max_dynamic_batch_, max_compiled_models_);
-        LOGS_DEFAULT(VERBOSE) << "[Compile][CREATE_STATE] Dynamic batch enabled for node '" << context->node_name 
-                              << "' with max_dynamic_batch=" << max_dynamic_batch_
-                              << ", max_compiled_models=" << max_compiled_models_
-                              << ", generated " << p->compiled_batch_sizes.size() << " batch sizes to compile";
+        p->compiled_batch_sizes = generate_compiled_batch_sizes(max_dynamic_batch_, max_compiled_models_, compile_batches_);
+        LOGS_DEFAULT(INFO) << "[Compile][CREATE_STATE] Dynamic batch enabled for node '" << context->node_name 
+                           << "' with max_dynamic_batch=" << max_dynamic_batch_
+                           << ", max_compiled_models=" << max_compiled_models_
+                           << ", compile_batches='" << compile_batches_ << "'"
+                           << ", generated " << p->compiled_batch_sizes.size() << " batch sizes to compile";
+        {
+          std::ostringstream bs_oss;
+          bs_oss << "[";
+          for (std::size_t bi = 0; bi < p->compiled_batch_sizes.size(); ++bi) {
+            if (bi > 0) bs_oss << ", ";
+            bs_oss << p->compiled_batch_sizes[bi];
+          }
+          bs_oss << "]";
+          LOGS_DEFAULT(INFO) << "[Compile][CREATE_STATE] Batch sizes: " << bs_oss.str();
+        }
         LOGS_DEFAULT(VERBOSE) << "[Compile][CREATE_STATE] defer_compilation=" << p->defer_compilation;
       } else {
         LOGS_DEFAULT(VERBOSE) << "[Compile][CREATE_STATE] Static model mode for node '" << context->node_name << "'";
