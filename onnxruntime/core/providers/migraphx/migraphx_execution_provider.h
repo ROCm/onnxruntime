@@ -38,6 +38,7 @@ constexpr auto kModelCachePath = "ORT_MIGRAPHX_MODEL_CACHE_PATH"sv;
 constexpr auto kModelMaxDynamicBatch = "ORT_MIGRAPHX_MAX_DYNAMIC_BATCH"sv;
 constexpr auto kMaxCompiledModels = "ORT_MIGRAPHX_MAX_COMPILED_MODELS"sv;
 constexpr auto kCompileBatches = "ORT_MIGRAPHX_COMPILE_BATCHES"sv;
+constexpr auto kTraceShapes = "ORT_MIGRAPHX_TRACE_SHAPES"sv;
 }  // namespace migraphx_env_vars
 
 // Tracks which dimensions are symbolic for a given input
@@ -69,6 +70,7 @@ struct MIGraphXFuncState {
   bool exhaustive_tune = false;
   size_t max_dynamic_batch;
   size_t max_compiled_models = 1;  // Number of evenly-spaced batch sizes to compile (1 -> max only)
+  bool trace_shapes = false;       // Mirror of ORT_MIGRAPHX_TRACE_SHAPES for static helpers
   // Reference to the cached programs map for this node (keyed by input shape hash)
   std::optional<std::reference_wrapper<std::unordered_map<std::string, migraphx::program>>> cached_programs_ref = std::nullopt;
   
@@ -254,6 +256,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   size_t max_dynamic_batch_{0};
   size_t max_compiled_models_{1};  // Number of evenly-spaced batch sizes to compile (1 -> max only)
   std::string compile_batches_{};  // Comma-separated list of batch sizes to compile, e.g. "1,4,8,16,32"
+  bool trace_shapes_{false};       // Print input/output shapes on every compute call (ORT_MIGRAPHX_TRACE_SHAPES)
 };
 
 }; // namespace onnxruntime

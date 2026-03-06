@@ -199,6 +199,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   GET_ENV_BOOL(migraphx_env_vars::kExhaustiveTune, exhaustive_tune_);
   GET_ENV(migraphx_env_vars::kMaxCompiledModels, max_compiled_models_, max_compiled_models_ = std::stoul(max_compiled_models_env));
   GET_ENV_STRING(migraphx_env_vars::kCompileBatches, compile_batches_);
+  GET_ENV_BOOL(migraphx_env_vars::kTraceShapes, trace_shapes_);
 
   // If compile_batches is set, auto-derive max_dynamic_batch from the spec's max value
   if (!compile_batches_.empty()) {
@@ -2415,6 +2416,91 @@ static std::vector<std::int64_t> build_input_shapes_in_cached_order(
 // EXECUTION PATH FUNCTIONS - Encapsulated paths for cleaner compute_func
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Trace helper: logs input tensor names, shapes, types, and element counts.
+// Controlled by ORT_MIGRAPHX_TRACE_SHAPES=1.
+static void trace_compute_inputs(
+    const Ort::KernelContext& ctx,
+    const std::unordered_map<std::string, std::size_t>& map_input_name_index)
+{
+  std::ostringstream oss;
+  oss << "[TRACE_SHAPES][REQUEST] ──── inputs (" << map_input_name_index.size() << ") ────";
+
+  for (const auto& [name, index] : map_input_name_index) {
+    auto tensor = ctx.GetInput(index);
+    auto info   = tensor.GetTensorTypeAndShapeInfo();
+    auto shape  = info.GetShape();
+    auto type   = info.GetElementType();
+    std::size_t elem_count = info.GetElementCount();
+
+    oss << "\n  input[" << index << "] \"" << name << "\"  type=";
+    switch (type) {
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:    oss << "fp32"; break;
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:  oss << "fp16"; break;
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16: oss << "bf16"; break;
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:    oss << "int64"; break;
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:    oss << "int32"; break;
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:     oss << "int8"; break;
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:    oss << "uint8"; break;
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:     oss << "bool"; break;
+      case ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE:   oss << "fp64"; break;
+      default: oss << "type(" << static_cast<int>(type) << ")"; break;
+    }
+    oss << "  shape=[";
+    for (std::size_t d = 0; d < shape.size(); ++d) {
+      if (d > 0) oss << ",";
+      oss << shape[d];
+    }
+    oss << "]  elems=" << elem_count;
+  }
+
+  LOGS_DEFAULT(INFO) << oss.str();
+}
+
+// Trace helper: logs output shapes produced by the MIGraphX program after execution.
+static void trace_compute_outputs(
+    const MIGraphXFuncState* mgx_state,
+    const char* path_tag)
+{
+  std::ostringstream oss;
+  oss << "[TRACE_SHAPES][RESPONSE:" << path_tag << "] ──── outputs ────";
+
+  try {
+    auto output_shapes = mgx_state->prog.get_output_shapes();
+    auto num_outputs = output_shapes.size();
+    oss << " (" << num_outputs << ")";
+
+    for (std::size_t i = 0; i < num_outputs; ++i) {
+      auto sh = output_shapes[i];
+      auto lens = sh.lengths();
+      auto type = sh.type();
+
+      oss << "\n  output[" << i << "]  mgx_type=";
+      switch (type) {
+        case migraphx_shape_float_type:    oss << "fp32"; break;
+        case migraphx_shape_half_type:     oss << "fp16"; break;
+        case migraphx_shape_int64_type:    oss << "int64"; break;
+        case migraphx_shape_int32_type:    oss << "int32"; break;
+        case migraphx_shape_int8_type:     oss << "int8"; break;
+        case migraphx_shape_uint8_type:    oss << "uint8"; break;
+        case migraphx_shape_bool_type:     oss << "bool"; break;
+        case migraphx_shape_double_type:   oss << "fp64"; break;
+        case migraphx_shape_fp8e4m3fnuz_type: oss << "fp8e4m3fnuz"; break;
+        default: oss << "type(" << static_cast<int>(type) << ")"; break;
+      }
+      oss << "  shape=[";
+      for (std::size_t d = 0; d < lens.size(); ++d) {
+        if (d > 0) oss << ",";
+        oss << lens[d];
+      }
+      oss << "]  bytes=" << sh.bytes();
+    }
+  } catch (const std::exception& e) {
+    oss << "\n  (could not read output shapes: " << e.what() << ")";
+  }
+
+  LOGS_DEFAULT(INFO) << oss.str();
+}
+
 // Ultra-fast path: Shapes unchanged from last run - just rebind pointers and execute
 // Returns true if executed successfully, false if shapes don't match
 static bool execute_ultra_fast_path(
@@ -2516,7 +2602,17 @@ static bool execute_ultra_fast_path(
   // contains padded shapes, not sliced shapes. Fall back to fast path which handles
   // slicing properly via temp output buffers.
   if (padded_batch_size > 0 && original_batch_size > 0 && padded_batch_size > original_batch_size) {
+    if (mgx_state->trace_shapes) {
+      LOGS_DEFAULT(INFO) << "[TRACE_SHAPES][ULTRA_FAST] Needs slicing (batch " << original_batch_size
+                         << " padded to " << padded_batch_size
+                         << "), falling back to FAST path for output slicing";
+    }
     return false;
+  }
+
+  if (mgx_state->trace_shapes && mgx_state->has_dynamic_batch && padded_batch_size > 0) {
+    LOGS_DEFAULT(INFO) << "[TRACE_SHAPES][ULTRA_FAST] Using compiled model batch=" << padded_batch_size
+                       << " for request batch=" << original_batch_size << " (no pad/slice needed)";
   }
 
   // Shapes unchanged (or compatible with padding) - rebind pointers and run directly
@@ -2610,6 +2706,17 @@ static bool execute_fast_path(
         needs_padding = (padded_batch_size > original_batch_size);
         LOGS_DEFAULT(VERBOSE) << "[FAST_PATH][DynamicBatch] Original batch: " << original_batch_size
                               << ", padded: " << padded_batch_size << ", needs_padding: " << needs_padding;
+        if (mgx_state->trace_shapes) {
+          if (needs_padding) {
+            LOGS_DEFAULT(INFO) << "[TRACE_SHAPES][FAST_PATH] Padding batch " << original_batch_size
+                               << " -> " << padded_batch_size
+                               << " (compiled model batch=" << padded_batch_size
+                               << ", will slice outputs back to " << original_batch_size << ")";
+          } else {
+            LOGS_DEFAULT(INFO) << "[TRACE_SHAPES][FAST_PATH] Exact batch match " << original_batch_size
+                               << " (compiled model batch=" << padded_batch_size << ", no pad/slice)";
+          }
+        }
         break;
       }
     }
@@ -2727,7 +2834,13 @@ static bool execute_fast_path(
 
   bool needs_slicing = (original_batch_size > 0 && padded_batch_size > 0 && 
                         original_batch_size < padded_batch_size);
-  
+
+  if (mgx_state->trace_shapes && (needs_slicing || needs_padding)) {
+    LOGS_DEFAULT(INFO) << "[TRACE_SHAPES][FAST_PATH] Executing compiled model batch=" << padded_batch_size
+                       << " for request batch=" << original_batch_size
+                       << (needs_slicing ? " (pad inputs, slice outputs)" : " (exact match)");
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // OPTIMIZATION 2: Skip populate_ultra_fast_caches when already populated
   // ═══════════════════════════════════════════════════════════════════════════
@@ -3114,6 +3227,17 @@ static void execute_standard_path(
         LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Original batch size: " << original_batch_size;
         LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Padded batch size: " << padded_batch_size;
         LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Needs padding: " << (needs_padding ? "YES" : "NO");
+        if (mgx_state->trace_shapes) {
+          if (needs_padding) {
+            LOGS_DEFAULT(INFO) << "[TRACE_SHAPES][STANDARD_PATH] Padding batch " << original_batch_size
+                               << " -> " << padded_batch_size
+                               << " (compiled model batch=" << padded_batch_size
+                               << ", will slice outputs back to " << original_batch_size << ")";
+          } else {
+            LOGS_DEFAULT(INFO) << "[TRACE_SHAPES][STANDARD_PATH] Exact batch match " << original_batch_size
+                               << " (compiled model batch=" << padded_batch_size << ", no pad/slice)";
+          }
+        }
         break;  // Only need batch size from first input
       }
     }
@@ -3166,6 +3290,11 @@ static void execute_standard_path(
           if (needs_padding) {
             // ============ PADDING PATH: Batch size needs to be padded ============
             LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Taking PADDING path";
+            if (mgx_state->trace_shapes) {
+              LOGS_DEFAULT(INFO) << "[TRACE_SHAPES][STANDARD_PATH] Executing compiled model batch="
+                                 << padded_batch_size << " for request batch=" << original_batch_size
+                                 << " (pad inputs, slice outputs back to " << original_batch_size << ")";
+            }
             
             // Populate caches (with slicing info so ultra-fast path is disabled)
             populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index,
@@ -3246,6 +3375,11 @@ static void execute_standard_path(
           } else {
             // ============ EXACT MATCH PATH: Batch size matches exactly, no padding needed ============
             LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Taking EXACT MATCH path (no padding/slicing)";
+            if (mgx_state->trace_shapes) {
+              LOGS_DEFAULT(INFO) << "[TRACE_SHAPES][STANDARD_PATH] Exact batch match "
+                                 << original_batch_size
+                                 << " (compiled model batch=" << padded_batch_size << ", no pad/slice)";
+            }
             
             // Populate caches for ultra-fast path (no slicing needed)
             populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index);
@@ -4262,7 +4396,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             map_defer_compilation_[context->node_name], fp16_enable_, bf16_enable_, fp8_enable_, int8_enable_,
             int8_calibration_cache_available_, dynamic_range_map_,
             model_cache_path_, dump_model_ops_, exhaustive_tune_, max_dynamic_batch_,
-            max_compiled_models_, std::ref(cached_programs_[context->node_name])};
+            max_compiled_models_, trace_shapes_, std::ref(cached_programs_[context->node_name])};
       
       // Initialize dynamic batch support if max_dynamic_batch > 0
       if (max_dynamic_batch_ > 0) {
@@ -4304,10 +4438,15 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
       const auto& map_input_name_index = mgx_state->input_name_indexes;
 
+      if (trace_shapes_) {
+        trace_compute_inputs(ctx, map_input_name_index);
+      }
+
       // ═══════════════════════════════════════════════════════════════════════
       // ULTRA-FAST PATH: Shapes unchanged from last run
       // ═══════════════════════════════════════════════════════════════════════
       if (execute_ultra_fast_path(mgx_state, api, context, ctx)) {
+        if (trace_shapes_) trace_compute_outputs(mgx_state, "ULTRA_FAST");
         return Status::OK();
       }
 
@@ -4326,6 +4465,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       // FAST PATH: Check cached programs for this shape hash
       // ═══════════════════════════════════════════════════════════════════════
       if (execute_fast_path(mgx_state, api, context, ctx, current_hash, all_input_shapes)) {
+        if (trace_shapes_) trace_compute_outputs(mgx_state, "FAST");
         return Status::OK();
       }
 
@@ -4335,6 +4475,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       execute_standard_path(mgx_state, api, context, ctx, current_hash, std::move(all_input_shapes),
                             model_cache_path_, model_path_, mxr_filename_prefix);
 
+      if (trace_shapes_) trace_compute_outputs(mgx_state, "STANDARD");
       return Status::OK();
     };
     node_compute_funcs.push_back(compute_info);
