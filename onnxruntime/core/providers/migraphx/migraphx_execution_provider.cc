@@ -839,10 +839,18 @@ std::unique_ptr<IndexedSubGraph> MIGraphXExecutionProvider::GetSubGraph(const st
   const std::string graph_type = graph.IsSubgraph() ? "subgraph" : "graph";
   meta_def->name() = "MGXKernel_" + graph_type + "_" + graph.Name() + "_" + subgraph_id;
 
-  // Assign inputs and outputs to subgraph's meta_def
+  // Assign inputs and outputs to subgraph's meta_def.
+  // Drop constant initializers from inputs: MIGraphX loads them internally via
+  // the serialized ONNX model passed to parse_onnx_buffer(), so ORT does not
+  // need to allocate them on the device. Keeping them as inputs would cause
+  // double allocation of weights on the GPU.
   for (const auto& input : inputs) {
     if (input.second->Exists()) {
-      meta_def->inputs().push_back(input.second->Name());
+      const std::string& input_name = input.second->Name();
+      if (graph.IsConstantInitializer(input_name, /*check_outer_scope=*/true)) {
+        continue;
+      }
+      meta_def->inputs().push_back(input_name);
     }
   }
 
@@ -1459,8 +1467,6 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           auto& name = it.first;
           auto& index = it.second;
           auto input_tensor = ctx.GetInput(index);
-          if (!input_tensor.HasValue())
-            continue;
           auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
           const auto tensor_shape = tensor_info.GetShape();
           std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
@@ -1477,9 +1483,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         if (param_shapes.size() > 0) {
           for (auto&& name : param_shapes.names()) {
             if (map_input_name_index.count(name) > 0) {
-              auto input_tensor = ctx.GetInput(map_input_name_index.at(name));
-              if (!input_tensor.HasValue())
-                continue;
+              auto input_tensor = ctx.GetInput(map_input_name_index[name]);
               auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
               const auto tensor_shape = tensor_info.GetShape();
               std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
@@ -1525,9 +1529,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             // Add input parameter data and the values they're set to
             for (auto&& name : local_param_shapes.names()) {
               if (map_input_name_index.count(name) > 0) {
-                auto input_tensor = ctx.GetInput(map_input_name_index.at(name));
-                if (!input_tensor.HasValue())
-                  continue;
+                auto input_tensor = ctx.GetInput(map_input_name_index[name]);
                 auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
                 const auto tensor_shape = tensor_info.GetShape();
                 const auto tensor_type = tensor_info.GetElementType();
@@ -1561,9 +1563,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         for (auto&& name : param_shapes.names()) {
           if (map_input_name_index.count(name) > 0) {
             LOGS_DEFAULT(VERBOSE) << "Setting parameters for:" << name;
-            auto input_tensor = ctx.GetInput(map_input_name_index.at(name));
-            if (!input_tensor.HasValue())
-              continue;
+            auto input_tensor = ctx.GetInput(map_input_name_index[name]);
             auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
             const auto tensor_shape = tensor_info.GetShape();
             const auto tensor_type = tensor_info.GetElementType();
