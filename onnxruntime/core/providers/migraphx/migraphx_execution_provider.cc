@@ -845,7 +845,7 @@ std::unique_ptr<IndexedSubGraph> MIGraphXExecutionProvider::GetSubGraph(const st
   const std::string graph_type = graph.IsSubgraph() ? "subgraph" : "graph";
   meta_def->name() = "MGXKernel_" + graph_type + "_" + graph.Name() + "_" + subgraph_id;
 
-  // Assign inputs and outputs to subgraph's meta_def
+  // Assign inputs and outputs to subgraph's meta_def.
   // Drop constant initializers from inputs: MIGraphX loads them internally via
   // the serialized ONNX model passed to parse_onnx_buffer(), so ORT does not
   // need to allocate them on the device. Keeping them as inputs would cause
