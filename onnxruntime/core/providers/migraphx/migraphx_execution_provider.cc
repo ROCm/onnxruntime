@@ -521,7 +521,7 @@ static bool IsUnsupportedOpMode(const onnxruntime::GraphViewer& graph_viewer, co
     auto mode_attr = attributes.find("mode");
     if (mode_attr != attributes.end()) {
       auto mode = (*mode_attr).second.s();
-      if (mode == "cubic") {
+      if (mode != "linear" && mode != "cubic" && mode != "nearest") {
         return true;
       }
     }
