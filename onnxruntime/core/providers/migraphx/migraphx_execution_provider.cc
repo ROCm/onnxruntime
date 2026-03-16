@@ -1297,27 +1297,18 @@ static std::vector<std::size_t> generate_compiled_batch_sizes(std::size_t max_ba
 }
 
 // Find the smallest compiled batch size >= requested_batch
-// Uses the same evenly-spaced scheme as generate_compiled_batch_sizes
-static std::size_t find_nearest_compiled_batch_size(std::size_t requested_batch,
-                                                           std::size_t max_batch_size,
-                                                           std::size_t max_compiled_models) {
-  if (max_batch_size == 0) {
-    return 0;
-  }
-
-  if (max_compiled_models == 1) {
-    return max_batch_size;
-  }
-
-  // Walk the evenly-spaced batch sizes and return the first one >= requested_batch
-  std::size_t n = max_compiled_models;
-  for (std::size_t i = 0; i < n; ++i) {
-    std::size_t bs = 1 + (max_batch_size - 1) * i / (n - 1);
+// Searches the actual compiled_batch_sizes vector directly so the result is
+// always a batch size that was genuinely compiled, regardless of whether
+// max_dynamic_batch has been zeroed after runtime compilation.
+static std::size_t find_nearest_compiled_batch_size(
+    std::size_t requested_batch,
+    const std::vector<std::size_t>& compiled_batch_sizes) {
+  for (const auto& bs : compiled_batch_sizes) {
     if (bs >= requested_batch) {
       return bs;
     }
   }
-  return max_batch_size;
+  return compiled_batch_sizes.empty() ? 0 : compiled_batch_sizes.back();
 }
 
 // Pad input tensor data to a larger batch size
@@ -2045,7 +2036,6 @@ static void handle_input_shape_mismatch(
 {
   // Extract references from mgx_state for convenience
   auto& prog = mgx_state->prog;
-  auto& cmp_options = mgx_state->options;
   const auto& map_input_name_index = mgx_state->input_name_indexes;
 
   // Build cache key from all inputs in map_input_name_index (already filtered to model inputs only)
@@ -2075,10 +2065,12 @@ static void handle_input_shape_mismatch(
     model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + cache_hash + ".mxr");
   }
 
-  // Set input parameter shapes from runtime tensors before compilation
-  LOGS_DEFAULT(VERBOSE) << "[Compute] Setting " << map_input_name_index.size()
-                        << " input parameter shapes as static in MIGraphX options (excluding constants)";
-
+  // Build fresh options with ONLY the current runtime input shapes.
+  // This avoids any accumulated state in mgx_state->options from prior
+  // parse_onnx_buffer / set_external_data_path calls corrupting new compilations.
+  migraphx::onnx_options fresh_options;
+  LOGS_DEFAULT(VERBOSE) << "[handle_input_shape_mismatch] Setting " << map_input_name_index.size()
+                        << " static input shapes from runtime (fresh options, deferred-compile style)";
   for (const auto& it : map_input_name_index) {
     const auto& name = it.first;
     const auto& index = it.second;
@@ -2086,24 +2078,14 @@ static void handle_input_shape_mismatch(
     auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
     const auto tensor_shape = tensor_info.GetShape();
     std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
-    cmp_options.set_input_parameter_shape(name, ort_lens);
-
-    LOGS_DEFAULT(VERBOSE) << "[Compute] Set static shape for input parameter '" << name << "': ["
-                          << [&]() {
-                              std::ostringstream ss;
-                              for (size_t i = 0; i < ort_lens.size(); ++i) {
-                                if (i > 0) ss << ", ";
-                                ss << ort_lens[i];
-                              }
-                              return ss.str();
-                            }() << "]";
+    fresh_options.set_input_parameter_shape(name, ort_lens);
   }
 
-  // Use load_or_compile_model helper - handles cache loading, compilation, and saving
+  // Compile with fresh options - each new shape gets a clean compilation
   prog = load_or_compile_model(
       model_cache_file,
       mgx_state->onnx_string,
-      cmp_options,
+      fresh_options,
       mgx_state->t,
       mgx_state->fp16_enable,
       mgx_state->bf16_enable,
@@ -2112,16 +2094,23 @@ static void handle_input_shape_mismatch(
       mgx_state->int8_calibration_cache_available,
       mgx_state->dynamic_range_map,
       mgx_state->exhaustive_tune,
-      mgx_state->model_cache_dir,
+      model_path,
       &ctx,
       &map_input_name_index);
+
+  // Validate compilation produced a usable program
+  if (prog.get_parameter_shapes().size() == 0) {
+    ORT_THROW("MIGraphX: Compiled program is empty/invalid for the requested input shapes");
+  }
 
   // Store the compiled/loaded program in the in-memory cached_programs cache
   if (mgx_state->cached_programs_ref.has_value()) {
     mgx_state->cached_programs_ref.value().get()[cache_hash] = prog;
   }
 
-  // Invalidate ultra-fast path caches (will be repopulated on next run)
+  // Fully invalidate all caches since the program changed
+  clear_cached_mgx_shapes(mgx_state);
+  free_temp_output_buffers(mgx_state);
   mgx_state->caches_valid = false;
   mgx_state->cached_inputs.clear();
   mgx_state->cached_outputs.clear();
@@ -2130,6 +2119,16 @@ static void handle_input_shape_mismatch(
   mgx_state->cached_prog_output_indices.clear();
   mgx_state->last_input_shapes_raw.clear();
   mgx_state->last_input_shape_hash.clear();
+
+  // Free stale padded input buffers from previous dynamic batch runs
+  for (auto& buf : mgx_state->padded_input_buffers) {
+    if (buf.data != nullptr) {
+      (void)hipFree(buf.data);
+    }
+  }
+  mgx_state->padded_input_buffers.clear();
+  mgx_state->last_original_batch_size = 0;
+  mgx_state->last_padded_batch_size = 0;
 
   param_shapes = prog.get_parameter_shapes();
   mgx_state->defer_compilation = false;
@@ -2372,7 +2371,7 @@ static bool execute_ultra_fast_path(
         if (shape[0] != last_shapes[offset]) {
           // Batch size changed - check if we can use padding
           std::size_t required_padded = find_nearest_compiled_batch_size(
-              original_batch_size, mgx_state->max_dynamic_batch, mgx_state->max_compiled_models);
+              original_batch_size, mgx_state->compiled_batch_sizes);
           
           if (required_padded != padded_batch_size) {
             shapes_match = false;
@@ -2517,8 +2516,7 @@ static bool execute_fast_path(
       if (!tensor_shape.empty()) {
         original_batch_size = static_cast<std::size_t>(tensor_shape[0]);
         padded_batch_size = find_nearest_compiled_batch_size(original_batch_size,
-                                                                    mgx_state->max_dynamic_batch,
-                                                                    mgx_state->max_compiled_models);
+                                                                    mgx_state->compiled_batch_sizes);
         needs_padding = (padded_batch_size > original_batch_size);
         LOGS_DEFAULT(VERBOSE) << "[FAST_PATH][DynamicBatch] Original batch: " << original_batch_size
                               << ", padded: " << padded_batch_size << ", needs_padding: " << needs_padding;
@@ -2802,6 +2800,22 @@ static InputShapeResult handle_input_shape(
           input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
         }
       }
+    } else if (!map_input_name_index.empty()) {
+      LOGS_DEFAULT(VERBOSE) << "[Compute] Program has no parameter shapes but "
+                            << map_input_name_index.size()
+                            << " runtime inputs exist - program needs compilation";
+      for (const auto& it : map_input_name_index) {
+        const auto& name = it.first;
+        const auto& index = it.second;
+        auto input_tensor = ctx.GetInput(index);
+        auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+        const auto tensor_shape = tensor_info.GetShape();
+        std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
+
+        cmp_options.set_input_parameter_shape(name, ort_lens);
+        input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
+      }
+      input_shape_match = false;
     }
   }
 
@@ -2984,23 +2998,21 @@ static void execute_standard_path(
   auto& cmp_options = mgx_state->options;
   const auto& map_input_name_index = mgx_state->input_name_indexes;
 
-  // Check if this is the first run with dynamic batch enabled
-  // NOTE: max_dynamic_batch > 0 means compilation was deferred to runtime (not precompiled)
-  // If precompilation happened during Compile(), max_dynamic_batch will be > 0 but defer_compilation = false
-  // In that case, the programs are already in cache and we can skip runtime compilation
+  // Dynamic batch decision: defer_compilation = true means the model has non-pure-batch
+  // dynamic dimensions (e.g., both batch AND sequence_length are symbolic). Dynamic batch
+  // compilation is NOT appropriate here because programs compiled for one set of non-batch
+  // dimensions (e.g., seq=32) won't work when those dimensions change (e.g., seq=256).
+  // Instead, disable dynamic batch entirely and let normal deferred compilation handle
+  // each new shape combination by compiling for exact runtime shapes.
   if (mgx_state->has_dynamic_batch && mgx_state->max_dynamic_batch > 0 && mgx_state->defer_compilation) {
-    // Runtime compilation path - used when precompilation was not possible (e.g., non-pure dynamic batch)
-    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] *** RUNTIME COMPILATION REQUIRED ***";
-    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] max_dynamic_batch=" 
-                       << mgx_state->max_dynamic_batch;
-    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Initiating runtime compilation of batch models";
-    
-    // Compile all batch models at runtime
-    compile_dynamic_batch_models(mgx_state, model_cache_path, model_path, mxr_filename_prefix, ctx);
-    
-    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Runtime compilation complete, max_dynamic_batch now = " 
-                       << mgx_state->max_dynamic_batch;
-    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Proceeding with execution using closest compiled batch";
+    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH] Deferred model with max_dynamic_batch="
+                       << mgx_state->max_dynamic_batch
+                       << " - model has non-pure-batch dynamic dimensions";
+    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH] Disabling dynamic batch mode; "
+                       << "will use per-shape deferred compilation instead";
+    mgx_state->has_dynamic_batch = false;
+    mgx_state->compiled_batch_sizes.clear();
+    mgx_state->max_dynamic_batch = 0;
   } else if (mgx_state->has_dynamic_batch) {
     LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Dynamic batch enabled, models already precompiled";
   }
@@ -3020,8 +3032,7 @@ static void execute_standard_path(
       if (!tensor_shape.empty()) {
         original_batch_size = static_cast<std::size_t>(tensor_shape[0]);
         padded_batch_size = find_nearest_compiled_batch_size(original_batch_size,
-                                                                    mgx_state->max_dynamic_batch,
-                                                                    mgx_state->max_compiled_models);
+                                                                    mgx_state->compiled_batch_sizes);
         needs_padding = (padded_batch_size > original_batch_size);
         
         LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Original batch size: " << original_batch_size;
@@ -3199,6 +3210,11 @@ static void execute_standard_path(
       }
     }
   }
+
+  // Reset batch sizes: the normal path recompiles for actual input shapes,
+  // so the padded batch values from the dynamic batch lookup no longer apply.
+  original_batch_size = 0;
+  padded_batch_size = 0;
 
   LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH] Proceeding with normal shape checking";
   auto [input_shape_match, param_shapes, input_shapes] = handle_input_shape(
