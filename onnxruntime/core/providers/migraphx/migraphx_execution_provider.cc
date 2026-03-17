@@ -2998,21 +2998,20 @@ static void execute_standard_path(
   auto& cmp_options = mgx_state->options;
   const auto& map_input_name_index = mgx_state->input_name_indexes;
 
-  // Dynamic batch decision: defer_compilation = true means the model has non-pure-batch
-  // dynamic dimensions (e.g., both batch AND sequence_length are symbolic). Dynamic batch
-  // compilation is NOT appropriate here because programs compiled for one set of non-batch
-  // dimensions (e.g., seq=32) won't work when those dimensions change (e.g., seq=256).
-  // Instead, disable dynamic batch entirely and let normal deferred compilation handle
-  // each new shape combination by compiling for exact runtime shapes.
+  // Runtime compilation of dynamic batch models when precompilation was deferred
+  // (e.g., model has non-batch symbolic dims like sequence_length in addition to batch).
+  // Compiles batch-size variants using the current runtime's non-batch dimensions.
+  // If non-batch dims change later, the cache lookup below will miss and the normal
+  // deferred-compilation path (handle_input_shape_mismatch) compiles for exact shapes.
   if (mgx_state->has_dynamic_batch && mgx_state->max_dynamic_batch > 0 && mgx_state->defer_compilation) {
-    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH] Deferred model with max_dynamic_batch="
-                       << mgx_state->max_dynamic_batch
-                       << " - model has non-pure-batch dynamic dimensions";
-    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH] Disabling dynamic batch mode; "
-                       << "will use per-shape deferred compilation instead";
-    mgx_state->has_dynamic_batch = false;
-    mgx_state->compiled_batch_sizes.clear();
-    mgx_state->max_dynamic_batch = 0;
+    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] *** RUNTIME COMPILATION REQUIRED ***";
+    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] max_dynamic_batch="
+                       << mgx_state->max_dynamic_batch;
+    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Compiling batch models for current non-batch dimensions";
+
+    compile_dynamic_batch_models(mgx_state, model_cache_path, model_path, mxr_filename_prefix, ctx);
+
+    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Runtime compilation complete";
   } else if (mgx_state->has_dynamic_batch) {
     LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Dynamic batch enabled, models already precompiled";
   }
@@ -3202,10 +3201,10 @@ static void execute_standard_path(
             return;
           }
         } else {
-          LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] ✗✗✗ CACHE MISS for hash " 
-                                << padded_hash;
-          LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] This shouldn't happen - expected batch "
-                                << padded_batch_size << " to be pre-compiled";
+          LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Cache miss for hash "
+                                << padded_hash << " (batch " << padded_batch_size
+                                << ") - non-batch dimensions likely changed, "
+                                << "falling through to deferred compilation";
         }
       }
     }
