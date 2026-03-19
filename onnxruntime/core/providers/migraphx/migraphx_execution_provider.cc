@@ -1374,8 +1374,29 @@ static std::size_t find_nearest_compiled_batch_size(
   return 0;
 }
 
-// Pad input tensor data to a larger batch size
-// Copies the original data and replicates the last batch element to fill the padding
+// Map ONNX tensor element type to byte width. Falls back to sizeof(float).
+static std::size_t element_size_from_onnx_type(ONNXTensorElementDataType dt) {
+  switch (dt) {
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:   return sizeof(float);
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16: return sizeof(uint16_t);
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT64:
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE:   return sizeof(int64_t);
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT32:   return sizeof(int32_t);
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16:
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16:   return sizeof(int16_t);
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:     return sizeof(int8_t);
+    default:                                      return sizeof(float);
+  }
+}
+
+// Pad input tensor data to a larger batch size.
+// Copies the original data and zero-fills the padding region (pad content is
+// discarded during output slicing, so exact values don't matter for inference).
 static void pad_input_tensor(const void* src_data, void* dst_data,
                              std::size_t original_batch, std::size_t padded_batch,
                              std::size_t element_size_bytes, std::size_t elements_per_batch,
@@ -1387,16 +1408,13 @@ static void pad_input_tensor(const void* src_data, void* dst_data,
                                 original_batch * bytes_per_batch,
                                 hipMemcpyDeviceToDevice, stream));
   
-  // Pad with last batch element replicated
-  if (original_batch > 0 && padded_batch > original_batch) {
-    const char* last_batch = static_cast<const char*>(src_data) + (original_batch - 1) * bytes_per_batch;
+  // Zero-fill the padding region in a single call.
+  // The padded batch elements are never read back (output slicing discards them),
+  // so the exact fill value is irrelevant — zero is the cheapest option.
+  if (padded_batch > original_batch) {
     char* pad_start = static_cast<char*>(dst_data) + original_batch * bytes_per_batch;
-    
-    for (std::size_t i = original_batch; i < padded_batch; ++i) {
-      HIP_CALL_THROW(hipMemcpyAsync(pad_start, last_batch, bytes_per_batch,
-                                    hipMemcpyDeviceToDevice, stream));
-      pad_start += bytes_per_batch;
-    }
+    std::size_t pad_bytes = (padded_batch - original_batch) * bytes_per_batch;
+    HIP_CALL_THROW(hipMemsetAsync(pad_start, 0, pad_bytes, stream));
   }
 }
 
@@ -1442,38 +1460,7 @@ static bool allocate_and_pad_inputs(
         elements_per_batch *= tensor_shape[j];
       }
       
-      // Calculate element size from tensor type
-      std::size_t element_size_bytes;
-      switch (tensor_info.GetElementType()) {
-        case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
-          element_size_bytes = sizeof(float);
-          break;
-        case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
-        case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16:
-          element_size_bytes = sizeof(uint16_t);
-          break;
-        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
-        case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT64:
-        case ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE:
-          element_size_bytes = sizeof(int64_t);
-          break;
-        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
-        case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT32:
-          element_size_bytes = sizeof(int32_t);
-          break;
-        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16:
-        case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16:
-          element_size_bytes = sizeof(int16_t);
-          break;
-        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:
-        case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:
-        case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:
-          element_size_bytes = sizeof(int8_t);
-          break;
-        default:
-          element_size_bytes = sizeof(float);  // Fallback to float
-          break;
-      }
+      std::size_t element_size_bytes = element_size_from_onnx_type(tensor_info.GetElementType());
       
       // Reuse existing buffer - just pad with new data
       const void* original_data = input_tensor.GetTensorRawData();
@@ -1530,38 +1517,7 @@ static bool allocate_and_pad_inputs(
       elements_per_batch *= tensor_shape[i];
     }
     
-    // Calculate element size from tensor type
-    std::size_t element_size_bytes;
-    switch (tensor_info.GetElementType()) {
-      case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
-        element_size_bytes = sizeof(float);
-        break;
-      case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
-      case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16:
-        element_size_bytes = sizeof(uint16_t);
-        break;
-      case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
-      case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT64:
-      case ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE:
-        element_size_bytes = sizeof(int64_t);
-        break;
-      case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
-      case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT32:
-        element_size_bytes = sizeof(int32_t);
-        break;
-      case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16:
-      case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16:
-        element_size_bytes = sizeof(int16_t);
-        break;
-      case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:
-      case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:
-      case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:
-        element_size_bytes = sizeof(int8_t);
-        break;
-      default:
-        element_size_bytes = sizeof(float);  // Fallback to float
-        break;
-    }
+    std::size_t element_size_bytes = element_size_from_onnx_type(tensor_info.GetElementType());
     
     // Pad the data
     const void* original_data = input_tensor.GetTensorRawData();
@@ -1614,6 +1570,9 @@ static void clear_cached_mgx_shapes(MIGraphXFuncState* mgx_state) {
   mgx_state->cached_mgx_output_shapes.reset();
   mgx_state->ultra_fast_caches_populated = false;
   mgx_state->cached_program_hash.clear();
+  mgx_state->ultra_fast_needs_slicing = false;
+  mgx_state->ultra_fast_original_batch = 0;
+  mgx_state->ultra_fast_padded_batch = 0;
 }
 
 // Allocate or reuse temporary output buffers for slicing mode
@@ -1972,55 +1931,31 @@ static void run_migraphx_program(
     }
   }
   
-  // First, handle pre-allocated outputs (need slicing but were already bound)
-  // NOTE: This is a defensive path - pre-allocated outputs should NOT exist when slicing is needed.
+  // Defensive path: pre-allocated outputs that were bound with the padded shape.
+  // Allocate the ORT output with sliced shape first (host-side, no GPU dependency),
+  // then do a single D2D copy directly from the MIGraphX result.
   if (needs_slicing && !prog_output_indices_set.empty()) {
     for (std::size_t i = 0; i < output_num; ++i) {
       if (prog_output_indices_set.count(i) > 0) {
-        // This output was pre-allocated with padded shape - need to copy sliced data
         auto gpu_res = (*prog_outputs)[i];
         migraphx::shape res_shape = gpu_res.get_shape();
         auto res_lens = res_shape.lengths();
         
-        // Create sliced shape for ORT output
         std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
         if (!ort_shape.empty() && static_cast<std::size_t>(ort_shape[0]) != original_batch_size) {
           ort_shape[0] = static_cast<int64_t>(original_batch_size);
           
-          // Calculate bytes to copy (sliced portion only)
           std::size_t bytes_per_batch = res_shape.bytes() / padded_batch_size;
           std::size_t bytes_to_copy = bytes_per_batch * original_batch_size;
           
-          // Allocate temp buffer for sliced data on GPU
-          void* temp_sliced_buffer = nullptr;
-          auto hip_status = hipMalloc(&temp_sliced_buffer, bytes_to_copy);
-          if (hip_status != hipSuccess) {
-            ORT_THROW("hipMalloc failed for sliced output buffer");
-          }
+          auto output_tensor = ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
+          void* output_data = output_tensor.GetTensorMutableRawData();
           
-          // Copy sliced data from MIGraphX output to temp buffer
-          HIP_CALL_THROW(hipMemcpyWithStream(temp_sliced_buffer,
+          HIP_CALL_THROW(hipMemcpyWithStream(output_data,
                                              gpu_res.data(),
                                              bytes_to_copy,
                                              hipMemcpyDeviceToDevice,
                                              static_cast<hipStream_t>(rocm_stream)));
-          
-          // Synchronize to ensure copy is complete before allocating ORT output
-          HIP_CALL_THROW(hipStreamSynchronize(static_cast<hipStream_t>(rocm_stream)));
-          
-          // Now allocate the ORT output tensor with the SLICED shape
-          auto output_tensor = ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
-          void* output_data = output_tensor.GetTensorMutableRawData();
-          
-          // Copy from temp buffer to ORT output
-          HIP_CALL_THROW(hipMemcpyWithStream(output_data,
-                                             temp_sliced_buffer,
-                                             bytes_to_copy,
-                                             hipMemcpyDeviceToDevice,
-                                             static_cast<hipStream_t>(rocm_stream)));
-          
-          // Free temporary buffer
-          (void)hipFree(temp_sliced_buffer);
         }
       }
     }
@@ -2268,22 +2203,26 @@ static void populate_ultra_fast_caches(
         // This is an output parameter
         const int output_index = compute_output_index(name);
         if (output_index != -1) {
-          // When slicing, don't cache outputs (ultra-fast path won't be used)
-          if (!needs_slicing) {
-            MIGraphXFuncState::CachedOutputParam out;
-            out.name = name;
-            out.output_index = output_index;
-            out.mgx_shape = param_shapes[name];
-            mgx_state->cached_outputs.push_back(std::move(out));
+          MIGraphXFuncState::CachedOutputParam out;
+          out.name = name;
+          out.output_index = output_index;
+          out.mgx_shape = param_shapes[name];
+          mgx_state->cached_outputs.push_back(std::move(out));
 
-            // Pre-allocate ORT-format output shape vector
-            const auto& lens = output_shapes[output_index].lengths();
-            mgx_state->cached_output_ort_shapes.emplace_back(lens.begin(), lens.end());
+          const auto& lens = output_shapes[output_index].lengths();
+          std::vector<int64_t> ort_shape(lens.begin(), lens.end());
+          if (needs_slicing && !ort_shape.empty()) {
+            ort_shape[0] = static_cast<int64_t>(original_batch_size);
           }
+          mgx_state->cached_output_ort_shapes.push_back(std::move(ort_shape));
         }
       }
     }
   }
+
+  mgx_state->ultra_fast_needs_slicing = needs_slicing;
+  mgx_state->ultra_fast_original_batch = original_batch_size;
+  mgx_state->ultra_fast_padded_batch = padded_batch_size;
 }
 
 // Helper: Build input shapes vector in cached_inputs order (MIGraphX parameter order)
@@ -2320,8 +2259,10 @@ static std::vector<std::int64_t> build_input_shapes_in_cached_order(
 // EXECUTION PATH FUNCTIONS - Encapsulated paths for cleaner compute_func
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Ultra-fast path: Shapes unchanged from last run - just rebind pointers and execute
-// Returns true if executed successfully, false if shapes don't match
+// Ultra-fast path: Shapes unchanged from last run - just rebind pointers and execute.
+// Now also supports the slicing case by binding reusable temp output buffers and
+// doing a single D2D copy per output afterwards.
+// Returns true if executed successfully, false if shapes don't match.
 static bool execute_ultra_fast_path(
     MIGraphXFuncState* mgx_state,
     const OrtApi* api,
@@ -2332,7 +2273,6 @@ static bool execute_ultra_fast_path(
     return false;
   }
   
-  // Ultra-fast path not supported when outputs need dynamic slicing
   if (mgx_state->cached_outputs.empty()) {
     return false;
   }
@@ -2354,17 +2294,13 @@ static bool execute_ultra_fast_path(
       break;
     }
     
-    // For dynamic batch, we check if the current batch needs padding
     if (mgx_state->has_dynamic_batch && !mgx_state->compiled_batch_sizes.empty()) {
-      // Get batch sizes from first input
       if (is_first) {
         original_batch_size = static_cast<std::size_t>(shape[0]);
         padded_batch_size = static_cast<std::size_t>(last_shapes[offset]);
         is_first = false;
         
-        // Check if the batch size matches (original or padded)
         if (shape[0] != last_shapes[offset]) {
-          // Batch size changed - check if we can use padding
           std::size_t required_padded = find_nearest_compiled_batch_size(
               original_batch_size, mgx_state->compiled_batch_sizes);
           
@@ -2375,19 +2311,16 @@ static bool execute_ultra_fast_path(
         }
       }
       
-      // All current inputs should have the same batch size (original_batch_size)
       if (static_cast<std::size_t>(shape[0]) != original_batch_size) {
         shapes_match = false;
         break;
       }
       
-      // Cached shape should have padded batch size in dimension 0
       if (last_shapes[offset] != static_cast<std::int64_t>(padded_batch_size)) {
         shapes_match = false;
         break;
       }
       
-      // Check non-batch dimensions (current vs cached)
       bool rest_matches = true;
       for (std::size_t i = 1; i < shape.size(); ++i) {
         if (last_shapes[offset + i] != shape[i]) {
@@ -2400,7 +2333,6 @@ static bool execute_ultra_fast_path(
         break;
       }
     } else {
-      // No dynamic batching - strict comparison
       for (std::size_t i = 0; i < shape.size(); ++i) {
         if (last_shapes[offset + i] != shape[i]) {
           shapes_match = false;
@@ -2417,28 +2349,28 @@ static bool execute_ultra_fast_path(
     return false;
   }
 
-  // Ultra-fast path doesn't support output slicing because cached_output_ort_shapes
-  // contains padded shapes, not sliced shapes. Fall back to fast path which handles
-  // slicing properly via temp output buffers.
-  if (padded_batch_size > 0 && original_batch_size > 0 && padded_batch_size > original_batch_size) {
-    return false;
-  }
+  const bool needs_slicing = mgx_state->ultra_fast_needs_slicing &&
+                             padded_batch_size > 0 && original_batch_size > 0 &&
+                             padded_batch_size > original_batch_size;
 
-  // Shapes unchanged (or compatible with padding) - rebind pointers and run directly
   auto& m = mgx_state->cached_prog_params.value();
   auto& prog = mgx_state->prog;
   
-  // Allocate and pad inputs if needed for dynamic batching
+  void* rocm_stream_ptr = nullptr;
+  hipStream_t rocm_stream = nullptr;
+  if (padded_batch_size > original_batch_size || needs_slicing) {
+    Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream_ptr));
+    rocm_stream = static_cast<hipStream_t>(rocm_stream_ptr);
+  }
+
+  // Pad inputs if needed
   bool using_padded_inputs = false;
   if (padded_batch_size > original_batch_size) {
-    void* rocm_stream_ptr;
-    Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream_ptr));
-    auto rocm_stream = static_cast<hipStream_t>(rocm_stream_ptr);
     using_padded_inputs = allocate_and_pad_inputs(mgx_state, ctx, original_batch_size, 
                                                   padded_batch_size, rocm_stream);
   }
 
-  // Rebind inputs - use padded buffers if available, otherwise use original inputs
+  // Rebind inputs
   if (using_padded_inputs && mgx_state->padded_input_buffers.size() == mgx_state->cached_inputs.size()) {
     for (size_t i = 0; i < mgx_state->cached_inputs.size(); ++i) {
       const auto& inp = mgx_state->cached_inputs[i];
@@ -2453,19 +2385,51 @@ static bool execute_ultra_fast_path(
     }
   }
 
-  // Rebind outputs - direct iteration, uses pre-allocated shape vectors
-  for (std::size_t i = 0; i < mgx_state->cached_outputs.size(); ++i) {
-    const auto& out = mgx_state->cached_outputs[i];
-    const auto& ort_shape = mgx_state->cached_output_ort_shapes[i];
-    auto output_tensor = ctx.GetOutput(out.output_index, ort_shape.data(), ort_shape.size());
-    m.add(out.name.c_str(), migraphx::argument(out.mgx_shape,
-                                       output_tensor.GetTensorMutableRawData()));
-  }
+  if (needs_slicing) {
+    // Bind reusable temp output buffers (padded size) so MIGraphX writes there,
+    // then slice into ORT output tensors with a single D2D copy each.
+    for (std::size_t i = 0; i < mgx_state->cached_outputs.size(); ++i) {
+      const auto& out = mgx_state->cached_outputs[i];
+      if (i < mgx_state->temp_output_buffers.size()) {
+        m.add(out.name.c_str(),
+              migraphx::argument(mgx_state->temp_output_buffers[i].mgx_shape,
+                                 mgx_state->temp_output_buffers[i].data));
+      }
+    }
 
-  // Run directly - minimal overhead path
-  run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m,
-                       mgx_state->cached_prog_output_indices,
-                       original_batch_size, padded_batch_size);
+    {
+      std::lock_guard<std::mutex> lock(*mgx_state->mgx_mu_ptr);
+      prog.run_async(m, rocm_stream);
+    }
+
+    // Single D2D copy per output: first original_batch rows from temp -> ORT tensor
+    for (std::size_t i = 0; i < mgx_state->cached_outputs.size(); ++i) {
+      const auto& out = mgx_state->cached_outputs[i];
+      const auto& ort_shape = mgx_state->cached_output_ort_shapes[i];
+      auto output_tensor = ctx.GetOutput(out.output_index, ort_shape.data(), ort_shape.size());
+
+      std::size_t bytes_per_batch = out.mgx_shape.bytes() / padded_batch_size;
+      std::size_t bytes_to_copy = bytes_per_batch * original_batch_size;
+
+      HIP_CALL_THROW(hipMemcpyAsync(output_tensor.GetTensorMutableRawData(),
+                                    mgx_state->temp_output_buffers[i].data,
+                                    bytes_to_copy,
+                                    hipMemcpyDeviceToDevice, rocm_stream));
+    }
+  } else {
+    // Normal (non-slicing) path: bind directly to ORT output tensors
+    for (std::size_t i = 0; i < mgx_state->cached_outputs.size(); ++i) {
+      const auto& out = mgx_state->cached_outputs[i];
+      const auto& ort_shape = mgx_state->cached_output_ort_shapes[i];
+      auto output_tensor = ctx.GetOutput(out.output_index, ort_shape.data(), ort_shape.size());
+      m.add(out.name.c_str(), migraphx::argument(out.mgx_shape,
+                                         output_tensor.GetTensorMutableRawData()));
+    }
+
+    run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m,
+                         mgx_state->cached_prog_output_indices,
+                         original_batch_size, padded_batch_size);
+  }
   
   return true;
 }

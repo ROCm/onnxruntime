@@ -108,8 +108,15 @@ struct MIGraphXFuncState {
   std::vector<CachedInputParam> cached_inputs;
   std::vector<CachedOutputParam> cached_outputs;
 
-  // Pre-allocated output shapes in ORT format (avoids vector allocation per inference)
+  // Pre-allocated output shapes in ORT format (avoids vector allocation per inference).
+  // When slicing is active these hold the *sliced* (original-batch) shapes for ORT output allocation.
   std::vector<std::vector<int64_t>> cached_output_ort_shapes;
+
+  // When the ultra-fast path is handling slicing, this flag is true and the
+  // fields below hold the slicing context so the path can do the single-copy slice.
+  bool ultra_fast_needs_slicing = false;
+  std::size_t ultra_fast_original_batch = 0;
+  std::size_t ultra_fast_padded_batch = 0;
 
   // Cached program_parameters object for ultra-fast rebinding
   std::optional<migraphx::program_parameters> cached_prog_params;
