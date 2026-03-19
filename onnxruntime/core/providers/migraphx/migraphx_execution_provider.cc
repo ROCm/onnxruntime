@@ -250,7 +250,6 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   int8_calibration_cache_available_ =
     (int8_enable_ || fp8_enable_) && !int8_calibration_table_name_.empty();
 
-
   // Load INT8 calibration table
   if (int8_calibration_cache_available_) {
     std::unordered_map<std::string, float> dynamic_range_map;
@@ -1425,8 +1424,6 @@ static bool allocate_and_pad_inputs(
   );
   
   if (can_reuse_buffers) {
-    LOGS_DEFAULT(VERBOSE) << "[allocate_and_pad_inputs] ✓✓✓ REUSING existing padded buffers "
-                          << "(original=" << original_batch_size << ", padded=" << padded_batch_size << ")";
     
     // Just copy new data into existing buffers - skip allocation
     for (size_t i = 0; i < mgx_state->cached_inputs.size(); ++i) {
@@ -1493,8 +1490,6 @@ static bool allocate_and_pad_inputs(
   // ═══════════════════════════════════════════════════════════════════════════
   // Normal path: Allocate new buffers (batch size changed or first run)
   // ═══════════════════════════════════════════════════════════════════════════
-  LOGS_DEFAULT(VERBOSE) << "[allocate_and_pad_inputs] Allocating NEW padded buffers: original=" 
-                        << original_batch_size << ", padded=" << padded_batch_size;
   
   // Free old buffers if they exist
   for (auto& buf : mgx_state->padded_input_buffers) {
@@ -1514,7 +1509,6 @@ static bool allocate_and_pad_inputs(
     const auto tensor_shape = tensor_info.GetShape();
     
     if (tensor_shape.empty()) {
-      LOGS_DEFAULT(VERBOSE) << "[allocate_and_pad_inputs] Skipping empty shape input";
       continue;
     }
     
@@ -1566,7 +1560,6 @@ static bool allocate_and_pad_inputs(
         break;
       default:
         element_size_bytes = sizeof(float);  // Fallback to float
-        LOGS_DEFAULT(VERBOSE) << "[allocate_and_pad_inputs] Unknown element type, assuming float";
         break;
     }
     
@@ -1582,16 +1575,12 @@ static bool allocate_and_pad_inputs(
     buf.mgx_shape = padded_mgx_shape;
     mgx_state->padded_input_buffers.push_back(buf);
     
-    LOGS_DEFAULT(VERBOSE) << "[allocate_and_pad_inputs] Padded input '" << cached_inp.name 
-                         << "': " << padded_bytes << " bytes";
   }
   
   // Update batch tracking
   mgx_state->last_original_batch_size = original_batch_size;
   mgx_state->last_padded_batch_size = padded_batch_size;
   
-  LOGS_DEFAULT(VERBOSE) << "[allocate_and_pad_inputs] Allocated " 
-                        << mgx_state->padded_input_buffers.size() << " padded buffers";
   return true;
 }
 
@@ -1643,8 +1632,6 @@ static std::vector<void*> get_or_allocate_temp_output_buffers(
   );
   
   if (can_reuse) {
-    LOGS_DEFAULT(VERBOSE) << "[get_or_allocate_temp_output_buffers] ✓✓✓ REUSING " 
-                          << mgx_state->temp_output_buffers.size() << " temp output buffers";
     // Return raw pointers from existing buffers
     std::vector<void*> ptrs;
     ptrs.reserve(mgx_state->temp_output_buffers.size());
@@ -1656,8 +1643,6 @@ static std::vector<void*> get_or_allocate_temp_output_buffers(
   
   // Free old buffers if they exist
   free_temp_output_buffers(mgx_state);
-  
-  LOGS_DEFAULT(VERBOSE) << "[get_or_allocate_temp_output_buffers] Allocating NEW temp output buffers";
   
   // Count outputs and allocate
   std::vector<void*> ptrs;
@@ -1691,14 +1676,10 @@ static std::vector<void*> get_or_allocate_temp_output_buffers(
       mgx_state->temp_output_buffers.push_back(temp_buf);
       ptrs.push_back(buffer);
       
-      LOGS_DEFAULT(VERBOSE) << "[get_or_allocate_temp_output_buffers] Allocated output " 
-                            << output_index << ": " << size_bytes << " bytes";
     }
   }
   
   mgx_state->temp_output_padded_batch_size = padded_batch_size;
-  LOGS_DEFAULT(VERBOSE) << "[get_or_allocate_temp_output_buffers] Allocated " 
-                        << mgx_state->temp_output_buffers.size() << " temp output buffers";
   
   return ptrs;
 }
@@ -1716,7 +1697,6 @@ void calibrate_and_quantize(migraphx::program& prog,
                             std::unordered_map<std::string, float>& dynamic_range_map) {
   // Read in the calibration data and map it to an migraphx paramater map for the calibration ops
   if ((int8_enable ^ fp8_enable) && int8_calibration_cache_available) {
-    LOGS_DEFAULT(VERBOSE) << "Quantizing input program";
 
     auto param_shapes = prog.get_parameter_shapes();
 
@@ -1728,36 +1708,28 @@ void calibrate_and_quantize(migraphx::program& prog,
 
     // perform static quantization on the programs
     if (int8_enable) {
-      LOGS_DEFAULT(VERBOSE) << "Quantizing input program to int8";
       migraphx::quantize_int8_options quant_opts;
       quant_opts.add_calibration_data(quant_params);
       // specify thing we want to int8 quantize
       quant_opts.add_op_name("convolution");
       quant_opts.add_op_name("dot");
       migraphx::quantize_int8(prog, t, quant_opts);
-      LOGS_DEFAULT(VERBOSE) << "Quantizing int8: Complete";
     } else if (fp8_enable) {
 #if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR >= 4)
-      LOGS_DEFAULT(VERBOSE) << "Quantizing input program to fp8";
       migraphx::quantize_fp8_options quant_opts;
       quant_opts.add_calibration_data(quant_params);
       migraphx::quantize_fp8(prog, t, quant_opts);
-      LOGS_DEFAULT(VERBOSE) << "Quantizing fp8: Complete";
 #endif
     }
   }
 
   if (fp16_enable) {
-    LOGS_DEFAULT(VERBOSE) << "Quantizing input program to fp16";
     migraphx::quantize_fp16(prog);
-    LOGS_DEFAULT(VERBOSE) << "Quantizing fp16: Complete";
   }
 
 #if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && HIP_VERSION_MINOR >= 4 && HIP_VERSION_PATCH >= 2)
   if (bf16_enable) {
-    LOGS_DEFAULT(VERBOSE) << "Quantizing input program to bf16";
     migraphx::quantize_bf16(prog);
-    LOGS_DEFAULT(VERBOSE) << "Quantizing bf16: Complete";
   }
 #endif
 }
@@ -1765,7 +1737,6 @@ void calibrate_and_quantize(migraphx::program& prog,
 void compile_program(migraphx::program& prog,
                      const migraphx::target& t,
                      bool exhaustive_tune) {
-  LOGS_DEFAULT(VERBOSE) << "Model Compile: Begin";
   migraphx::compile_options co;
   co.set_fast_math(false);
   co.set_exhaustive_tune_flag(exhaustive_tune);
@@ -2131,8 +2102,6 @@ static void handle_input_shape_mismatch(
   }
 
   // Set input parameter shapes from runtime tensors before compilation
-  LOGS_DEFAULT(VERBOSE) << "[Compute] Setting " << map_input_name_index.size()
-                        << " input parameter shapes as static in MIGraphX options (excluding constants)";
 
   for (const auto& it : map_input_name_index) {
     const auto& name = it.first;
@@ -2143,9 +2112,6 @@ static void handle_input_shape_mismatch(
     std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
     cmp_options.set_input_parameter_shape(name, ort_lens);
 
-    LOGS_DEFAULT(VERBOSE) << "[Compute] Set static shape for input parameter '" << name << "': ["
-                          << [&]() {
-                              std::ostringstream ss;
                               for (size_t i = 0; i < ort_lens.size(); ++i) {
                                 if (i > 0) ss << ", ";
                                 ss << ort_lens[i];
@@ -2190,8 +2156,6 @@ static void handle_input_shape_mismatch(
   mgx_state->defer_compilation = false;
 }
 
-
-
 // Overload: Handle program inputs and outputs binding with pre-cached output shapes
 // This avoids calling prog.get_output_shapes() when shapes are already cached
 // When needs_slicing is true, allocates temporary GPU buffers for outputs instead of binding directly
@@ -2204,11 +2168,6 @@ std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program
     bool needs_slicing = false,
     std::vector<void*>* temp_output_buffers = nullptr)
 {
-  LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] ==== ENTERING ====";
-  LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] needs_slicing=" << needs_slicing 
-                        << ", temp_output_buffers=" << (temp_output_buffers != nullptr ? "valid" : "nullptr");
-  LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] param_shapes.size()=" << param_shapes.size()
-                        << ", output_shapes.size()=" << output_shapes.size();
   
   migraphx::program_parameters m;
   std::vector<std::size_t> prog_output_indices;
@@ -2235,11 +2194,6 @@ std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program
           output_count++;
           const auto& mgx_arg_shape = param_shapes[name];
           
-          LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] Processing output '" << name 
-                                << "' (index=" << output_index << ")"
-                                << ", needs_slicing=" << needs_slicing 
-                                << ", temp_output_buffers=" << (temp_output_buffers != nullptr ? "valid" : "nullptr");
-          
           if (needs_slicing && temp_output_buffers != nullptr) {
             // When slicing, use pre-allocated temp buffer or allocate new one
             // Don't add to prog_output_indices since these aren't pre-allocated ORT outputs
@@ -2250,8 +2204,6 @@ std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program
             if (temp_buffer_count < temp_output_buffers->size()) {
               // Use pre-allocated buffer from previous run
               temp_buffer = (*temp_output_buffers)[temp_buffer_count];
-              LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] ✓ REUSING pre-allocated TEMP BUFFER for output " 
-                                    << output_index << " '" << name << "' (" << output_size_bytes << " bytes)";
             } else {
               // Allocate new buffer (first run or buffer list is empty)
               auto hip_status = hipMalloc(&temp_buffer, output_size_bytes);
@@ -2259,17 +2211,11 @@ std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program
                 ORT_THROW("hipMalloc failed for temporary output buffer");
               }
               temp_output_buffers->push_back(temp_buffer);
-              LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] ✓ Allocated NEW TEMP BUFFER for output " 
-                                    << output_index << " '" << name << "' (" << output_size_bytes << " bytes)";
             }
             temp_buffer_count++;
             m.add(name, migraphx::argument(mgx_arg_shape, temp_buffer));
-            LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] - NOT adding to prog_output_indices";
           } else {
             // Normal path: bind directly to ORT output tensor
-            LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] Using NORMAL PATH for output " 
-                                  << output_index << " '" << name << "'"
-                                  << " - adding to prog_output_indices";
             prog_output_indices.push_back(static_cast<std::size_t>(output_index));
             const auto& lens = output_shapes[output_index].lengths();
             const std::vector<int64_t> ort_output_shape(lens.begin(), lens.end());
@@ -2280,13 +2226,6 @@ std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program
       }
     }
   }
-  
-  LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] ==== SUMMARY ====";
-  LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] Processed " << input_count << " inputs, " 
-                        << output_count << " outputs";
-  LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] Temp buffers allocated: " << temp_buffer_count;
-  LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] prog_output_indices.size()=" << prog_output_indices.size();
-  LOGS_DEFAULT(VERBOSE) << "[handle_program_input_outputs] ==== EXITING ====";
   
   return {m, prog_output_indices};
 }
@@ -2542,16 +2481,12 @@ static bool execute_fast_path(
     const std::string& current_hash,
     std::vector<std::int64_t>& all_input_shapes)
 {
-  LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Checking for cached program with hash: " << current_hash;
   
   if (mgx_state->defer_compilation || !mgx_state->cached_programs_ref.has_value()) {
-    LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Skipping - defer_compilation=" << mgx_state->defer_compilation
-                          << ", has cache=" << mgx_state->cached_programs_ref.has_value();
     return false;
   }
 
   auto& cached_programs = mgx_state->cached_programs_ref.value().get();
-  LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Memory cache size: " << cached_programs.size();
   auto prog_it = cached_programs.find(current_hash);
   
   // If not found directly, check if we need to use a padded batch size
@@ -2561,7 +2496,6 @@ static bool execute_fast_path(
   
   if (prog_it == cached_programs.end() && mgx_state->has_dynamic_batch && 
       !mgx_state->compiled_batch_sizes.empty()) {
-    LOGS_DEFAULT(VERBOSE) << "[FAST_PATH][DynamicBatch] Direct hash miss - checking for padded batch";
     // Try to find a padded batch size
     const auto& map_input_name_index = mgx_state->input_name_indexes;
     
@@ -2574,14 +2508,11 @@ static bool execute_fast_path(
         padded_batch_size = find_nearest_compiled_batch_size(original_batch_size,
                                                                     mgx_state->compiled_batch_sizes);
         needs_padding = (padded_batch_size > original_batch_size);
-        LOGS_DEFAULT(VERBOSE) << "[FAST_PATH][DynamicBatch] Original batch: " << original_batch_size
-                              << ", padded: " << padded_batch_size << ", needs_padding: " << needs_padding;
         break;
       }
     }
     
     if (needs_padding && padded_batch_size > 0) {
-      LOGS_DEFAULT(VERBOSE) << "[FAST_PATH][DynamicBatch] Building padded shape key for hash lookup";
       // Build padded shapes in alphabetical order (map order) for hash calculation
       // This matches the order used during compilation in compile_dynamic_batch_models
       std::vector<std::int64_t> padded_shapes_for_hash;
@@ -2599,17 +2530,13 @@ static bool execute_fast_path(
       }
       
       auto padded_hash = make_hash(padded_shapes_for_hash);
-      LOGS_DEFAULT(VERBOSE) << "[FAST_PATH][DynamicBatch] Padded hash (map order): " << padded_hash;
       prog_it = cached_programs.find(padded_hash);
       
       if (prog_it != cached_programs.end()) {
-        LOGS_DEFAULT(VERBOSE) << "[FAST_PATH][DynamicBatch] ✓✓✓ CACHE HIT using padded batch size " 
-                           << padded_batch_size << " for original batch " << original_batch_size;
         
         // Now rebuild padded_shapes in cached_inputs order for saving to last_input_shapes_raw
         // This ensures ultra-fast path shape comparison works correctly
         if (!mgx_state->cached_inputs.empty()) {
-          LOGS_DEFAULT(VERBOSE) << "[FAST_PATH][DynamicBatch] Rebuilding in cached_inputs order for saving";
           std::vector<std::int64_t> padded_shapes_for_cache;
           padded_shapes_for_cache.reserve(mgx_state->cached_inputs.size() * 2);
           
@@ -2628,16 +2555,11 @@ static bool execute_fast_path(
           // Fallback: use map order (shouldn't happen if caches are populated)
           all_input_shapes = std::move(padded_shapes_for_hash);
         }
-      } else {
-        LOGS_DEFAULT(VERBOSE) << "[FAST_PATH][DynamicBatch] Cache miss for padded hash too";
       }
     }
-  } else if (prog_it != cached_programs.end()) {
-    LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] ✓ CACHE HIT for exact hash";
   }
   
   if (prog_it == cached_programs.end()) {
-    LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] No cached program found";
     return false;
   }
 
@@ -2661,7 +2583,6 @@ static bool execute_fast_path(
   }
 
   // Found cached program - use it and populate caches
-  LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Using cached program (hash: " << effective_program_hash << ")";
   auto& prog = mgx_state->prog;
   prog = prog_it->second;
 
@@ -2674,19 +2595,14 @@ static bool execute_fast_path(
   bool program_changed = (mgx_state->cached_program_hash != effective_program_hash);
   
   if (program_changed) {
-    LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Program changed (old: " << mgx_state->cached_program_hash 
-                          << ", new: " << effective_program_hash << ") - clearing caches";
     clear_cached_mgx_shapes(mgx_state);
     free_temp_output_buffers(mgx_state);
     mgx_state->cached_program_hash = effective_program_hash;
   }
   
   if (!mgx_state->cached_mgx_param_shapes.has_value()) {
-    LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Caching MIGraphX shapes (first time or after program change)";
     mgx_state->cached_mgx_param_shapes = prog.get_parameter_shapes();
     mgx_state->cached_mgx_output_shapes = prog.get_output_shapes();
-  } else {
-    LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] ✓ Using cached MIGraphX shapes";
   }
   const auto& param_shapes = mgx_state->cached_mgx_param_shapes.value();
   const auto& output_shapes = mgx_state->cached_mgx_output_shapes.value();
@@ -2698,12 +2614,9 @@ static bool execute_fast_path(
   // OPTIMIZATION 2: Skip populate_ultra_fast_caches when already populated
   // ═══════════════════════════════════════════════════════════════════════════
   if (!mgx_state->ultra_fast_caches_populated) {
-    LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Populating ultra-fast caches (first time)";
     populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index,
                               original_batch_size, padded_batch_size);
     mgx_state->ultra_fast_caches_populated = true;
-  } else {
-    LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] ✓ Ultra-fast caches already populated";
   }
 
   // Allocate and pad inputs if needed for dynamic batching
@@ -2726,17 +2639,9 @@ static bool execute_fast_path(
   }
 
   // Bind inputs/outputs (use temp buffers for outputs when slicing)
-  LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Calling handle_program_input_outputs with needs_slicing=" << needs_slicing;
   auto [m, prog_output_indices] = handle_program_input_outputs(
       param_shapes, output_shapes, map_input_name_index, ctx, needs_slicing, 
       needs_slicing ? &temp_output_buffer_ptrs : nullptr);
-
-  LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] handle_program_input_outputs returned:";
-  LOGS_DEFAULT(VERBOSE) << "[FAST_PATH]   prog_output_indices.size()=" << prog_output_indices.size();
-  LOGS_DEFAULT(VERBOSE) << "[FAST_PATH]   temp_output_buffer_ptrs.size()=" << temp_output_buffer_ptrs.size();
-  if (needs_slicing && !prog_output_indices.empty()) {
-    LOGS_DEFAULT(VERBOSE) << "[FAST_PATH]   ⚠️  WARNING: prog_output_indices is NOT empty with slicing enabled!";
-  }
 
   mgx_state->cached_prog_params = std::move(m);
   mgx_state->cached_prog_output_indices = std::move(prog_output_indices);
@@ -2745,15 +2650,12 @@ static bool execute_fast_path(
   // This ensures ultra-fast path shape comparison uses consistent ordering
   mgx_state->last_input_shapes_raw = build_input_shapes_in_cached_order(
       mgx_state, ctx, using_padded_inputs ? padded_batch_size : 0);
-  LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Built last_input_shapes_raw in cached_inputs order, size=" 
-                        << mgx_state->last_input_shapes_raw.size();
   
   mgx_state->last_input_shape_hash = current_hash;
   mgx_state->caches_valid = true;
 
   // Rebind padded inputs to program parameters
   if (using_padded_inputs && mgx_state->padded_input_buffers.size() == mgx_state->cached_inputs.size()) {
-    LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Rebinding padded input buffers";
     auto& prog_params = mgx_state->cached_prog_params.value();
     for (size_t i = 0; i < mgx_state->cached_inputs.size(); ++i) {
       const auto& inp = mgx_state->cached_inputs[i];
@@ -2762,8 +2664,6 @@ static bool execute_fast_path(
     }
   }
 
-  LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Running program (original_batch=" << original_batch_size 
-                     << ", padded=" << padded_batch_size << ")";
   run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog,
                        mgx_state->cached_prog_params.value(),
                        mgx_state->cached_prog_output_indices,
@@ -2772,7 +2672,6 @@ static bool execute_fast_path(
   // NOTE: Temp output buffers are kept for reuse - they will be freed when batch size changes
   // NOTE: Padded input buffers are also kept for reuse
   
-  LOGS_DEFAULT(VERBOSE) << "[FAST_PATH] Complete";
   return true;
 }
 
@@ -2798,11 +2697,8 @@ static InputShapeResult handle_input_shape(
   std::vector<std::int64_t> input_shapes;
 
   if (defer_compilation) {
-    LOGS_DEFAULT(VERBOSE) << "[Compute] No static input shapes available, setting from runtime inputs";
     // NOTE: map_input_name_index only contains actual model inputs, not constants/initializers
     // Constants and initializers are embedded in the graph and MIGraphX infers their shapes
-    LOGS_DEFAULT(VERBOSE) << "[Compute] Setting shapes for " << map_input_name_index.size()
-                          << " model input parameters (excluding constants)";
 
     for (const auto& it : map_input_name_index) {
       const auto& name = it.first;
@@ -2819,10 +2715,7 @@ static InputShapeResult handle_input_shape(
       // Include all inputs in cache key (map_input_name_index already filtered to model inputs only)
       input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
     }
-    LOGS_DEFAULT(VERBOSE) << "[Compute] All runtime input shapes set as static parameters in MIGraphX options";
-    LOGS_DEFAULT(VERBOSE) << "[Compute] MIGraphX will infer shapes for constants and intermediate tensors";
   } else {
-    LOGS_DEFAULT(VERBOSE) << "[Compute] Checking if compiled program shapes match runtime inputs";
     param_shapes = prog.get_parameter_shapes();
 
     // Check if all input shapes match the compiled program's shapes
@@ -2846,8 +2739,6 @@ static InputShapeResult handle_input_shape(
 
           // Check if shapes match
           if (mgx_lens != ort_lens) {
-            LOGS_DEFAULT(VERBOSE) << "[Compute] Shape mismatch for input '" << name << "': "
-                                  << "compiled shape vs runtime shape differ";
             cmp_options.set_input_parameter_shape(name, ort_lens);
             input_shape_match = false;
           }
@@ -3029,10 +2920,6 @@ static void execute_standard_path(
     const std::filesystem::path& model_path,
     const std::string& mxr_filename_prefix)
 {
-  LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH] ==== ENTERING execute_standard_path ====";
-  LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH] current_hash = " << current_hash;
-  LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH] has_dynamic_batch = " << mgx_state->has_dynamic_batch;
-  LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH] max_dynamic_batch = " << mgx_state->max_dynamic_batch;
   
   auto& prog = mgx_state->prog;
   auto& cmp_options = mgx_state->options;
@@ -3044,19 +2931,11 @@ static void execute_standard_path(
   // In that case, the programs are already in cache and we can skip runtime compilation
   if (mgx_state->has_dynamic_batch && mgx_state->max_dynamic_batch > 0 && mgx_state->defer_compilation) {
     // Runtime compilation path - used when precompilation was not possible (e.g., non-pure dynamic batch)
-    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] *** RUNTIME COMPILATION REQUIRED ***";
-    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] max_dynamic_batch=" 
-                       << mgx_state->max_dynamic_batch;
-    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Initiating runtime compilation of batch models";
     
     // Compile all batch models at runtime
     compile_dynamic_batch_models(mgx_state, model_cache_path, model_path, mxr_filename_prefix, ctx);
     
-    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Runtime compilation complete, max_dynamic_batch now = " 
-                       << mgx_state->max_dynamic_batch;
-    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Proceeding with execution using closest compiled batch";
   } else if (mgx_state->has_dynamic_batch) {
-    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Dynamic batch enabled, models already precompiled";
   }
 
   // Extract current batch size from first input
@@ -3065,7 +2944,6 @@ static void execute_standard_path(
   bool needs_padding = false;
   
   if (mgx_state->has_dynamic_batch && !mgx_state->compiled_batch_sizes.empty()) {
-    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Checking for batch padding requirements";
     // Get the batch size from the first input
     for (const auto& [name, index] : map_input_name_index) {
       auto input_tensor = ctx.GetInput(index);
@@ -3077,9 +2955,6 @@ static void execute_standard_path(
                                                                     mgx_state->compiled_batch_sizes);
         needs_padding = (padded_batch_size > original_batch_size);
         
-        LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Original batch size: " << original_batch_size;
-        LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Padded batch size: " << padded_batch_size;
-        LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Needs padding: " << (needs_padding ? "YES" : "NO");
         break;  // Only need batch size from first input
       }
     }
@@ -3087,11 +2962,6 @@ static void execute_standard_path(
     // We need to fetch from cache whether padding is needed or not
     // Even when batch size matches exactly, we still use cached compiled programs
     if (padded_batch_size > 0) {
-      if (needs_padding) {
-        LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Building padded shape key for cache lookup (needs padding)";
-      } else {
-        LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Building shape key for cache lookup (exact match, no padding)";
-      }
       // Update the shape hash and all_input_shapes to use the padded batch size
       std::vector<std::int64_t> padded_shapes;
       padded_shapes.reserve(all_input_shapes.size());
@@ -3110,28 +2980,19 @@ static void execute_standard_path(
       
       // Look up the cached program for the padded batch size
       auto padded_hash = make_hash(padded_shapes);
-      LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Padded shape hash: " << padded_hash;
       
       if (mgx_state->cached_programs_ref.has_value()) {
         auto& cached_progs = mgx_state->cached_programs_ref.value().get();
-        LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Searching in memory cache (size: " 
-                          << cached_progs.size() << ")";
         auto prog_it = cached_progs.find(padded_hash);
         if (prog_it != cached_progs.end()) {
-          LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] ✓✓✓ CACHE HIT for batch size " 
-                             << padded_batch_size << (needs_padding ? " (will pad)" : " (exact match, no padding)");
           prog = prog_it->second;
           
           // Get shapes for the cached program
           auto param_shapes = prog.get_parameter_shapes();
           auto output_shapes = prog.get_output_shapes();
           
-          LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Cached program param_shapes.size()=" 
-                               << param_shapes.size() << ", output_shapes.size()=" << output_shapes.size();
-          
           if (needs_padding) {
             // ============ PADDING PATH: Batch size needs to be padded ============
-            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Taking PADDING path";
             
             // Populate caches (with slicing info so ultra-fast path is disabled)
             populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index,
@@ -3151,7 +3012,6 @@ static void execute_standard_path(
                 padded_shapes.insert(padded_shapes.end(), tensor_shape.begin() + 1, tensor_shape.end());
               }
             }
-            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Rebuilt padded_shapes in cached_inputs order";
             
             // Allocate and pad inputs for dynamic batching
             void* rocm_stream_ptr;
@@ -3161,20 +3021,9 @@ static void execute_standard_path(
                                                                padded_batch_size, rocm_stream);
             
             // Bind inputs and outputs with temporary output buffers (for slicing)
-            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Calling handle_program_input_outputs with needs_slicing=true";
-            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] param_shapes.size()=" << param_shapes.size()
-                                 << ", output_shapes.size()=" << output_shapes.size();
             std::vector<void*> temp_output_buffers;
             auto [m, prog_output_indices] = handle_program_input_outputs(
                 param_shapes, output_shapes, map_input_name_index, ctx, true, &temp_output_buffers);
-            
-            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] handle_program_input_outputs returned:";
-            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch]   prog_output_indices.size()=" << prog_output_indices.size();
-            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch]   temp_output_buffers.size()=" << temp_output_buffers.size();
-            if (!prog_output_indices.empty()) {
-              LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch]   ⚠️  WARNING: prog_output_indices is NOT empty!";
-              LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch]   ⚠️  This means outputs were pre-allocated instead of using temp buffers!";
-            }
             
             mgx_state->cached_prog_params = m;
             mgx_state->cached_prog_output_indices = prog_output_indices;
@@ -3184,7 +3033,6 @@ static void execute_standard_path(
             
             // Rebind padded inputs to program parameters
             if (using_padded_inputs && mgx_state->padded_input_buffers.size() == mgx_state->cached_inputs.size()) {
-              LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Rebinding padded input buffers";
               for (size_t i = 0; i < mgx_state->cached_inputs.size(); ++i) {
                 const auto& inp = mgx_state->cached_inputs[i];
                 const auto& padded_buf = mgx_state->padded_input_buffers[i];
@@ -3192,7 +3040,6 @@ static void execute_standard_path(
               }
             }
             
-            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Running with output slicing enabled";
             // Run with slicing enabled
             run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, 
                                 prog_output_indices, original_batch_size, padded_batch_size);
@@ -3207,11 +3054,9 @@ static void execute_standard_path(
             // NOTE: Padded buffers are kept for reuse - they will be freed when batch size changes
             // or when the state is destroyed
             
-            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] ==== EXITING execute_standard_path (padded path) ====";
             return;
           } else {
             // ============ EXACT MATCH PATH: Batch size matches exactly, no padding needed ============
-            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Taking EXACT MATCH path (no padding/slicing)";
             
             // Populate caches for ultra-fast path (no slicing needed)
             populate_ultra_fast_caches(mgx_state, param_shapes, output_shapes, map_input_name_index);
@@ -3220,9 +3065,6 @@ static void execute_standard_path(
             auto [m, prog_output_indices] = handle_program_input_outputs(
                 param_shapes, output_shapes, map_input_name_index, ctx);
             
-            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] handle_program_input_outputs returned:";
-            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch]   prog_output_indices.size()=" << prog_output_indices.size();
-            
             // Complete cache population
             mgx_state->cached_prog_params = m;
             mgx_state->cached_prog_output_indices = prog_output_indices;
@@ -3230,37 +3072,24 @@ static void execute_standard_path(
             // IMPORTANT: Build last_input_shapes_raw in cached_inputs order (MIGraphX parameter order)
             // This ensures ultra-fast path shape comparison uses consistent ordering
             mgx_state->last_input_shapes_raw = build_input_shapes_in_cached_order(mgx_state, ctx, 0);
-            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Built last_input_shapes_raw in cached_inputs order, size=" 
-                                  << mgx_state->last_input_shapes_raw.size();
             
             mgx_state->last_input_shape_hash = current_hash;
             mgx_state->caches_valid = true;
             
-            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] Running program (exact batch match, no padding/slicing)";
             run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, prog_output_indices, 
                                 0, 0);  // Pass 0,0 for batch sizes to indicate no slicing needed
             
-            LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] ==== EXITING execute_standard_path (exact match path) ====";
             return;
           }
-        } else {
-          LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] ✗✗✗ CACHE MISS for hash " 
-                                << padded_hash;
-          LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH][DynamicBatch] This shouldn't happen - expected batch "
-                                << padded_batch_size << " to be pre-compiled";
         }
       }
     }
   }
 
-  LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH] Proceeding with normal shape checking";
   auto [input_shape_match, param_shapes, input_shapes] = handle_input_shape(
       mgx_state->defer_compilation, map_input_name_index, ctx, cmp_options, prog);
 
-  LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH] input_shape_match = " << input_shape_match;
-  
   if (!input_shape_match) {
-    LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH] Shape mismatch detected - recompiling";
     // Invalidate caches before recompilation
     mgx_state->caches_valid = false;
 
@@ -3294,16 +3123,12 @@ static void execute_standard_path(
   // IMPORTANT: Build last_input_shapes_raw in cached_inputs order (MIGraphX parameter order)
   // This ensures ultra-fast path shape comparison uses consistent ordering
   mgx_state->last_input_shapes_raw = build_input_shapes_in_cached_order(mgx_state, ctx, 0);
-  LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH] Built last_input_shapes_raw in cached_inputs order, size=" 
-                        << mgx_state->last_input_shapes_raw.size();
   
   mgx_state->last_input_shape_hash = current_hash;
   mgx_state->caches_valid = true;
 
-  LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH] Running program (no padding/slicing)";
   run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, prog_output_indices, 
                       original_batch_size, padded_batch_size);
-  LOGS_DEFAULT(VERBOSE) << "[STANDARD_PATH] ==== EXITING execute_standard_path (normal path) ====";
 }
 
 // Build MIGraphX ONNX options with default shapes for symbolic dimensions
@@ -3318,7 +3143,6 @@ static migraphx::onnx_options get_program_parameter_options(
   for (std::size_t i = 0; i < input_names.size(); ++i) {
     // Skip if this is an initializer/constant - let MIGraphX infer its shape
     if (initializers.count(input_names[i]) > 0) {
-      LOGS_DEFAULT(VERBOSE) << "[Compile] Skipping '" << input_names[i] << "' (initializer/constant)";
       continue;
     }
 
@@ -3336,14 +3160,11 @@ static migraphx::onnx_options get_program_parameter_options(
             // Symbolic or unknown dimension - use default batch size for dim 0, 1 for others
             has_symbolic = true;
             default_shape.push_back(j == 0 ? default_batch_size : 1);
-            LOGS_DEFAULT(VERBOSE) << "[Compile] Input parameter '" << input_names[i]
-                                  << "' dimension " << j << " is symbolic, using default";
           }
         }
 
         if (has_symbolic && !default_shape.empty()) {
           options.set_input_parameter_shape(input_names[i], default_shape);
-          LOGS_DEFAULT(VERBOSE) << "[Compile] Set default shape for input parameter '" << input_names[i] << "'";
         }
       }
     }
