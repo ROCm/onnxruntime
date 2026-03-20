@@ -2111,13 +2111,6 @@ static void handle_input_shape_mismatch(
     const auto tensor_shape = tensor_info.GetShape();
     std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
     cmp_options.set_input_parameter_shape(name, ort_lens);
-
-                              for (size_t i = 0; i < ort_lens.size(); ++i) {
-                                if (i > 0) ss << ", ";
-                                ss << ort_lens[i];
-                              }
-                              return ss.str();
-                            }() << "]";
   }
 
   // Use load_or_compile_model helper - handles cache loading, compilation, and saving
