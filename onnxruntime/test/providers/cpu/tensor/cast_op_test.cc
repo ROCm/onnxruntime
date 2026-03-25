@@ -75,6 +75,17 @@ void TestCastOp(gsl::span<const SrcType> input,
     excluded_provider_types.insert(kCudaExecutionProvider);
   }
 
+  if (cuda_only && (excluded_provider_types.count(kCudaExecutionProvider) > 0)) {
+    return;
+  }
+
+  std::vector<std::unique_ptr<IExecutionProvider>> execution_providers;
+  if (cuda_only) {
+    execution_providers.push_back(DefaultCudaExecutionProvider());
+    test.Run(expect_result, expected_failure_string, {}, nullptr, &execution_providers);
+    return;
+  }
+
   if (input.size() == 0) {
     // The OpenVINO doesn't support 0 size input
     excluded_provider_types.insert(kOpenVINOExecutionProvider);

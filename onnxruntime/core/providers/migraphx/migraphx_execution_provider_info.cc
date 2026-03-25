@@ -72,17 +72,21 @@ MIGraphXExecutionProviderInfo::MIGraphXExecutionProviderInfo(const ProviderOptio
           .AddAssignmentToReference(migraphx_provider_option::kExhaustiveTune, exhaustive_tune)
           .AddAssignmentToReference(migraphx_provider_option::kMemLimit, mem_limit)
           .AddAssignmentToEnumReference(migraphx_provider_option::kArenaExtendStrategy, arena_extend_strategy_mapping, arena_extend_strategy)
+          .AddAssignmentToReference(migraphx_provider_option::kModelMaxDynamicBatch, max_dynamic_batch)
+          .AddAssignmentToReference(migraphx_provider_option::kCompileBatches, compile_batches)
           .Parse(options));
 }
 
 MIGraphXExecutionProviderInfo::MIGraphXExecutionProviderInfo(const OrtMIGraphXProviderOptions& options) noexcept
     : device_id{static_cast<OrtDevice::DeviceId>(options.device_id)},
       fp16_enable{options.migraphx_fp16_enable != 0},
+      bf16_enable{options.migraphx_bf16_enable != 0},
       fp8_enable{options.migraphx_fp8_enable != 0},
       int8_enable{options.migraphx_int8_enable != 0},
       exhaustive_tune{options.migraphx_exhaustive_tune != 0},
       mem_limit{options.migraphx_mem_limit},
-      arena_extend_strategy{options.migraphx_arena_extend_strategy} {
+      arena_extend_strategy{options.migraphx_arena_extend_strategy},
+      max_dynamic_batch{options.migraphx_max_dynamic_batch} {
 }
 
 ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions() const {
@@ -101,6 +105,8 @@ ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions() const {
       {std::string{migraphx_provider_option::kGpuExternalFree}, MakeStringWithClassicLocale(external_free)},
       {std::string{migraphx_provider_option::kGpuExternalEmptyCache}, MakeStringWithClassicLocale(external_empty_cache)},
       {std::string{migraphx_provider_option::kModelCacheDir}, MakeStringWithClassicLocale(model_cache_dir)},
+      {std::string{migraphx_provider_option::kModelMaxDynamicBatch}, MakeStringWithClassicLocale(max_dynamic_batch)},
+      {std::string{migraphx_provider_option::kCompileBatches}, compile_batches},
   };
 }
 
