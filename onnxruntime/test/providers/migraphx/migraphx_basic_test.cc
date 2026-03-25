@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "core/graph/onnx_protobuf.h"
+#include "core/session/onnxruntime_cxx_api.h"
 #include "core/session/inference_session.h"
 #include "test/providers/provider_test_utils.h"
 #include "test/unittest_util/framework_test_utils.h"
@@ -189,6 +190,7 @@ TEST(MIGraphXExecutionProviderTest, canEvalArgument) {
 }
 
 #if defined(WIN32)
+
 static bool SessionHasEp(Ort::Session& session, const char* ep_name) {
   // Access the underlying InferenceSession.
   const OrtSession* ort_session = session;
