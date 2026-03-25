@@ -356,7 +356,11 @@ static bool getMIGraphXType(ONNXTensorElementDataType type,
 }
 
 std::vector<int64_t> toVector(const ONNX_NAMESPACE::int64s& nums) {
-  return {nums.begin(), nums.end()};
+  std::vector<int64_t> result;
+  for (int i{}; i < nums.size(); ++i) {
+    result.push_back(nums[i]);
+  }
+  return result;
 }
 
 static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* node) {
