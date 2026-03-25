@@ -374,7 +374,6 @@ struct TypeProto_Sequence final {
 
 struct TypeProto final {
   static std::unique_ptr<TypeProto> Create() { return g_host->TypeProto__construct(); }
-  static void operator delete(void* p) { g_host->TypeProto__operator_delete(reinterpret_cast<TypeProto*>(p)); }
 
   bool has_tensor_type() const { return g_host->TypeProto__has_tensor_type(this); }
   const TypeProto_Tensor& tensor_type() const { return g_host->TypeProto__tensor_type(this); }
@@ -787,8 +786,10 @@ class DataTypeImpl final {
   static const std::vector<MLDataType>& AllTensorTypes() { return g_host->DataTypeImpl__AllTensorTypes(); }
   static const std::vector<MLDataType>& AllTensorTypesIRv4() { return g_host->DataTypeImpl__AllTensorTypesIRv4(); }
   static const std::vector<MLDataType>& AllTensorTypesIRv9() { return g_host->DataTypeImpl__AllTensorTypesIRv9(); }
+#if !defined(DISABLE_FLOAT4_TYPES)
   static const std::vector<MLDataType>& AllTensorTypesIRv10() { return g_host->DataTypeImpl__AllTensorTypesIRv10(); }
   static const std::vector<MLDataType>& AllTensorTypesIRv11() { return g_host->DataTypeImpl__AllTensorTypesIRv11(); }
+#endif
 
   static const std::vector<MLDataType>& AllIEEEFloatTensorTypes() { return g_host->DataTypeImpl__AllIEEEFloatTensorTypes(); }
 
