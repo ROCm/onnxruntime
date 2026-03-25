@@ -21,7 +21,6 @@
 #include "contrib_ops/cuda/transformers/greedy_search_top_one.h"
 #include "core/providers/cuda/tensor/transpose.h"
 
-// the includes would be dummy for ROCm, we will ignore them for now
 #ifdef ENABLE_NVTX_PROFILE
 #include "core/providers/cuda/nvtx_profile.h"
 #include "core/providers/cuda/nvtx_profile_context.h"
@@ -685,10 +684,10 @@ CudaBeamSearchScorer::CudaBeamSearchScorer(const transformers::IGenerationParame
   CUDA_CALL_THROW(cudaEventCreate(&event_process_complete_.Get()));
 
   state_cpu_ = AllocateCPUPinned<cuda::BeamScorerState>();
-  state_cpu_->batch_size_ = static_cast<size_t>(parameters.batch_size);
-  state_cpu_->num_beams_ = static_cast<size_t>(parameters.num_beams);
-  state_cpu_->max_length_ = static_cast<size_t>(parameters.max_length);
-  state_cpu_->num_return_sequences_ = static_cast<size_t>(parameters.num_return_sequences);
+  state_cpu_->batch_size_ = static_cast<int>(parameters.batch_size);
+  state_cpu_->num_beams_ = static_cast<int>(parameters.num_beams);
+  state_cpu_->max_length_ = static_cast<int>(parameters.max_length);
+  state_cpu_->num_return_sequences_ = static_cast<int>(parameters.num_return_sequences);
   state_cpu_->pad_token_id_ = parameters.pad_token_id;
   state_cpu_->eos_token_id_ = parameters.eos_token_id;
   state_cpu_->early_stopping_ = parameters.early_stopping;

@@ -17,6 +17,7 @@
 namespace onnxruntime {
 struct IExecutionProviderFactory;
 class IExecutionProvider;
+struct ConfigOptions;
 
 namespace logging {
 class Logger;
@@ -46,6 +47,10 @@ struct InitializationConfig {
   std::vector<size_t> selected_ep_device_indices{};
 
   std::map<std::string, std::string> default_ep_options{};
+
+  // Specifies any tests to skip.
+  // Tests should be specified by full name, i.e., "<test suite name>.<test name>".
+  std::vector<std::string> tests_to_skip{};
 };
 
 // Parses `InitializationConfig` from JSON.
@@ -70,10 +75,14 @@ bool IsInitialized();
 void Shutdown();
 
 // Returns a dynamic plugin EP `IExecutionProvider` instance, or `nullptr` if uninitialized.
-std::unique_ptr<IExecutionProvider> MakeEp(const logging::Logger* logger = nullptr);
+// `ep_options` provides additional EP-specific option overrides (key-value pairs) on top of the defaults.
+std::unique_ptr<IExecutionProvider> MakeEp(const logging::Logger* logger = nullptr, const ConfigOptions* ep_options = nullptr);
 
 // Gets the dynamic plugin EP name, or `std::nullopt` if uninitialized.
 std::optional<std::string> GetEpName();
+
+// Gets the list of tests to skip, or an empty list if uninitialized.
+std::vector<std::string> GetTestsToSkip();
 
 }  // namespace dynamic_plugin_ep_infra
 }  // namespace test

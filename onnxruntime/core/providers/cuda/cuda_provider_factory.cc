@@ -181,7 +181,22 @@ struct ProviderInfo_CUDA_Impl final : ProviderInfo_CUDA {
   }
 
   std::shared_ptr<IAllocator> CreateCudaAllocator(int16_t device_id, size_t gpu_mem_limit, onnxruntime::ArenaExtendStrategy arena_extend_strategy, onnxruntime::CUDAExecutionProviderExternalAllocatorInfo& external_allocator_info, const OrtArenaCfg* default_memory_arena_cfg) override {
-    return CUDAExecutionProvider::CreateCudaAllocator(device_id, gpu_mem_limit, arena_extend_strategy, external_allocator_info, default_memory_arena_cfg);
+    CUDAExecutionProvider::CUDAAllocatorParams params{};
+    params.device_id = device_id;
+    params.cuda_mem_threshold = gpu_mem_limit;
+    params.arena_extend_strategy = arena_extend_strategy;
+    params.external_alloc_info = &external_allocator_info;
+    params.arena_cfg = default_memory_arena_cfg;
+    return CUDAExecutionProvider::CreateCudaAllocator(params);
+  }
+
+  std::shared_ptr<IAllocator> CreateCudaPinnedAllocator(int16_t device_id, size_t gpu_mem_limit, onnxruntime::ArenaExtendStrategy arena_extend_strategy, const OrtArenaCfg* default_memory_arena_cfg) override {
+    CUDAExecutionProvider::CUDAAllocatorParams params{};
+    params.device_id = device_id;
+    params.cuda_mem_threshold = gpu_mem_limit;
+    params.arena_extend_strategy = arena_extend_strategy;
+    params.arena_cfg = default_memory_arena_cfg;
+    return CUDAExecutionProvider::CreateCudaPinnedAllocator(params);
   }
 } g_info;
 
@@ -667,8 +682,8 @@ struct CudaEpFactory : OrtEpFactory {
   using MemoryInfoUniquePtr = std::unique_ptr<OrtMemoryInfo, std::function<void(OrtMemoryInfo*)>>;
 
   CudaEpFactory(const OrtApi& ort_api_in, const OrtLogger& default_logger_in) : ort_api{ort_api_in},
-                                                                                default_logger{default_logger_in},
                                                                                 ep_api{*ort_api_in.GetEpApi()},
+                                                                                default_logger{default_logger_in},
                                                                                 data_transfer_impl{ort_api_in} {
     GetName = GetNameImpl;
     GetVendor = GetVendorImpl;
@@ -931,8 +946,8 @@ struct CudaEpFactory : OrtEpFactory {
   CudaEpFactory(const CudaEpFactory&) = delete;
   CudaEpFactory& operator=(const CudaEpFactory&) = delete;
 
-  CudaEpFactory(CudaEpFactory&&) = default;
-  CudaEpFactory& operator=(CudaEpFactory&&) = default;
+  CudaEpFactory(CudaEpFactory&&) = delete;
+  CudaEpFactory& operator=(CudaEpFactory&&) = delete;
 };
 
 extern "C" {

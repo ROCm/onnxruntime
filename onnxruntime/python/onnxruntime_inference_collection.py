@@ -10,6 +10,7 @@ import os
 import typing
 import warnings
 from collections.abc import Callable, Sequence
+from enum import IntEnum
 from typing import Any
 
 from onnxruntime.capi import _pybind_state as C
@@ -38,6 +39,30 @@ def get_ort_device_type(device_type: str) -> int:
         return C.OrtDevice.npu()
     else:
         raise Exception("Unsupported device type: " + device_type)
+
+
+class OrtDeviceVendorId(IntEnum):
+    """Vendor IDs aligned with OrtDevice::VendorIds in ortdevice.h."""
+
+    NONE = 0x0000
+    AMD = 0x1002
+    NVIDIA = 0x10DE
+    ARM = 0x13B5
+    MICROSOFT = 0x1414
+    HUAWEI = 0x19E5
+    QUALCOMM = 0x5143
+    INTEL = 0x8086
+
+
+def get_vendor_id_for_device_type(device_type: str) -> OrtDeviceVendorId | None:
+    if device_type == "cuda":
+        return OrtDeviceVendorId.NVIDIA
+    elif device_type == "dml":
+        return OrtDeviceVendorId.MICROSOFT
+    elif device_type == "cann":
+        return OrtDeviceVendorId.HUAWEI
+    else:
+        return None
 
 
 class AdapterFormat:
@@ -219,6 +244,15 @@ class Session:
         "Return registered execution providers' configurations."
         return self._provider_options
 
+    def get_provider_graph_assignment_info(self) -> Sequence[onnxruntime.OrtEpAssignedSubgraph]:
+        """
+        Get information about the subgraphs assigned to each execution provider and the nodes within.
+
+        Application must enable the recording of graph assignment information by setting the session configuration
+        for the key "session.record_ep_graph_assignment_info" to "1".
+        """
+        return self._sess.get_provider_graph_assignment_info()
+
     def set_providers(self, providers=None, provider_options=None) -> None:
         """
         Register the input list of execution providers. The underlying session is re-created.
@@ -397,6 +431,16 @@ class Session:
         """
         self._sess.run_with_iobinding(iobinding._iobinding, run_options)
 
+    def set_ep_dynamic_options(self, options: dict[str, str]):
+        """
+        Set dynamic options for execution providers.
+
+        :param options: Dictionary of key-value pairs where both keys and values are strings.
+                        These options will be passed to the execution providers to modify
+                        their runtime behavior.
+        """
+        self._sess.set_ep_dynamic_options(options)
+
     def get_tuning_results(self):
         return self._sess.get_tuning_results()
 
@@ -502,8 +546,42 @@ class InferenceSession(Session):
     def _create_inference_session(self, providers, provider_options, disabled_optimizers=None):
         available_providers = C.get_available_providers()
 
-        # Tensorrt can fall back to CUDA if it's explicitly assigned. All others fall back to CPU.
-        if "TensorrtExecutionProvider" in available_providers:
+        # Validate that TensorrtExecutionProvider and NvTensorRTRTXExecutionProvider are not both specified
+        if providers:
+            has_tensorrt = any(
+                provider == "TensorrtExecutionProvider"
+                or (isinstance(provider, tuple) and provider[0] == "TensorrtExecutionProvider")
+                for provider in providers
+            )
+            has_tensorrt_rtx = any(
+                provider == "NvTensorRTRTXExecutionProvider"
+                or (isinstance(provider, tuple) and provider[0] == "NvTensorRTRTXExecutionProvider")
+                for provider in providers
+            )
+            if has_tensorrt and has_tensorrt_rtx:
+                raise ValueError(
+                    "Cannot enable both 'TensorrtExecutionProvider' and 'NvTensorRTRTXExecutionProvider' "
+                    "in the same session."
+                )
+        # Tensorrt and TensorRT RTX can fall back to CUDA if it's explicitly assigned. All others fall back to CPU.
+        if "NvTensorRTRTXExecutionProvider" in available_providers:
+            if (
+                providers
+                and any(
+                    provider == "CUDAExecutionProvider"
+                    or (isinstance(provider, tuple) and provider[0] == "CUDAExecutionProvider")
+                    for provider in providers
+                )
+                and any(
+                    provider == "NvTensorRTRTXExecutionProvider"
+                    or (isinstance(provider, tuple) and provider[0] == "NvTensorRTRTXExecutionProvider")
+                    for provider in providers
+                )
+            ):
+                self._fallback_providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            else:
+                self._fallback_providers = ["CPUExecutionProvider"]
+        elif "TensorrtExecutionProvider" in available_providers:
             if (
                 providers
                 and any(
@@ -518,33 +596,6 @@ class InferenceSession(Session):
                 )
             ):
                 self._fallback_providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            else:
-                self._fallback_providers = ["CPUExecutionProvider"]
-        if "NvTensorRTRTXExecutionProvider" in available_providers:
-            if (
-                providers
-                and any(
-                    provider == "CUDAExecutionProvider"
-                    or (isinstance(provider, tuple) and provider[0] == "CUDAExecutionProvider")
-                    for provider in providers
-                )
-                and any(
-                    provider == "NvTensorRTRTXExecutionProvider"
-                    or (isinstance(provider, tuple) and provider[0] == "NvExecutionProvider")
-                    for provider in providers
-                )
-            ):
-                self._fallback_providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            else:
-                self._fallback_providers = ["CPUExecutionProvider"]
-        # MIGraphX can fall back to ROCM if it's explicitly assigned. All others fall back to CPU.
-        elif "MIGraphXExecutionProvider" in available_providers:
-            if providers and any(
-                provider == "ROCMExecutionProvider"
-                or (isinstance(provider, tuple) and provider[0] == "ROCMExecutionProvider")
-                for provider in providers
-            ):
-                self._fallback_providers = ["ROCMExecutionProvider", "CPUExecutionProvider"]
             else:
                 self._fallback_providers = ["CPUExecutionProvider"]
         else:
@@ -986,7 +1037,9 @@ class OrtValue:
         return self._ortvalue
 
     @classmethod
-    def ortvalue_from_numpy(cls, numpy_obj: np.ndarray, /, device_type="cpu", device_id=0, vendor_id=-1) -> OrtValue:
+    def ortvalue_from_numpy(
+        cls, numpy_obj: np.ndarray, /, device_type="cpu", device_id=0, vendor_id: int | OrtDeviceVendorId = -1
+    ) -> OrtValue:
         """
         Factory method to construct an OrtValue (which holds a Tensor) from a given Numpy object
         A copy of the data in the Numpy object is held by the OrtValue only if the device is NOT cpu
@@ -994,7 +1047,7 @@ class OrtValue:
         :param numpy_obj: The Numpy object to construct the OrtValue from
         :param device_type: e.g. cpu, cuda, cann, cpu by default
         :param device_id: device id, e.g. 0
-        :param vendor_id: The device's PCI vendor id. If provided, the device_type should be "gpu" or "npu".
+        :param vendor_id: The device's PCI vendor id as an int or OrtDeviceVendorId. If provided, the device_type should be "gpu" or "npu".
         """
         # Hold a reference to the numpy object (if device_type is 'cpu') as the OrtValue
         # is backed directly by the data buffer of the numpy object and so the numpy object
@@ -1023,7 +1076,12 @@ class OrtValue:
 
     @classmethod
     def ortvalue_from_shape_and_type(
-        cls, shape: Sequence[int], element_type, device_type: str = "cpu", device_id: int = 0, vendor_id: int = -1
+        cls,
+        shape: Sequence[int],
+        element_type,
+        device_type: str = "cpu",
+        device_id: int = 0,
+        vendor_id: int | OrtDeviceVendorId = -1,
     ) -> OrtValue:
         """
         Factory method to construct an OrtValue (which holds a Tensor) from given shape and element_type
@@ -1032,7 +1090,7 @@ class OrtValue:
         :param element_type: The data type of the elements. It can be either numpy type (like numpy.float32) or an integer for onnx type (like onnx.TensorProto.BFLOAT16).
         :param device_type: e.g. cpu, cuda, cann, cpu by default
         :param device_id: device id, e.g. 0
-        :param vendor_id: If provided the device type should be "gpu" or "npu".
+        :param vendor_id: The device's PCI vendor id as an int or OrtDeviceVendorId. If provided, the device type should be "gpu" or "npu".
         """
 
         device = OrtDevice.make(device_type, device_id, vendor_id)._get_c_device()
@@ -1185,9 +1243,24 @@ class OrtDevice:
         return self._ort_device
 
     @staticmethod
-    def make(ort_device_name, device_id, vendor_id=-1):
+    def make(ort_device_name, device_id, vendor_id: int | OrtDeviceVendorId = -1):
         if vendor_id < 0:
-            # backwards compatibility with predefined OrtDevice names
+            # Preserve the historical convenience aliases ("cuda", "dml", "cann")
+            # while making them work with plugin EP shared allocators. Those
+            # allocators are keyed by vendor-specific OrtDevice values even when the
+            # Python package itself was built without the corresponding built-in EP.
+            alias_vendor_id = get_vendor_id_for_device_type(ort_device_name)
+            if alias_vendor_id is not None:
+                return OrtDevice(
+                    C.OrtDevice(
+                        get_ort_device_type(ort_device_name),
+                        C.OrtDevice.default_memory(),
+                        int(alias_vendor_id),
+                        device_id,
+                    )
+                )
+
+            # backwards compatibility with generic predefined OrtDevice names
             return OrtDevice(
                 C.OrtDevice(
                     get_ort_device_type(ort_device_name),
@@ -1202,7 +1275,7 @@ class OrtDevice:
                 C.OrtDevice(
                     get_ort_device_type(ort_device_name),
                     C.OrtDevice.default_memory(),
-                    vendor_id,
+                    int(vendor_id),
                     device_id,
                 )
             )

@@ -15,12 +15,17 @@
 #pragma warning(push)
 // 'fp4_interpretation' : unreferenced parameter
 #pragma warning(disable : 4100)
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
 #endif
 
 #include <cuda_fp4.h>
 
 #if defined(_MSC_VER)
 #pragma warning(pop)
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
 #endif
 
 #endif
@@ -30,6 +35,7 @@
 #include "core/common/float8.h"
 #include "core/common/float16.h"
 #include "core/framework/float4.h"
+#include "core/util/math.h"
 #include "core/providers/cuda/cuda_pch.h"
 #include "core/providers/cuda/shared_inc/cuda_call.h"
 #include "core/providers/cuda/shared_inc/fast_divmod.h"
@@ -41,7 +47,6 @@ namespace cuda {
 #define CUDA_RETURN_IF_ERROR(expr) ORT_RETURN_IF_ERROR(CUDA_CALL(expr))
 #ifndef USE_CUDA_MINIMAL
 #define CUBLAS_RETURN_IF_ERROR(expr) ORT_RETURN_IF_ERROR(CUBLAS_CALL(expr))
-#define CUSPARSE_RETURN_IF_ERROR(expr) ORT_RETURN_IF_ERROR(CUSPARSE_CALL(expr))
 #define CURAND_RETURN_IF_ERROR(expr) ORT_RETURN_IF_ERROR(CURAND_CALL(expr))
 #define CUDNN_RETURN_IF_ERROR(expr) ORT_RETURN_IF_ERROR(CUDNN_CALL(expr))
 #define CUDNN2_RETURN_IF_ERROR(expr, m) ORT_RETURN_IF_ERROR(CUDNN_CALL2(expr, m))
@@ -227,14 +232,9 @@ class HalfGemmOptions {
   static HalfGemmOptions instance;
 };
 
-const char* cublasGetErrorEnum(cublasStatus_t error);
-
-const char* CudaDataTypeToString(cudaDataType_t dt);
-
-const char* CublasComputeTypeToString(cublasComputeType_t ct);
 #endif
-
-cudaDataType_t ToCudaDataType(int32_t element_type);
 
 }  // namespace cuda
 }  // namespace onnxruntime
+
+#include "core/providers/cuda/cuda_common_type_helpers.h"

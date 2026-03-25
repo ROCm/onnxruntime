@@ -10,7 +10,9 @@
 #include <vector>
 
 #include "core/common/common.h"
+#include "core/common/inlined_containers.h"
 #include "core/framework/execution_provider.h"
+#include "core/framework/model_metadef_id_generator.h"
 #include "core/providers/providers.h"
 #include "core/session/onnxruntime_c_api.h"
 
@@ -18,6 +20,7 @@ namespace onnxruntime {
 struct EpNode;
 struct EpValueInfo;
 class NodeArg;
+class PluginExecutionProvider;
 
 /// <summary>
 /// IExecutionProviderFactory that wraps a OrtEpFactory. Required for SessionOptionsAppendExecutionProvider_V2.
@@ -26,6 +29,14 @@ struct PluginExecutionProviderFactory : public IExecutionProviderFactory {
  public:
   PluginExecutionProviderFactory(OrtEpFactory& ep_factory, gsl::span<const OrtEpDevice* const> ep_devices);
 
+  // Constructor that accepts hw devices and ep metadata that have already been extracted from the given OrtEpDevice
+  // instances. It is an error to call this constructor with hw devices or ep metadata that do not correspond to the
+  // correct EP devices (e.g., hw_devices[i] and ep_metadata[i] should be extracted from ep_devices[i]).
+  PluginExecutionProviderFactory(OrtEpFactory& ep_factory,
+                                 gsl::span<const OrtEpDevice* const> ep_devices,
+                                 gsl::span<const OrtHardwareDevice* const> hw_devices,
+                                 gsl::span<const OrtKeyValuePairs* const> ep_metadata);
+
   std::unique_ptr<IExecutionProvider> CreateProvider(const OrtSessionOptions& session_options,
                                                      const OrtLogger& session_logger) override;
 
@@ -33,11 +44,22 @@ struct PluginExecutionProviderFactory : public IExecutionProviderFactory {
     ORT_NOT_IMPLEMENTED("CreateProvider without parameters is not supported.");
   }
 
+  /// <summary>
+  /// Alternative version of CreateProvider that returns a Status.
+  /// </summary>
+  /// <param name="session_options">The session options to pass to the EP factory.</param>
+  /// <param name="logger">The session logger. Stored by the OrtEp.</param>
+  /// <param name="plugin_ep">Output parameter set to the newly created PluginExecutionProvider.</param>
+  /// <returns>A status indicating success or an error.</returns>
+  Status CreatePluginExecutionProvider(const OrtSessionOptions& session_options,
+                                       const OrtLogger& logger,
+                                       /*out*/ std::unique_ptr<PluginExecutionProvider>& plugin_ep);
+
  private:
   OrtEpFactory& ep_factory_;
-  std::vector<const OrtEpDevice*> devices_;
-  std::vector<const OrtHardwareDevice*> hardware_devices_;
-  std::vector<const OrtKeyValuePairs*> ep_metadata_;
+  InlinedVector<const OrtEpDevice*> devices_;
+  InlinedVector<const OrtHardwareDevice*> hardware_devices_;
+  InlinedVector<const OrtKeyValuePairs*> ep_metadata_;
 };
 
 /// <summary>
@@ -65,8 +87,12 @@ class PluginExecutionProvider : public IExecutionProvider {
 
  public:
   explicit PluginExecutionProvider(UniqueOrtEp ep, const OrtSessionOptions& session_options, OrtEpFactory& ep_factory,
-                                   gsl::span<const OrtEpDevice* const> ep_devices, const logging::Logger& logger);
+                                   gsl::span<const OrtEpDevice* const> ep_devices,
+                                   std::shared_ptr<KernelRegistry> kernel_registry,
+                                   const logging::Logger& logger);
   ~PluginExecutionProvider();
+
+  std::shared_ptr<KernelRegistry> GetKernelRegistry() const override;
 
   std::vector<std::unique_ptr<ComputeCapability>>
   GetCapability(const onnxruntime::GraphViewer& graph_viewer,
@@ -82,6 +108,8 @@ class PluginExecutionProvider : public IExecutionProvider {
   std::optional<bool> ShouldConvertDataLayoutForOp(std::string_view node_domain,
                                                    std::string_view node_op_type,
                                                    DataLayout target_data_layout) const override;
+
+  bool ConcurrentRunSupported() const override;
 
   Status OnRunStart(const RunOptions& run_options) override;
 
@@ -105,6 +133,8 @@ class PluginExecutionProvider : public IExecutionProvider {
 
   Status ValidateCompiledModelCompatibilityInfo(const std::string& compatibility_info,
                                                 OrtCompiledModelCompatibility& model_compatibility) const override;
+
+  const OrtEp* GetOrtEp() const override;
 
  private:
   struct FusedNodeState {
@@ -131,10 +161,19 @@ class PluginExecutionProvider : public IExecutionProvider {
   // so that it is not destroyed until the EP itself is destroyed.
   std::vector<FusedNodeState> fused_node_states_;
 
+  // Generates a model's hash and a monotonically increasing ID that is unique per model hash. The
+  // ID is used in the MetaDef name for a fused node containing a compiling EP's supported subgraph.
+  //
+  // The same generator instance must be used across calls to GetCapability() to ensure that fused nodes that live in
+  // different GraphViews (e.g., different branches of an If node) obtain a unique ID.
+  ModelMetadefIdGenerator metadef_id_generator_;
+
   // Stores the EPContext Nodes created from the OrtNode instances returned by the underlying plugin EP.
   // Need to store both the Node and NodeArg instances so that they are available when the GraphPartitioner
   // calls IExecutionProvider::GetEpContextNodes().
   std::vector<std::unique_ptr<Node>> ep_context_nodes_;
   std::vector<std::unique_ptr<NodeArg>> ep_context_node_args_;
+
+  std::shared_ptr<KernelRegistry> kernel_registry_;
 };
 }  // namespace onnxruntime
