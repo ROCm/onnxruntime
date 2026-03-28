@@ -4136,7 +4136,7 @@ OrtDevice MIGraphXExecutionProvider::GetOrtDeviceByMemType(OrtMemType mem_type) 
 }
 
 Status MIGraphXExecutionProvider::Sync() const {
-  HIP_CALL_THROW(hipStreamSynchronize(static_cast<hipStream_t>(nullptr)));
+  HIP_CALL_THROW(hipStreamSynchronize(static_cast<hipStream_t>(stream_)));
 
   auto status = hipStreamQuery(stream_);
   if (status != hipSuccess) {
