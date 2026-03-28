@@ -4149,11 +4149,13 @@ Status MIGraphXExecutionProvider::OnRunStart(const onnxruntime::RunOptions& /*ru
   return Status::OK();
 }
 
-Status MIGraphXExecutionProvider::OnRunEnd(bool /*sync_stream*/, const onnxruntime::RunOptions& /*run_options*/) {
-  auto status = hipStreamQuery(stream_);
+Status MIGraphXExecutionProvider::OnRunEnd(bool sync_stream, const onnxruntime::RunOptions& /*run_options*/) {
+  if (sync_stream) {
+    auto status = hipStreamQuery(stream_);
 
-  if (status != hipSuccess) {
-    HIP_CALL_THROW(hipStreamSynchronize(stream_));
+    if (status != hipSuccess) {
+      HIP_CALL_THROW(hipStreamSynchronize(stream_));
+    }
   }
   return Status::OK();
 }
