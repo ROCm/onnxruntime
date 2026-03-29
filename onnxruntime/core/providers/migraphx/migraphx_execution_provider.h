@@ -208,7 +208,9 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
         {std::string{migraphx_provider_option::kGpuExternalEmptyCache}, MakeStringWithClassicLocale(external_empty_cache_)},
         {std::string{migraphx_provider_option::kModelCacheDir}, MakeStringWithClassicLocale(model_cache_path_)},
         {std::string{migraphx_provider_option::kModelMaxDynamicBatch}, MakeStringWithClassicLocale(max_dynamic_batch_)},
-        {std::string{migraphx_provider_option::kCompileBatches}, compile_batches_}};
+        {std::string{migraphx_provider_option::kCompileBatches}, compile_batches_},
+        {std::string{migraphx_provider_option::kHasUserComputeStream}, MakeStringWithClassicLocale(external_stream_)},
+        {std::string{migraphx_provider_option::kUserComputeStream}, MakeStringWithClassicLocale(reinterpret_cast<size_t>(stream_))}};
    }
 
  private:
@@ -228,6 +230,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   bool dump_model_ops_ = false;
   migraphx::target t_;
   std::mutex mgx_mu_;
+  bool external_stream_ = false;
   hipStream_t stream_ = nullptr;
   hipDeviceProp_t device_prop_{};
   bool exhaustive_tune_ = false;

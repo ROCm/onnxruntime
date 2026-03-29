@@ -169,6 +169,12 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   HIP_CALL_THROW(hipSetDevice(device_id_));
   HIP_CALL_THROW(hipGetDeviceProperties(&device_prop_, device_id_));
 
+  if (info.has_user_compute_stream) {
+    external_stream_ = true;
+    stream_ = static_cast<hipStream_t>(info.user_compute_stream);
+    LOGS_DEFAULT(INFO) << "[MIGraphX EP] Using external user compute stream: " << stream_;
+  }
+
   // Overwrite initialized values with values from environment variables.
 
   LOGS_DEFAULT(INFO) << "[MIGraphX EP] MIGraphX ENV Override Variables Set:";
@@ -4123,7 +4129,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 void MIGraphXExecutionProvider::RegisterStreamHandlers(IStreamCommandHandleRegistry& stream_handle_registry,
                                                        AllocatorMap& allocators) const {
   auto allocator = allocators[GetOrtDeviceByMemType(OrtMemTypeCPU)];
-  RegisterMIGraphXStreamHandles(stream_handle_registry, OrtDevice::GPU, allocator, true, stream_, false /*TODO:external_stream_*/);
+  RegisterMIGraphXStreamHandles(stream_handle_registry, OrtDevice::GPU, allocator, true, stream_, external_stream_);
 }
 
 OrtDevice MIGraphXExecutionProvider::GetOrtDeviceByMemType(OrtMemType mem_type) const {
@@ -4150,9 +4156,10 @@ Status MIGraphXExecutionProvider::OnRunStart(const onnxruntime::RunOptions& /*ru
 }
 
 Status MIGraphXExecutionProvider::OnRunEnd(bool sync_stream, const onnxruntime::RunOptions& /*run_options*/) {
-  if (sync_stream) {
+  if (sync_stream && external_stream_) {
+    HIP_CALL_THROW(hipStreamSynchronize(stream_));
+  } else if (sync_stream) {
     auto status = hipStreamQuery(stream_);
-
     if (status != hipSuccess) {
       HIP_CALL_THROW(hipStreamSynchronize(stream_));
     }

@@ -169,7 +169,9 @@ void RegisterMIGraphXStreamHandles(IStreamCommandHandleRegistry& stream_handle_r
     stream_handle_registry.RegisterCreateStreamFn(device_type, [cpu_allocator,
                                                                 release_cpu_buffer_on_migraphx_stream,
                                                                 external_stream](const OrtDevice& device) {
-      return std::make_unique<MIGraphXStream>(external_stream, device, cpu_allocator, release_cpu_buffer_on_migraphx_stream);
+      auto stream = std::make_unique<MIGraphXStream>(external_stream, device, cpu_allocator, release_cpu_buffer_on_migraphx_stream);
+      stream->own_stream_ = false;
+      return stream;
     });
   }
 }
