@@ -10,7 +10,6 @@ param(
     [string[]]$defines,
     [switch]$force = $false,
     [switch]$skipInstall = $false,
-    [switch]$binSkim = $false,
 #    [ValidateScript({ Test-Path -Path $_ })]
     [string]$migraphxHome,
     [switch]$skipBuild = $false,
@@ -61,14 +60,8 @@ if (-not $sourceDir -or $sourceDir.Trim() -eq '') {
 if (-not $buildDir -or $buildDir.Trim() -eq '') {
     $buildDir = Join-Path -Path $sourceDir -ChildPath 'build'
 }
-if ($binSkim) {
-    $buildDir = "$buildDir.binskim"
-}
 if (-not $installDir -or $installDir.Trim() -eq '') {
     $installDir = Join-Path -Path $sourceDir -ChildPath 'install'
-}
-if ($binSkim) {
-    $installDir = "$installDir.binskim"
 }
 if (-not $buildType -or $buildType.Trim() -eq '') {
     $configurations = @("Debug", "Release")
@@ -79,18 +72,11 @@ $parentDir = Split-Path -Path $installDir -Parent
 if (-not $migraphxHome -or $migraphxHome.Trim() -eq '') {
     $migraphxHome = Join-Path -Path $parentDir -ChildPath 'migraphx'
 }
-if ($binSkim) {
-    $migraphxHome = "$migraphxHome.binskim"
-}
 if ($skipBuild -and $force) {
     Write-Error "-Force and -SkipBuild used at the same time... aborting"
     Exit 1
 }
-$useBinSkimCompliantCompileFlags =
-if ($binSkim) {
-$useBinSkimCompliantCompileFlags = "--use_binskim_compliant_compile_flags"
-}
- .\.venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 & {
     $env:PATH="C:\Program Files\Git\usr\bin;$env:PATH"
     $configurations | ForEach-Object {
@@ -107,7 +93,7 @@ $useBinSkimCompliantCompileFlags = "--use_binskim_compliant_compile_flags"
         if (-not $skipBuild) {
             if ($buildType -eq "Release") { $isReleaseBuild = ",IsReleaseBuild=true" } else { $isReleaseBuild = "" }
             $migraphxPath = Join-Path -Path $migraphxHome -Child $buildType
-            Invoke-Call -ScriptBlock { python $sourceDir\tools\ci_build\build.py --config $buildType --build_dir $buildDir --use_mimalloc --disable_memleak_checker --use_migraphx --migraphx_home $migraphxPath --use_dml --enable_pybind --build_wheel --build_nuget --skip_tests --build_shared_lib $useBinSkimCompliantCompileFlags --compile_no_warning_as_error --parallel $jobs --msbuild_extra_options IncludeMobileTargets=false$isReleaseBuild }
+            Invoke-Call -ScriptBlock { python $sourceDir\tools\ci_build\build.py --config $buildType --build_dir $buildDir --disable_memleak_checker --use_migraphx --migraphx_home $migraphxPath --use_dml --enable_pybind --build_wheel --build_nuget --skip_tests --build_shared_lib --use_binskim_compliant_compile_flags --compile_no_warning_as_error --parallel $jobs --msbuild_extra_options IncludeMobileTargets=false$isReleaseBuild }
         }
         if (-not $skipInstall) {
             $prefixPath = Join-Path -Path $installDir -ChildPath $buildType
