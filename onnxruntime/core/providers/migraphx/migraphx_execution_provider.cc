@@ -399,39 +399,6 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
     if (!canEvalNodeArgument(graph_viewer, node, {1}, input_nodes)) {
       return true;
     }
-  } else if (optype == "MaxPool") {
-    // MaxPool "indices" output is not currently supported.
-    if (node->OutputDefs().size() > 1) {
-      return true;
-    }
-
-    // ceil_mode and dilations attrs are not supported in MIGraphX
-    const auto& attributes = node->GetAttributes();
-    auto dila_attr = attributes.find("dilations");
-    if (dila_attr != attributes.end()) {
-      auto dilas = toVector((*dila_attr).second.ints());
-      bool ret = std::all_of(dilas.begin(), dilas.end(), [](auto i) { return i == 1; });
-      if (ret == false) {
-        return true;
-      }
-    }
-
-    // storage order 1 (column major format) is not supported
-    auto storage_order_attr = attributes.find("storage_order");
-    if (storage_order_attr != attributes.end() && (*storage_order_attr).second.i() != 0) {
-      return true;
-    }
-
-    // do not support int8 and uint8 type
-    const auto& input_type = node->InputDefs().at(0)->TypeAsProto();
-    if (input_type == nullptr) {
-      return true;
-    }
-    auto data_type = input_type->tensor_type().elem_type();
-    if (data_type == ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT8 ||
-        data_type == ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT8) {
-      return true;
-    }
   } else if (optype == "MatMulInteger") {
     // only support int8 and uint8 type
     const auto& input_type = node->InputDefs().at(0)->TypeAsProto();
@@ -441,10 +408,6 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
 
     if ((input_type->tensor_type().elem_type() != ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT8) &&
         (input_type->tensor_type().elem_type() != ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT8)) {
-      return true;
-    }
-  } else if (optype == "NonZero") {
-    if (!canEvalNodeArgument(graph_viewer, node, {0}, input_nodes)) {
       return true;
     }
   } else if (optype == "OneHot") {
@@ -472,13 +435,6 @@ static bool IsUnsupportedOpMode(const GraphViewer& graph_viewer, const Node* nod
       return true;
     }
 
-  } else if (optype == "Range") {
-    auto arg_num = node->InputDefs().size();
-    std::vector<std::size_t> vec(arg_num);
-    std::iota(vec.begin(), vec.end(), 0);
-    if (!canEvalNodeArgument(graph_viewer, node, vec, input_nodes)) {
-      return true;
-    }
   } else if (optype == "Reshape") {
     const auto& args = node->InputDefs();
     if (args.size() == 2) {
