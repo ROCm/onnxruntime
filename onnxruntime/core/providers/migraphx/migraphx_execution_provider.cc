@@ -546,14 +546,6 @@ static bool IsUnsupportedOpMode(const onnxruntime::GraphViewer& graph_viewer, co
         return true;
       }
     }
-
-    auto mode_attr = attributes.find("mode");
-    if (mode_attr != attributes.end()) {
-      auto mode = (*mode_attr).second.s();
-      if (mode == "cubic") {
-        return true;
-      }
-    }
   } else if (optype == "ReduceSum") {
     const auto& args = node->InputDefs();
     if (args.size() == 2) {
@@ -896,10 +888,18 @@ std::unique_ptr<IndexedSubGraph> MIGraphXExecutionProvider::GetSubGraph(const st
   const std::string graph_type = graph.IsSubgraph() ? "subgraph" : "graph";
   meta_def->name() = "MGXKernel_" + graph_type + "_" + graph.Name() + "_" + subgraph_id;
 
-  // Assign inputs and outputs to subgraph's meta_def
+  // Assign inputs and outputs to subgraph's meta_def.
+  // Drop constant initializers from inputs: MIGraphX loads them internally via
+  // the serialized ONNX model passed to parse_onnx_buffer(), so ORT does not
+  // need to allocate them on the device. Keeping them as inputs would cause
+  // double allocation of weights on the GPU.
   for (const auto& input : inputs) {
     if (input.second->Exists()) {
-      meta_def->inputs().push_back(input.second->Name());
+      const std::string& input_name = input.second->Name();
+      if (graph.IsConstantInitializer(input_name, /*check_outer_scope=*/true)) {
+        continue;
+      }
+      meta_def->inputs().push_back(input_name);
     }
   }
 
