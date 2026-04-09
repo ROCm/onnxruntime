@@ -1978,55 +1978,40 @@ static void run_migraphx_program(
     }
   }
   
-  // First, handle pre-allocated outputs (need slicing but were already bound)
-  // NOTE: This is a defensive path - pre-allocated outputs should NOT exist when slicing is needed.
+  // Defensive path for pre-allocated outputs that need slicing.
+  // Callers should use temp output buffers when slicing is needed so this path
+  // is not reached in normal operation; it exists only as a safety net.
   if (needs_slicing && !prog_output_indices_set.empty()) {
+    // Sync once to ensure MIGraphX has finished writing all pre-allocated outputs
+    // before any buffer may be reallocated by GetOutput below.
+    HIP_CALL_THROW(hipStreamSynchronize(static_cast<hipStream_t>(rocm_stream)));
+
     for (std::size_t i = 0; i < output_num; ++i) {
       if (prog_output_indices_set.count(i) > 0) {
-        // This output was pre-allocated with padded shape - need to copy sliced data
         auto gpu_res = (*prog_outputs)[i];
         migraphx::shape res_shape = gpu_res.get_shape();
         auto res_lens = res_shape.lengths();
-        
-        // Create sliced shape for ORT output
+
         std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
         if (!ort_shape.empty() && static_cast<std::size_t>(ort_shape[0]) != original_batch_size) {
           ort_shape[0] = static_cast<int64_t>(original_batch_size);
-          
-          // Calculate bytes to copy (sliced portion only)
+
           std::size_t bytes_per_batch = res_shape.bytes() / padded_batch_size;
           std::size_t bytes_to_copy = bytes_per_batch * original_batch_size;
-          
-          // Allocate temp buffer for sliced data on GPU
-          void* temp_sliced_buffer = nullptr;
-          auto hip_status = hipMalloc(&temp_sliced_buffer, bytes_to_copy);
-          if (hip_status != hipSuccess) {
-            ORT_THROW("hipMalloc failed for sliced output buffer");
-          }
-          
-          // Copy sliced data from MIGraphX output to temp buffer
-          HIP_CALL_THROW(hipMemcpyWithStream(temp_sliced_buffer,
-                                             gpu_res.data(),
-                                             bytes_to_copy,
-                                             hipMemcpyDeviceToDevice,
-                                             static_cast<hipStream_t>(rocm_stream)));
-          
-          // Synchronize to ensure copy is complete before allocating ORT output
-          HIP_CALL_THROW(hipStreamSynchronize(static_cast<hipStream_t>(rocm_stream)));
-          
-          // Now allocate the ORT output tensor with the SLICED shape
+
+          const void* src_data = gpu_res.data();
           auto output_tensor = ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
           void* output_data = output_tensor.GetTensorMutableRawData();
-          
-          // Copy from temp buffer to ORT output
-          HIP_CALL_THROW(hipMemcpyWithStream(output_data,
-                                             temp_sliced_buffer,
-                                             bytes_to_copy,
-                                             hipMemcpyDeviceToDevice,
-                                             static_cast<hipStream_t>(rocm_stream)));
-          
-          // Free temporary buffer
-          (void)hipFree(temp_sliced_buffer);
+
+          // Sliced data is the contiguous prefix (batch is dim 0).  If ORT
+          // returned the same underlying buffer the data is already in place.
+          if (output_data != src_data) {
+            HIP_CALL_THROW(hipMemcpyWithStream(output_data,
+                                               src_data,
+                                               bytes_to_copy,
+                                               hipMemcpyDeviceToDevice,
+                                               static_cast<hipStream_t>(rocm_stream)));
+          }
         }
       }
     }
@@ -3019,10 +3004,12 @@ static void execute_standard_path(
             bool using_padded_inputs = allocate_and_pad_inputs(mgx_state, ctx, original_batch_size, 
                                                                padded_batch_size, rocm_stream);
             
-            // Bind inputs and outputs with temporary output buffers (for slicing)
-            std::vector<void*> temp_output_buffers;
+            // Get or reuse cached temp output buffers (avoids hipMalloc/hipFree per run)
+            auto temp_output_buffer_ptrs = get_or_allocate_temp_output_buffers(
+                mgx_state, param_shapes, output_shapes, map_input_name_index, padded_batch_size);
+
             auto [m, prog_output_indices] = handle_program_input_outputs(
-                param_shapes, output_shapes, map_input_name_index, ctx, true, &temp_output_buffers);
+                param_shapes, output_shapes, map_input_name_index, ctx, true, &temp_output_buffer_ptrs);
             
             mgx_state->cached_prog_params = m;
             mgx_state->cached_prog_output_indices = prog_output_indices;
@@ -3039,19 +3026,11 @@ static void execute_standard_path(
               }
             }
             
-            // Run with slicing enabled
             run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, 
                                 prog_output_indices, original_batch_size, padded_batch_size);
             
-            // Free temporary output buffers
-            for (void* buf : temp_output_buffers) {
-              if (buf != nullptr) {
-                (void)hipFree(buf);
-              }
-            }
-            
-            // NOTE: Padded buffers are kept for reuse - they will be freed when batch size changes
-            // or when the state is destroyed
+            // Temp output buffers are cached on mgx_state for reuse across runs.
+            // They are freed when the batch size changes or when the state is destroyed.
             
             return;
           } else {
@@ -3126,8 +3105,10 @@ static void execute_standard_path(
   mgx_state->last_input_shape_hash = current_hash;
   mgx_state->caches_valid = true;
 
-  run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, prog_output_indices, 
-                      original_batch_size, padded_batch_size);
+  // The program at this point was compiled (or already matched) for the exact
+  // runtime input shapes, so its outputs already have the original batch
+  // dimension.  Pass 0,0 to avoid incorrect slicing arithmetic.
+  run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, prog_output_indices);
 }
 
 // Build MIGraphX ONNX options with default shapes for symbolic dimensions
