@@ -1396,15 +1396,24 @@ static void pad_input_tensor(const void* src_data, void* dst_data,
                                 original_batch * bytes_per_batch,
                                 hipMemcpyDeviceToDevice, stream));
   
-  // Pad with last batch element replicated
+  // Pad by replicating the last batch element using exponential doubling.
+  // Seed one copy, then double the filled region each iteration so the number
+  // of hipMemcpyAsync calls is O(log N) instead of O(N).
   if (original_batch > 0 && padded_batch > original_batch) {
     const char* last_batch = static_cast<const char*>(src_data) + (original_batch - 1) * bytes_per_batch;
     char* pad_start = static_cast<char*>(dst_data) + original_batch * bytes_per_batch;
-    
-    for (std::size_t i = original_batch; i < padded_batch; ++i) {
-      HIP_CALL_THROW(hipMemcpyAsync(pad_start, last_batch, bytes_per_batch,
+    std::size_t slots_to_fill = padded_batch - original_batch;
+
+    HIP_CALL_THROW(hipMemcpyAsync(pad_start, last_batch, bytes_per_batch,
+                                  hipMemcpyDeviceToDevice, stream));
+    std::size_t filled = 1;
+    while (filled < slots_to_fill) {
+      std::size_t chunk = std::min(filled, slots_to_fill - filled);
+      HIP_CALL_THROW(hipMemcpyAsync(pad_start + filled * bytes_per_batch,
+                                    pad_start,
+                                    chunk * bytes_per_batch,
                                     hipMemcpyDeviceToDevice, stream));
-      pad_start += bytes_per_batch;
+      filled += chunk;
     }
   }
 }
