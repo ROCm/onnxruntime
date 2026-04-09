@@ -162,7 +162,11 @@ struct MIGraphXFuncState {
 class MIGraphXExecutionProvider : public IExecutionProvider {
  public:
   explicit MIGraphXExecutionProvider(const MIGraphXExecutionProviderInfo& info);
-  ~MIGraphXExecutionProvider() override = default;
+  ~MIGraphXExecutionProvider() override {
+    if (!external_stream_ && stream_) {
+      (void)hipStreamDestroy(stream_);
+    }
+  }
 
   Status Sync() const override;
 

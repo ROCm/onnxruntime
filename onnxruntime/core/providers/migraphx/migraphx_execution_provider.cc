@@ -173,6 +173,9 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
     external_stream_ = true;
     stream_ = static_cast<hipStream_t>(info.user_compute_stream);
     LOGS_DEFAULT(INFO) << "[MIGraphX EP] Using external user compute stream: " << stream_;
+  } else {
+    HIP_CALL_THROW(hipStreamCreateWithFlags(&stream_, hipStreamNonBlocking));
+    LOGS_DEFAULT(INFO) << "[MIGraphX EP] Created non-blocking compute stream: " << stream_;
   }
 
   // Overwrite initialized values with values from environment variables.
@@ -1945,8 +1948,7 @@ static migraphx::program load_or_compile_model(
 // If original_batch_size is provided and < padded batch size, slices the output to remove padding
 static void run_migraphx_program(
     std::mutex* mgx_mu_ptr,
-    const OrtApi* api,
-    OrtKernelContext* context,
+    hipStream_t rocm_stream,
     Ort::KernelContext& ctx,
     migraphx::program& prog,
     migraphx::program_parameters& m,
@@ -1954,13 +1956,10 @@ static void run_migraphx_program(
     std::size_t original_batch_size = 0,
     std::size_t padded_batch_size = 0)
 {
-  void* rocm_stream;
-  Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream));
-
   std::optional<migraphx::arguments> prog_outputs;
   {  // Scoped lock for thread safety
     std::lock_guard<std::mutex> lock(*mgx_mu_ptr);
-    prog_outputs = prog.run_async(m, static_cast<hipStream_t>(rocm_stream));
+    prog_outputs = prog.run_async(m, rocm_stream);
   }
 
   bool needs_slicing = (original_batch_size > 0 && padded_batch_size > 0 && 
@@ -1984,7 +1983,7 @@ static void run_migraphx_program(
   if (needs_slicing && !prog_output_indices_set.empty()) {
     // Sync once to ensure MIGraphX has finished writing all pre-allocated outputs
     // before any buffer may be reallocated by GetOutput below.
-    HIP_CALL_THROW(hipStreamSynchronize(static_cast<hipStream_t>(rocm_stream)));
+    HIP_CALL_THROW(hipStreamSynchronize(rocm_stream));
 
     for (std::size_t i = 0; i < output_num; ++i) {
       if (prog_output_indices_set.count(i) > 0) {
@@ -2003,14 +2002,12 @@ static void run_migraphx_program(
           auto output_tensor = ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
           void* output_data = output_tensor.GetTensorMutableRawData();
 
-          // Sliced data is the contiguous prefix (batch is dim 0).  If ORT
-          // returned the same underlying buffer the data is already in place.
           if (output_data != src_data) {
             HIP_CALL_THROW(hipMemcpyWithStream(output_data,
                                                src_data,
                                                bytes_to_copy,
                                                hipMemcpyDeviceToDevice,
-                                               static_cast<hipStream_t>(rocm_stream)));
+                                               rocm_stream));
           }
         }
       }
@@ -2024,16 +2021,14 @@ static void run_migraphx_program(
       migraphx::shape res_shape = gpu_res.get_shape();
       auto res_lens = res_shape.lengths();
       
-      // Adjust output shape if slicing is needed
       std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
       if (needs_slicing && !ort_shape.empty()) {
-        ort_shape[0] = original_batch_size;  // Slice batch dimension
+        ort_shape[0] = original_batch_size;
       }
       
       auto output_tensor = ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
       void* output_data = output_tensor.GetTensorMutableRawData();
 
-      // Calculate bytes to copy (slice if needed)
       std::size_t bytes_to_copy = res_shape.bytes();
       if (needs_slicing && res_lens.size() > 0) {
         bytes_to_copy = (res_shape.bytes() / padded_batch_size) * original_batch_size;
@@ -2043,7 +2038,7 @@ static void run_migraphx_program(
                                          gpu_res.data(),
                                          bytes_to_copy,
                                          hipMemcpyDeviceToDevice,
-                                         static_cast<hipStream_t>(rocm_stream)));
+                                         rocm_stream));
     }
   }
 
@@ -2308,8 +2303,7 @@ static std::vector<std::int64_t> build_input_shapes_in_cached_order(
 // Returns true if executed successfully, false if shapes don't match
 static bool execute_ultra_fast_path(
     MIGraphXFuncState* mgx_state,
-    const OrtApi* api,
-    OrtKernelContext* context,
+    hipStream_t rocm_stream,
     Ort::KernelContext& ctx)
 {
   if (!mgx_state->caches_valid || mgx_state->last_input_shapes_raw.empty()) {
@@ -2415,9 +2409,6 @@ static bool execute_ultra_fast_path(
   // Allocate and pad inputs if needed for dynamic batching
   bool using_padded_inputs = false;
   if (padded_batch_size > original_batch_size) {
-    void* rocm_stream_ptr;
-    Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream_ptr));
-    auto rocm_stream = static_cast<hipStream_t>(rocm_stream_ptr);
     using_padded_inputs = allocate_and_pad_inputs(mgx_state, ctx, original_batch_size, 
                                                   padded_batch_size, rocm_stream);
   }
@@ -2447,7 +2438,7 @@ static bool execute_ultra_fast_path(
   }
 
   // Run directly - minimal overhead path
-  run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m,
+  run_migraphx_program(mgx_state->mgx_mu_ptr, rocm_stream, ctx, prog, m,
                        mgx_state->cached_prog_output_indices,
                        original_batch_size, padded_batch_size);
   
@@ -2459,8 +2450,7 @@ static bool execute_ultra_fast_path(
 // Note: all_input_shapes is only consumed (moved) if the function returns true
 static bool execute_fast_path(
     MIGraphXFuncState* mgx_state,
-    const OrtApi* api,
-    OrtKernelContext* context,
+    hipStream_t rocm_stream,
     Ort::KernelContext& ctx,
     const std::string& current_hash,
     std::vector<std::int64_t>& all_input_shapes)
@@ -2606,9 +2596,6 @@ static bool execute_fast_path(
   // Allocate and pad inputs if needed for dynamic batching
   bool using_padded_inputs = false;
   if (padded_batch_size > original_batch_size) {
-    void* rocm_stream_ptr;
-    Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream_ptr));
-    auto rocm_stream = static_cast<hipStream_t>(rocm_stream_ptr);
     using_padded_inputs = allocate_and_pad_inputs(mgx_state, ctx, original_batch_size, 
                                                   padded_batch_size, rocm_stream);
   }
@@ -2648,7 +2635,7 @@ static bool execute_fast_path(
     }
   }
 
-  run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog,
+  run_migraphx_program(mgx_state->mgx_mu_ptr, rocm_stream, ctx, prog,
                        mgx_state->cached_prog_params.value(),
                        mgx_state->cached_prog_output_indices,
                        original_batch_size, padded_batch_size);
@@ -2895,8 +2882,7 @@ static void compile_dynamic_batch_models(
 // Standard path: Shape checking, potential recompilation, and execution
 static void execute_standard_path(
     MIGraphXFuncState* mgx_state,
-    const OrtApi* api,
-    OrtKernelContext* context,
+    hipStream_t rocm_stream,
     Ort::KernelContext& ctx,
     const std::string& current_hash,
     std::vector<std::int64_t>&& all_input_shapes,
@@ -2998,9 +2984,6 @@ static void execute_standard_path(
             }
             
             // Allocate and pad inputs for dynamic batching
-            void* rocm_stream_ptr;
-            Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream_ptr));
-            auto rocm_stream = static_cast<hipStream_t>(rocm_stream_ptr);
             bool using_padded_inputs = allocate_and_pad_inputs(mgx_state, ctx, original_batch_size, 
                                                                padded_batch_size, rocm_stream);
             
@@ -3026,7 +3009,7 @@ static void execute_standard_path(
               }
             }
             
-            run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, 
+            run_migraphx_program(mgx_state->mgx_mu_ptr, rocm_stream, ctx, prog, m, 
                                 prog_output_indices, original_batch_size, padded_batch_size);
             
             // Temp output buffers are cached on mgx_state for reuse across runs.
@@ -3054,8 +3037,8 @@ static void execute_standard_path(
             mgx_state->last_input_shape_hash = current_hash;
             mgx_state->caches_valid = true;
             
-            run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, prog_output_indices, 
-                                0, 0);  // Pass 0,0 for batch sizes to indicate no slicing needed
+            run_migraphx_program(mgx_state->mgx_mu_ptr, rocm_stream, ctx, prog, m, prog_output_indices, 
+                                0, 0);
             
             return;
           }
@@ -3108,7 +3091,7 @@ static void execute_standard_path(
   // The program at this point was compiled (or already matched) for the exact
   // runtime input shapes, so its outputs already have the original batch
   // dimension.  Pass 0,0 to avoid incorrect slicing arithmetic.
-  run_migraphx_program(mgx_state->mgx_mu_ptr, api, context, ctx, prog, m, prog_output_indices);
+  run_migraphx_program(mgx_state->mgx_mu_ptr, rocm_stream, ctx, prog, m, prog_output_indices);
 }
 
 // Build MIGraphX ONNX options with default shapes for symbolic dimensions
@@ -4062,16 +4045,19 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         delete static_cast<MIGraphXFuncState*>(state);
     };
 
-    compute_info.compute_func = [this, mxr_filename_prefix](FunctionState state, const OrtApi* api, OrtKernelContext* context) {
+    compute_info.compute_func = [this, mxr_filename_prefix](FunctionState state, const OrtApi* /*api*/, OrtKernelContext* context) {
       Ort::KernelContext ctx(context);
       MIGraphXFuncState* mgx_state = reinterpret_cast<MIGraphXFuncState*>(state);
 
       const auto& map_input_name_index = mgx_state->input_name_indexes;
 
+      // stream_ is always valid: either the user's external stream or an
+      // EP-owned hipStreamNonBlocking created in the constructor.
+
       // ═══════════════════════════════════════════════════════════════════════
       // ULTRA-FAST PATH: Shapes unchanged from last run
       // ═══════════════════════════════════════════════════════════════════════
-      if (execute_ultra_fast_path(mgx_state, api, context, ctx)) {
+      if (execute_ultra_fast_path(mgx_state, stream_, ctx)) {
         return Status::OK();
       }
 
@@ -4089,14 +4075,14 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       // ═══════════════════════════════════════════════════════════════════════
       // FAST PATH: Check cached programs for this shape hash
       // ═══════════════════════════════════════════════════════════════════════
-      if (execute_fast_path(mgx_state, api, context, ctx, current_hash, all_input_shapes)) {
+      if (execute_fast_path(mgx_state, stream_, ctx, current_hash, all_input_shapes)) {
         return Status::OK();
       }
 
       // ═══════════════════════════════════════════════════════════════════════
       // STANDARD PATH: Shape checking and potential recompilation
       // ═══════════════════════════════════════════════════════════════════════
-      execute_standard_path(mgx_state, api, context, ctx, current_hash, std::move(all_input_shapes),
+      execute_standard_path(mgx_state, stream_, ctx, current_hash, std::move(all_input_shapes),
                             model_cache_path_, model_path_, mxr_filename_prefix);
 
       return Status::OK();
@@ -4110,7 +4096,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 void MIGraphXExecutionProvider::RegisterStreamHandlers(IStreamCommandHandleRegistry& stream_handle_registry,
                                                        AllocatorMap& allocators) const {
   auto allocator = allocators[GetOrtDeviceByMemType(OrtMemTypeCPU)];
-  RegisterMIGraphXStreamHandles(stream_handle_registry, OrtDevice::GPU, allocator, true, stream_, external_stream_);
+  RegisterMIGraphXStreamHandles(stream_handle_registry, OrtDevice::GPU, allocator, true, stream_, /*use_existing_stream=*/true);
 }
 
 OrtDevice MIGraphXExecutionProvider::GetOrtDeviceByMemType(OrtMemType mem_type) const {
