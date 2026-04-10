@@ -303,7 +303,7 @@ std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators()
 }
 
 std::unique_ptr<onnxruntime::IDataTransfer> MIGraphXExecutionProvider::GetDataTransfer() const {
-  return std::make_unique<onnxruntime::GPUDataTransfer>();
+  return std::make_unique<onnxruntime::GPUDataTransfer>(stream_);
 }
 
 static bool IsTypeSupported(const NodeArg* node_arg) {

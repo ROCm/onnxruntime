@@ -57,28 +57,26 @@ common::Status GPUDataTransfer::CopyTensor(const Tensor& src, Tensor& dst) const
   const bool src_is_gpu_default = src_device.Type() == OrtDevice::GPU &&
                                   src_device.MemType() == OrtDevice::MemType::DEFAULT;
 
-  // for the sync version of memcpy, launch to hip default stream
+  // Use the EP's compute stream (non-blocking) instead of the default (null)
+  // stream to avoid the implicit cross-stream serialisation that the default
+  // stream imposes on all other streams.
   if (dst_is_gpu_default) {
     if (src_is_gpu_default) {
-      // Copy only if the two addresses are different.
       if (dst_data != src_data) {
-        HIP_RETURN_IF_ERROR(hipMemcpy(dst_data, src_data, bytes, hipMemcpyDeviceToDevice));
-        // Follow core/providers/cuda/gpu_data_transfer.cc to synchronize the default stream here.
-        HIP_RETURN_IF_ERROR(hipStreamSynchronize(nullptr));
+        HIP_RETURN_IF_ERROR(hipMemcpyAsync(dst_data, src_data, bytes,
+                                           hipMemcpyDeviceToDevice, stream_));
+        HIP_RETURN_IF_ERROR(hipStreamSynchronize(stream_));
       }
     } else {
-      // copy from other CPU memory to GPU, this is blocking
-      HIP_RETURN_IF_ERROR(hipMemcpy(dst_data, src_data, bytes, hipMemcpyHostToDevice));
-      if (src_device.MemType() != OrtDevice::MemType::HOST_ACCESSIBLE) {
-        // Follow core/providers/cuda/gpu_data_transfer.cc to synchronize the default stream here.
-        HIP_RETURN_IF_ERROR(hipStreamSynchronize(nullptr));
-      }
+      HIP_RETURN_IF_ERROR(hipMemcpyAsync(dst_data, src_data, bytes,
+                                         hipMemcpyHostToDevice, stream_));
+      HIP_RETURN_IF_ERROR(hipStreamSynchronize(stream_));
     }
   } else if (src_is_gpu_default) {
-    // copying from GPU to CPU memory, this is blocking
-    HIP_RETURN_IF_ERROR(hipMemcpy(dst_data, src_data, bytes, hipMemcpyDeviceToHost));
+    HIP_RETURN_IF_ERROR(hipMemcpyAsync(dst_data, src_data, bytes,
+                                       hipMemcpyDeviceToHost, stream_));
+    HIP_RETURN_IF_ERROR(hipStreamSynchronize(stream_));
   } else {
-    // copying between cpu memory
     ORT_ENFORCE(dst_data != src_data);
     memcpy(dst_data, src_data, bytes);
   }

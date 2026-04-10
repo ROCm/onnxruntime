@@ -82,7 +82,7 @@ class PinnedStagingPool {
 
 class GPUDataTransfer : public IDataTransfer {
  public:
-  GPUDataTransfer() = default;
+  explicit GPUDataTransfer(hipStream_t stream = nullptr) : stream_(stream) {}
   ~GPUDataTransfer();
 
   bool CanCopy(const OrtDevice& src_device, const OrtDevice& dst_device) const override;
@@ -91,6 +91,7 @@ class GPUDataTransfer : public IDataTransfer {
 
  private:
   static constexpr size_t kStagingThreshold = 64 * 1024;  // 64 KiB
+  hipStream_t stream_;
   mutable PinnedStagingPool staging_pool_;
 };
 
