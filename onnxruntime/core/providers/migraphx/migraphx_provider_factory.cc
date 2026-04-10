@@ -22,6 +22,7 @@
 #include "core/framework/provider_options.h"
 
 #include "core/session/onnxruntime_c_api.h"
+#include "core/providers/migraphx/migraphx_stream_handle.h"
 
 namespace onnxruntime {
 
@@ -200,6 +201,138 @@ struct MIGraphX_Provider final : Provider {
 
 #include "core/framework/error_code_helper.h"
 
+namespace {
+
+struct MIGraphXErrorHelper {
+  static const OrtApi* ort_api;
+
+  static OrtStatus* ToOrtStatus(const onnxruntime::Status& status) {
+    if (status.IsOK()) return nullptr;
+    return ort_api->CreateStatus(static_cast<OrtErrorCode>(status.Code()),
+                                 status.ErrorMessage().c_str());
+  }
+};
+
+const OrtApi* MIGraphXErrorHelper::ort_api = nullptr;
+
+#define MIGRAPHX_RETURN_IF_STATUS_NOTOK(fn)              \
+  do {                                                   \
+    onnxruntime::Status _status = (fn);                  \
+    if (!_status.IsOK()) {                               \
+      return MIGraphXErrorHelper::ToOrtStatus(_status);  \
+    }                                                    \
+  } while (0)
+
+#define HIP_FACTORY_RETURN_IF_ERROR(expr) MIGRAPHX_RETURN_IF_STATUS_NOTOK(HIP_CALL(expr))
+
+struct MIGraphXSyncNotificationImpl : OrtSyncNotificationImpl {
+  static OrtStatus* Create(hipStream_t stream, const OrtApi& ort_api,
+                           std::unique_ptr<MIGraphXSyncNotificationImpl>& notification) {
+    notification.reset(new MIGraphXSyncNotificationImpl(stream, ort_api));
+    HIP_FACTORY_RETURN_IF_ERROR(hipEventCreateWithFlags(&notification->event_, hipEventDisableTiming));
+    return nullptr;
+  }
+
+  ~MIGraphXSyncNotificationImpl() {
+    if (event_) hipEventDestroy(event_);
+  }
+
+  static void ReleaseImpl(_In_ OrtSyncNotificationImpl* this_ptr) noexcept {
+    delete static_cast<MIGraphXSyncNotificationImpl*>(this_ptr);
+  }
+
+  static OrtStatus* ActivateImpl(_In_ OrtSyncNotificationImpl* this_ptr) noexcept {
+    auto& impl = *static_cast<MIGraphXSyncNotificationImpl*>(this_ptr);
+    HIP_FACTORY_RETURN_IF_ERROR(hipEventRecord(impl.event_, impl.stream_));
+    return nullptr;
+  }
+
+  static OrtStatus* WaitOnDeviceImpl(_In_ OrtSyncNotificationImpl* this_ptr,
+                                     _In_ OrtSyncStream* consumer_stream) noexcept {
+    auto& impl = *static_cast<MIGraphXSyncNotificationImpl*>(this_ptr);
+    void* consumer_handle = impl.ort_api.SyncStream_GetHandle(consumer_stream);
+    HIP_FACTORY_RETURN_IF_ERROR(hipStreamWaitEvent(static_cast<hipStream_t>(consumer_handle), impl.event_, 0));
+    return nullptr;
+  }
+
+  static OrtStatus* WaitOnHostImpl(_In_ OrtSyncNotificationImpl* this_ptr) noexcept {
+    auto& impl = *static_cast<MIGraphXSyncNotificationImpl*>(this_ptr);
+    HIP_FACTORY_RETURN_IF_ERROR(hipEventSynchronize(impl.event_));
+    return nullptr;
+  }
+
+ private:
+  MIGraphXSyncNotificationImpl(hipStream_t stream, const OrtApi& ort_api_in)
+      : stream_{stream}, ort_api{ort_api_in} {
+    ort_version_supported = ORT_API_VERSION;
+    Activate = ActivateImpl;
+    WaitOnDevice = WaitOnDeviceImpl;
+    WaitOnHost = WaitOnHostImpl;
+    Release = ReleaseImpl;
+  }
+
+  hipStream_t stream_;
+  hipEvent_t event_{nullptr};
+  const OrtApi& ort_api;
+};
+
+struct MIGraphXSyncStreamImpl : OrtSyncStreamImpl {
+  MIGraphXSyncStreamImpl(hipStream_t stream, const OrtDevice& device,
+                         const OrtApi& ort_api_in)
+      : hip_stream_{stream}, device_{device}, ort_api{ort_api_in} {
+    ort_version_supported = ORT_API_VERSION;
+    GetHandle = GetHandleImpl;
+    CreateNotification = CreateNotificationImpl;
+    Flush = FlushImpl;
+    OnSessionRunEnd = OnSessionRunEndImpl;
+    Release = ReleaseImpl;
+  }
+
+  ~MIGraphXSyncStreamImpl() {
+    if (hip_stream_) {
+      (void)hipStreamSynchronize(hip_stream_);
+      (void)hipStreamDestroy(hip_stream_);
+    }
+  }
+
+  static void ReleaseImpl(_In_ OrtSyncStreamImpl* this_ptr) noexcept {
+    delete static_cast<MIGraphXSyncStreamImpl*>(this_ptr);
+  }
+
+  static void* GetHandleImpl(_In_ OrtSyncStreamImpl* this_ptr) noexcept {
+    return static_cast<MIGraphXSyncStreamImpl*>(this_ptr)->hip_stream_;
+  }
+
+  static OrtStatus* CreateNotificationImpl(_In_ OrtSyncStreamImpl* this_ptr,
+                                           _Outptr_ OrtSyncNotificationImpl** notification_impl) noexcept {
+    auto& impl = *static_cast<MIGraphXSyncStreamImpl*>(this_ptr);
+    *notification_impl = nullptr;
+    std::unique_ptr<MIGraphXSyncNotificationImpl> notification;
+    auto* status = MIGraphXSyncNotificationImpl::Create(impl.hip_stream_, impl.ort_api, notification);
+    if (status) return status;
+    *notification_impl = notification.release();
+    return nullptr;
+  }
+
+  static OrtStatus* FlushImpl(_In_ OrtSyncStreamImpl* this_ptr) noexcept {
+    auto& impl = *static_cast<MIGraphXSyncStreamImpl*>(this_ptr);
+    HIP_FACTORY_RETURN_IF_ERROR(hipStreamSynchronize(impl.hip_stream_));
+    return nullptr;
+  }
+
+  static OrtStatus* OnSessionRunEndImpl(_In_ OrtSyncStreamImpl* this_ptr) noexcept {
+    (void)this_ptr;
+    return nullptr;
+  }
+
+ private:
+  hipStream_t hip_stream_;
+  OrtDevice device_;
+  const OrtApi& ort_api;
+};
+
+}  // namespace
+
 // OrtEpApi infrastructure to be able to use the MigraphX/AMDGPU EP as an OrtEpFactory for auto EP selection.
 struct MigraphXEpFactory : OrtEpFactory {
   MigraphXEpFactory(const OrtApi& ort_api_in,
@@ -314,18 +447,26 @@ struct MigraphXEpFactory : OrtEpFactory {
   }
 
   static bool ORT_API_CALL IsStreamAwareImpl(const OrtEpFactory* /*this_ptr*/) noexcept {
-    return false;
+    return true;
   }
 
   static OrtStatus* ORT_API_CALL CreateSyncStreamForDeviceImpl(OrtEpFactory* this_ptr,
-                                                               const OrtMemoryDevice* /*memory_device*/,
+                                                               const OrtMemoryDevice* memory_device,
                                                                const OrtKeyValuePairs* /*stream_options*/,
                                                                OrtSyncStreamImpl** stream) noexcept {
     auto* factory = static_cast<MigraphXEpFactory*>(this_ptr);
+    const OrtEpApi& ep_api = *factory->ort_api.GetEpApi();
+    auto device_id = ep_api.MemoryDevice_GetDeviceId(memory_device);
 
-    *stream = nullptr;
-    return factory->ort_api.CreateStatus(
-        ORT_INVALID_ARGUMENT, "CreateSyncStreamForDevice should not be called as IsStreamAware returned false.");
+    hipStream_t hip_stream = nullptr;
+    HIP_FACTORY_RETURN_IF_ERROR(hipSetDevice(device_id));
+    HIP_FACTORY_RETURN_IF_ERROR(hipStreamCreateWithFlags(&hip_stream, hipStreamNonBlocking));
+
+    const auto* ort_device = static_cast<const OrtDevice*>(memory_device);
+    auto impl = std::make_unique<MIGraphXSyncStreamImpl>(hip_stream, *ort_device, factory->ort_api);
+    *stream = impl.release();
+
+    return nullptr;
   }
 
   const OrtApi& ort_api;
@@ -347,6 +488,7 @@ OrtStatus* CreateEpFactories(const char* /*registration_name*/, const OrtApiBase
                              const OrtLogger* default_logger,
                              OrtEpFactory** factories, size_t max_factories, size_t* num_factories) {
   const OrtApi* ort_api = ort_api_base->GetApi(ORT_API_VERSION);
+  MIGraphXErrorHelper::ort_api = ort_api;
 
   // Factory could use registration_name or define its own EP name.
   auto factory_gpu = std::make_unique<MigraphXEpFactory>(*ort_api,
