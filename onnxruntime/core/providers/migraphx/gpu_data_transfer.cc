@@ -19,7 +19,7 @@ struct StagingReturnInfo {
   size_t capacity;
 };
 
-void HIPAPI StagingReturnCallback(void* raw) {
+void StagingReturnCallback(void* raw) {
   std::unique_ptr<StagingReturnInfo> info(static_cast<StagingReturnInfo*>(raw));
   info->pool->Release(info->buffer, info->capacity);
 }
