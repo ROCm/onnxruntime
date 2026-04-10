@@ -4050,8 +4050,16 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     };
 
     compute_info.release_state_func = [](FunctionState state) {
-      if (state)
-        delete static_cast<MIGraphXFuncState*>(state);
+      if (state) {
+        auto* s = static_cast<MIGraphXFuncState*>(state);
+        for (auto& buf : s->padded_input_buffers) {
+          if (buf.data) (void)hipFree(buf.data);
+        }
+        for (auto& buf : s->temp_output_buffers) {
+          if (buf.data) (void)hipFree(buf.data);
+        }
+        delete s;
+      }
     };
 
     compute_info.compute_func = [this, mxr_filename_prefix](FunctionState state, const OrtApi* /*api*/, OrtKernelContext* context) {
