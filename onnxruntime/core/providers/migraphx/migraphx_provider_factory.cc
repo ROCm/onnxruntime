@@ -205,25 +205,18 @@ namespace {
 
 struct MIGraphXErrorHelper {
   static const OrtApi* ort_api;
-
-  static OrtStatus* ToOrtStatus(const onnxruntime::Status& status) {
-    if (status.IsOK()) return nullptr;
-    return ort_api->CreateStatus(static_cast<OrtErrorCode>(status.Code()),
-                                 status.ErrorMessage().c_str());
-  }
 };
 
 const OrtApi* MIGraphXErrorHelper::ort_api = nullptr;
 
-#define MIGRAPHX_RETURN_IF_STATUS_NOTOK(fn)              \
-  do {                                                   \
-    onnxruntime::Status _status = (fn);                  \
-    if (!_status.IsOK()) {                               \
-      return MIGraphXErrorHelper::ToOrtStatus(_status);  \
-    }                                                    \
+#define HIP_FACTORY_RETURN_IF_ERROR(expr)                                       \
+  do {                                                                          \
+    hipError_t _hip_err = (expr);                                               \
+    if (_hip_err != hipSuccess) {                                               \
+      return MIGraphXErrorHelper::ort_api->CreateStatus(                        \
+          ORT_EP_FAIL, hipGetErrorString(_hip_err));                            \
+    }                                                                           \
   } while (0)
-
-#define HIP_FACTORY_RETURN_IF_ERROR(expr) MIGRAPHX_RETURN_IF_STATUS_NOTOK(HIP_CALL(expr))
 
 struct MIGraphXSyncNotificationImpl : OrtSyncNotificationImpl {
   static OrtStatus* Create(hipStream_t stream, const OrtApi& ort_api,
@@ -234,7 +227,7 @@ struct MIGraphXSyncNotificationImpl : OrtSyncNotificationImpl {
   }
 
   ~MIGraphXSyncNotificationImpl() {
-    if (event_) hipEventDestroy(event_);
+    if (event_) (void)hipEventDestroy(event_);
   }
 
   static void ReleaseImpl(_In_ OrtSyncNotificationImpl* this_ptr) noexcept {
@@ -277,9 +270,8 @@ struct MIGraphXSyncNotificationImpl : OrtSyncNotificationImpl {
 };
 
 struct MIGraphXSyncStreamImpl : OrtSyncStreamImpl {
-  MIGraphXSyncStreamImpl(hipStream_t stream, const OrtDevice& device,
-                         const OrtApi& ort_api_in)
-      : hip_stream_{stream}, device_{device}, ort_api{ort_api_in} {
+  MIGraphXSyncStreamImpl(hipStream_t stream, const OrtApi& ort_api_in)
+      : hip_stream_{stream}, ort_api{ort_api_in} {
     ort_version_supported = ORT_API_VERSION;
     GetHandle = GetHandleImpl;
     CreateNotification = CreateNotificationImpl;
@@ -327,7 +319,6 @@ struct MIGraphXSyncStreamImpl : OrtSyncStreamImpl {
 
  private:
   hipStream_t hip_stream_;
-  OrtDevice device_;
   const OrtApi& ort_api;
 };
 
@@ -462,8 +453,7 @@ struct MigraphXEpFactory : OrtEpFactory {
     HIP_FACTORY_RETURN_IF_ERROR(hipSetDevice(device_id));
     HIP_FACTORY_RETURN_IF_ERROR(hipStreamCreateWithFlags(&hip_stream, hipStreamNonBlocking));
 
-    const auto* ort_device = static_cast<const OrtDevice*>(memory_device);
-    auto impl = std::make_unique<MIGraphXSyncStreamImpl>(hip_stream, *ort_device, factory->ort_api);
+    auto impl = std::make_unique<MIGraphXSyncStreamImpl>(hip_stream, factory->ort_api);
     *stream = impl.release();
 
     return nullptr;
