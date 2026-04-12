@@ -161,7 +161,8 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
       external_free_{info.external_free},
       external_empty_cache_{info.external_empty_cache},
       max_dynamic_batch_{info.max_dynamic_batch},
-      compile_batches_{info.compile_batches} {
+      compile_batches_{info.compile_batches},
+      hip_graph_enable_{info.hip_graph_enable} {
   InitProviderOrtApi();
 
   // Set GPU device to be used and read device properties for feature usage.
@@ -206,6 +207,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   GET_ENV_BOOL(migraphx_env_vars::kDumpModelOps, dump_model_ops_);
   GET_ENV_BOOL(migraphx_env_vars::kExhaustiveTune, exhaustive_tune_);
   GET_ENV_STRING(migraphx_env_vars::kCompileBatches, compile_batches_);
+  GET_ENV_BOOL(migraphx_env_vars::kHipGraphEnable, hip_graph_enable_);
 
   // If compile_batches is set, auto-derive max_dynamic_batch from the spec's max value
   if (!compile_batches_.empty()) {
@@ -285,7 +287,8 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
                         << "\n " << migraphx_provider_option::kInt8UseNativeCalibTable << ": " << int8_use_native_calibration_table_
                         << "\n " << migraphx_provider_option::kModelCacheDir << ": " << model_cache_path_
                         << "\n " << migraphx_provider_option::kModelMaxDynamicBatch << ": " << max_dynamic_batch_
-                        << "\n " << migraphx_provider_option::kCompileBatches << ": " << (compile_batches_.empty() ? "(not set)" : compile_batches_);
+                        << "\n " << migraphx_provider_option::kCompileBatches << ": " << (compile_batches_.empty() ? "(not set)" : compile_batches_)
+                        << "\n " << migraphx_provider_option::kHipGraphEnable << ": " << hip_graph_enable_;
 }
 
 std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators() {
