@@ -1771,7 +1771,7 @@ std::string to_hex(const uint64_t v) {
 template <typename T>
 std::string make_hash(T v) {
   std::array<std::uint32_t, 4> temp{};
-  MurmurHash3::x86_128(v.data(), gsl::narrow_cast<int32_t>(v.size()), temp[0], temp.data());
+  MurmurHash3::x86_128(v.data(), gsl::narrow_cast<int32_t>(v.size() * sizeof(*v.data())), temp[0], temp.data());
   return to_hex(temp[0] | static_cast<uint64_t>(temp[1]) << 32);
 }
 
@@ -2722,11 +2722,19 @@ static InputShapeResult handle_input_shape(
             cmp_options.set_input_parameter_shape(name, ort_lens);
             input_shape_match = false;
           }
-
-          // Include all inputs in cache key (map_input_name_index already filtered to model inputs only)
-          input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
         }
       }
+    }
+
+    // Compute hash over all model inputs, consistent with the defer_compilation path.
+    // The shape comparison above iterates param_shapes.names() which may be a subset
+    // of map_input_name_index. Using map_input_name_index ensures the cache key is
+    // identical for identical input shapes regardless of which program is currently active.
+    for (const auto& [name, index] : map_input_name_index) {
+      auto input_tensor = ctx.GetInput(index);
+      auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+      const auto tensor_shape = tensor_info.GetShape();
+      input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
     }
   }
 
