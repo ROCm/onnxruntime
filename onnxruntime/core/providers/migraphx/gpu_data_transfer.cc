@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
+#include <cstring>
+
 #include "core/providers/shared_library/provider_api.h"
 #include "core/providers/migraphx/gpu_data_transfer.h"
 #include "core/providers/migraphx/migraphx_call.h"
@@ -8,6 +10,23 @@
 // If you make change below, please also update onnxruntime/core/providers/rocm/gpu_data_transfer.cc
 
 namespace onnxruntime {
+
+namespace {
+
+struct StagingReturnInfo {
+  PinnedStagingPool* pool;
+  void* buffer;
+  size_t capacity;
+};
+
+void StagingReturnCallback(void* raw) {
+  std::unique_ptr<StagingReturnInfo> info(static_cast<StagingReturnInfo*>(raw));
+  info->pool->Release(info->buffer, info->capacity);
+}
+
+}  // namespace
+
+GPUDataTransfer::~GPUDataTransfer() = default;
 
 bool GPUDataTransfer::CanCopy(const OrtDevice& src_device, const OrtDevice& dst_device) const {
   OrtDevice::DeviceType src_type = src_device.Type();
@@ -38,28 +57,26 @@ common::Status GPUDataTransfer::CopyTensor(const Tensor& src, Tensor& dst) const
   const bool src_is_gpu_default = src_device.Type() == OrtDevice::GPU &&
                                   src_device.MemType() == OrtDevice::MemType::DEFAULT;
 
-  // for the sync version of memcpy, launch to hip default stream
+  // Use the EP's compute stream (non-blocking) instead of the default (null)
+  // stream to avoid the implicit cross-stream serialisation that the default
+  // stream imposes on all other streams.
   if (dst_is_gpu_default) {
     if (src_is_gpu_default) {
-      // Copy only if the two addresses are different.
       if (dst_data != src_data) {
-        HIP_RETURN_IF_ERROR(hipMemcpy(dst_data, src_data, bytes, hipMemcpyDeviceToDevice));
-        // Follow core/providers/cuda/gpu_data_transfer.cc to synchronize the default stream here.
-        HIP_RETURN_IF_ERROR(hipStreamSynchronize(nullptr));
+        HIP_RETURN_IF_ERROR(hipMemcpyAsync(dst_data, src_data, bytes,
+                                           hipMemcpyDeviceToDevice, stream_));
+        HIP_RETURN_IF_ERROR(hipStreamSynchronize(stream_));
       }
     } else {
-      // copy from other CPU memory to GPU, this is blocking
-      HIP_RETURN_IF_ERROR(hipMemcpy(dst_data, src_data, bytes, hipMemcpyHostToDevice));
-      if (src_device.MemType() != OrtDevice::MemType::HOST_ACCESSIBLE) {
-        // Follow core/providers/cuda/gpu_data_transfer.cc to synchronize the default stream here.
-        HIP_RETURN_IF_ERROR(hipStreamSynchronize(nullptr));
-      }
+      HIP_RETURN_IF_ERROR(hipMemcpyAsync(dst_data, src_data, bytes,
+                                         hipMemcpyHostToDevice, stream_));
+      HIP_RETURN_IF_ERROR(hipStreamSynchronize(stream_));
     }
   } else if (src_is_gpu_default) {
-    // copying from GPU to CPU memory, this is blocking
-    HIP_RETURN_IF_ERROR(hipMemcpy(dst_data, src_data, bytes, hipMemcpyDeviceToHost));
+    HIP_RETURN_IF_ERROR(hipMemcpyAsync(dst_data, src_data, bytes,
+                                       hipMemcpyDeviceToHost, stream_));
+    HIP_RETURN_IF_ERROR(hipStreamSynchronize(stream_));
   } else {
-    // copying between cpu memory
     ORT_ENFORCE(dst_data != src_data);
     memcpy(dst_data, src_data, bytes);
   }
@@ -80,26 +97,59 @@ common::Status GPUDataTransfer::CopyTensorAsync(const Tensor& src, Tensor& dst, 
   const bool src_is_gpu_default = src_device.Type() == OrtDevice::GPU &&
                                   src_device.MemType() == OrtDevice::MemType::DEFAULT;
 
+  auto hip_stream = static_cast<hipStream_t>(stream.GetHandle());
+
   if (dst_is_gpu_default) {
     if (src_is_gpu_default) {
-      // copying between GPU, this is non-blocking
-      HIP_CALL_THROW(hipMemcpyAsync(dst_data, src_data, bytes, hipMemcpyDeviceToDevice,
-                                    static_cast<hipStream_t>(stream.GetHandle())));
+      // D2D — always non-blocking
+      HIP_CALL_THROW(hipMemcpyAsync(dst_data, src_data, bytes, hipMemcpyDeviceToDevice, hip_stream));
+    } else if (src_device.MemType() == OrtDevice::MemType::HOST_ACCESSIBLE || bytes < kStagingThreshold) {
+      // Pinned source or small transfer — hipMemcpyAsync is already truly async for pinned memory;
+      // for tiny pageable transfers the staging overhead isn't worth it.
+      HIP_RETURN_IF_ERROR(hipMemcpyAsync(dst_data, src_data, bytes, hipMemcpyHostToDevice, hip_stream));
     } else {
-      // If source are not pinned, the memory copy will be performed synchronously.
-      // For best performance, use hipHostMalloc to allocate host memory that is transferred asynchronously.
-      HIP_RETURN_IF_ERROR(hipMemcpyAsync(dst_data, src_data, bytes, hipMemcpyHostToDevice,
-                                         static_cast<hipStream_t>(stream.GetHandle())));
+      // Pageable source above threshold — stage through a pinned buffer so the
+      // H2D DMA is truly async and the host thread returns immediately.
+      void* pinned = staging_pool_.Acquire(bytes);
+      if (pinned) {
+        std::memcpy(pinned, src_data, bytes);
+        auto err = hipMemcpyAsync(dst_data, pinned, bytes, hipMemcpyHostToDevice, hip_stream);
+        if (err != hipSuccess) {
+          staging_pool_.Release(pinned, bytes);
+          HIP_RETURN_IF_ERROR(err);
+        }
+        auto cb = std::make_unique<StagingReturnInfo>(StagingReturnInfo{&staging_pool_, pinned, bytes});
+        HIP_RETURN_IF_ERROR(hipLaunchHostFunc(hip_stream, StagingReturnCallback, cb.release()));
+      } else {
+        // hipHostMalloc failed — fall back to the (synchronous) direct path
+        HIP_RETURN_IF_ERROR(hipMemcpyAsync(dst_data, src_data, bytes, hipMemcpyHostToDevice, hip_stream));
+      }
     }
   } else if (src_is_gpu_default) {
-    // If dest are not pinned, the memory copy will be performed synchronously.
-    // For best performance, use hipHostMalloc to allocate host memory that is transferred asynchronously.
-    HIP_RETURN_IF_ERROR(hipMemcpyAsync(dst_data, src_data, bytes, hipMemcpyDeviceToHost,
-                                       static_cast<hipStream_t>(stream.GetHandle())));
+    if (dst_device.MemType() == OrtDevice::MemType::HOST_ACCESSIBLE || bytes < kStagingThreshold) {
+      // Pinned dest or small transfer — hipMemcpyAsync is already efficient.
+      HIP_RETURN_IF_ERROR(hipMemcpyAsync(dst_data, src_data, bytes, hipMemcpyDeviceToHost, hip_stream));
+    } else {
+      // Pageable dest above threshold — stage through pinned so the GPU→host
+      // DMA runs as one large transfer instead of the driver's internal chunking.
+      void* pinned = staging_pool_.Acquire(bytes);
+      if (pinned) {
+        auto err = hipMemcpyAsync(pinned, src_data, bytes, hipMemcpyDeviceToHost, hip_stream);
+        if (err != hipSuccess) {
+          staging_pool_.Release(pinned, bytes);
+          HIP_RETURN_IF_ERROR(err);
+        }
+        HIP_RETURN_IF_ERROR(hipStreamSynchronize(hip_stream));
+        std::memcpy(dst_data, pinned, bytes);
+        staging_pool_.Release(pinned, bytes);
+      } else {
+        HIP_RETURN_IF_ERROR(hipMemcpyAsync(dst_data, src_data, bytes, hipMemcpyDeviceToHost, hip_stream));
+      }
+    }
   } else {
     if (src_device.MemType() == OrtDevice::MemType::HOST_ACCESSIBLE) {
       // sync the stream first to make sure the data arrived
-      HIP_RETURN_IF_ERROR(hipStreamSynchronize(static_cast<hipStream_t>(stream.GetHandle())));
+      HIP_RETURN_IF_ERROR(hipStreamSynchronize(hip_stream));
     }
     ORT_ENFORCE(dst_data != src_data);
     memcpy(dst_data, src_data, bytes);
