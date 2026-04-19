@@ -75,17 +75,22 @@ struct MIGraphXFuncState {
   bool has_dynamic_batch = false;
   std::vector<std::size_t> compiled_batch_sizes;
   
-  // Padded input buffers for dynamic batching (allocated on GPU)
-  struct PaddedBuffer {
-    void* data = nullptr;          // GPU buffer pointer
-    std::size_t size_bytes = 0;    // Buffer size in bytes
-    migraphx::shape mgx_shape;     // Padded MIGraphX shape
+  // Pinned I/O buffers: allocated once at max compiled batch, reused across all inferences.
+  // Eliminates per-inference hipMalloc/hipFree for padding and temp outputs.
+  struct PinnedIOBuffer {
+    void* data = nullptr;
+    std::size_t size_bytes = 0;
+    migraphx::shape max_shape;     // Shape at max_batch_size
   };
-  std::vector<PaddedBuffer> padded_input_buffers;  // One per input when padding is active
 
-  // Track last batch sizes to avoid re-allocation when batch size is unchanged
-  std::size_t last_original_batch_size = 0;  // Original batch size from last run
-  std::size_t last_padded_batch_size = 0;    // Padded batch size from last run
+  struct PinnedIOSet {
+    std::vector<PinnedIOBuffer> inputs;
+    std::vector<PinnedIOBuffer> outputs;
+    std::size_t max_batch_size = 0;
+    bool allocated = false;
+  };
+
+  PinnedIOSet pinned_io;
 
   // ═══════════════════════════════════════════════════════════════════════════
   // PERFORMANCE CACHES - Avoid redundant MIGraphX API calls per inference
@@ -143,20 +148,7 @@ struct MIGraphXFuncState {
   // Track which program hash the cached shapes belong to (invalidate when program changes)
   std::string cached_program_hash;
   
-  // ═══════════════════════════════════════════════════════════════════════════
-  // OPTIMIZATION: Reusable temporary output buffers (for slicing mode)
-  // ═══════════════════════════════════════════════════════════════════════════
   
-  // Temporary output buffers for slicing (allocated at padded size)
-  struct TempOutputBuffer {
-    void* data = nullptr;           // GPU buffer pointer
-    std::size_t size_bytes = 0;     // Buffer size in bytes
-    migraphx::shape mgx_shape;      // Padded MIGraphX shape
-  };
-  std::vector<TempOutputBuffer> temp_output_buffers;
-  
-  // Track padded batch size for temp output buffers
-  std::size_t temp_output_padded_batch_size = 0;
 };
 
 // Logical device representation.
