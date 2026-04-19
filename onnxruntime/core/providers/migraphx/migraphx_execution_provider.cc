@@ -9,6 +9,7 @@
 #include <functional>
 #include <future>
 #include <iterator>
+#include <numeric>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -1461,10 +1462,10 @@ static void allocate_pinned_io(
   }
 
   pio.outputs.clear();
-  for (std::size_t i = 0; i < output_shapes.size(); ++i) {
-    auto lens = output_shapes[i].lengths();
+  for (const auto& out_shape : output_shapes) {
+    auto lens = out_shape.lengths();
     if (!lens.empty()) lens[0] = max_batch_size;
-    auto max_shape = migraphx::shape(output_shapes[i].type(), lens);
+    auto max_shape = migraphx::shape(out_shape.type(), lens);
     std::size_t bytes = max_shape.bytes();
 
     void* ptr = nullptr;
@@ -1522,8 +1523,8 @@ static void copy_inputs_to_pinned(
     const auto& base_shape = param_shapes[name];
     auto lens = base_shape.lengths();
 
-    std::size_t elements_per_batch = 1;
-    for (std::size_t d = 1; d < lens.size(); ++d) elements_per_batch *= lens[d];
+    std::size_t elements_per_batch = std::accumulate(
+        lens.begin() + 1, lens.end(), std::size_t{1}, std::multiplies<>{});
 
     std::size_t total_elems = 1;
     for (auto l : lens) total_elems *= l;
