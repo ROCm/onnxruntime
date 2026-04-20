@@ -1966,91 +1966,83 @@ static void run_migraphx_program(
     std::size_t padded_batch_size = 0)
 {
   std::optional<migraphx::arguments> prog_outputs;
-  {  // Scoped lock for thread safety
+  {
     std::lock_guard<std::mutex> lock(*mgx_mu_ptr);
     prog_outputs = prog.run_async(m, rocm_stream);
   }
 
-  bool needs_slicing = (original_batch_size > 0 && padded_batch_size > 0 && 
+  bool needs_slicing = (original_batch_size > 0 && padded_batch_size > 0 &&
                         original_batch_size < padded_batch_size);
 
-  // Process ALL outputs for proper slicing when needed
   auto output_num = prog_outputs->size();
-  
+
+  // Fast path: no padding/slicing and all outputs were pre-allocated — nothing to do.
+  if (!needs_slicing && prog_output_indices.size() == output_num)
+    return;
+
   std::unordered_set<std::size_t> prog_output_indices_set(prog_output_indices.begin(), prog_output_indices.end());
-  std::vector<std::size_t> outputs_to_copy;  // Outputs that need memcpy (not pre-allocated)
-  
-  for (std::size_t i = 0; i < output_num; ++i) {
-    if (prog_output_indices_set.count(i) == 0) {
-      outputs_to_copy.push_back(i);
-    }
-  }
-  
-  // Defensive path for pre-allocated outputs that need slicing.
-  // Callers should use temp output buffers when slicing is needed so this path
-  // is not reached in normal operation; it exists only as a safety net.
+
   if (needs_slicing && !prog_output_indices_set.empty()) {
-    // Sync once to ensure MIGraphX has finished writing all pre-allocated outputs
-    // before any buffer may be reallocated by GetOutput below.
+    // Must sync before reallocating any pre-allocated output buffer for slicing.
     HIP_CALL_THROW(hipStreamSynchronize(rocm_stream));
 
     for (std::size_t i = 0; i < output_num; ++i) {
-      if (prog_output_indices_set.count(i) > 0) {
-        auto gpu_res = (*prog_outputs)[i];
-        migraphx::shape res_shape = gpu_res.get_shape();
-        auto res_lens = res_shape.lengths();
+      if (prog_output_indices_set.count(i) == 0) continue;
 
-        std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
-        if (!ort_shape.empty() && static_cast<std::size_t>(ort_shape[0]) != original_batch_size) {
-          ort_shape[0] = static_cast<int64_t>(original_batch_size);
+      auto gpu_res = (*prog_outputs)[i];
+      migraphx::shape res_shape = gpu_res.get_shape();
+      auto res_lens = res_shape.lengths();
 
-          std::size_t bytes_per_batch = res_shape.bytes() / padded_batch_size;
-          std::size_t bytes_to_copy = bytes_per_batch * original_batch_size;
+      std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
+      if (!ort_shape.empty() && static_cast<std::size_t>(ort_shape[0]) != original_batch_size) {
+        ort_shape[0] = static_cast<int64_t>(original_batch_size);
 
-          const void* src_data = gpu_res.data();
-          auto output_tensor = ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
-          void* output_data = output_tensor.GetTensorMutableRawData();
+        std::size_t bytes_per_batch = res_shape.bytes() / padded_batch_size;
+        std::size_t bytes_to_copy = bytes_per_batch * original_batch_size;
 
-          if (output_data != src_data) {
-            HIP_CALL_THROW(hipMemcpyWithStream(output_data,
-                                               src_data,
-                                               bytes_to_copy,
-                                               hipMemcpyDeviceToDevice,
-                                               rocm_stream));
-          }
+        const void* src_data = gpu_res.data();
+        auto output_tensor = ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
+        void* output_data = output_tensor.GetTensorMutableRawData();
+
+        if (output_data != src_data) {
+          HIP_CALL_THROW(hipMemcpyWithStream(output_data,
+                                             src_data,
+                                             bytes_to_copy,
+                                             hipMemcpyDeviceToDevice,
+                                             rocm_stream));
         }
       }
     }
   }
-  
-  // Now handle outputs that need memcpy (not pre-allocated)
-  if (prog_output_indices.size() < output_num) {
-    for (std::size_t i : outputs_to_copy) {
-      auto gpu_res = (*prog_outputs)[i];
-      migraphx::shape res_shape = gpu_res.get_shape();
-      auto res_lens = res_shape.lengths();
-      
-      std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
-      if (needs_slicing && !ort_shape.empty()) {
-        ort_shape[0] = original_batch_size;
-      }
-      
-      auto output_tensor = ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
-      void* output_data = output_tensor.GetTensorMutableRawData();
 
-      std::size_t bytes_to_copy = res_shape.bytes();
-      if (needs_slicing && res_lens.size() > 0) {
-        bytes_to_copy = (res_shape.bytes() / padded_batch_size) * original_batch_size;
-      }
+  // Copy outputs that were not pre-allocated into ORT output tensors.
+  // All copies are async on rocm_stream — no sync needed here.
+  for (std::size_t i = 0; i < output_num; ++i) {
+    if (prog_output_indices_set.count(i) > 0) continue;
 
-      HIP_CALL_THROW(hipMemcpyWithStream(output_data,
-                                         gpu_res.data(),
-                                         bytes_to_copy,
-                                         hipMemcpyDeviceToDevice,
-                                         rocm_stream));
+    auto gpu_res = (*prog_outputs)[i];
+    migraphx::shape res_shape = gpu_res.get_shape();
+    auto res_lens = res_shape.lengths();
+
+    std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
+    if (needs_slicing && !ort_shape.empty()) {
+      ort_shape[0] = original_batch_size;
     }
-  }
 
+    auto output_tensor = ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
+    void* output_data = output_tensor.GetTensorMutableRawData();
+
+    std::size_t bytes_to_copy = res_shape.bytes();
+    if (needs_slicing && !res_lens.empty()) {
+      bytes_to_copy = (res_shape.bytes() / padded_batch_size) * original_batch_size;
+    }
+
+    HIP_CALL_THROW(hipMemcpyWithStream(output_data,
+                                       gpu_res.data(),
+                                       bytes_to_copy,
+                                       hipMemcpyDeviceToDevice,
+                                       rocm_stream));
+  }
 }
 
 // Helper: Handle input shape mismatch by recompiling the model with new input shapes
