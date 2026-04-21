@@ -143,6 +143,12 @@ static std::string_view GetArenaExtendStrategyName(ArenaExtendStrategy strategy)
 
 static std::vector<std::size_t> parse_compile_batches(const std::string& spec);
 
+// Serializes remaining synchronous hipMalloc calls (e.g. temp output buffers)
+// across all MIGraphX EP instances in the process.  The primary pinned I/O
+// allocation paths use hipMallocAsync/hipFreeAsync which are per-stream safe,
+// but a few fallback paths still use synchronous hipMalloc.
+static std::mutex g_hip_alloc_mutex;
+
 MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProviderInfo& info)
     : IExecutionProvider{kMIGraphXExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, OrtDevice::VendorIds::AMD, info.device_id)},
       device_id_{info.device_id},
@@ -1439,7 +1445,8 @@ static void allocate_pinned_io(
     MIGraphXFuncState* mgx_state,
     const migraphx::program_parameter_shapes& param_shapes,
     const migraphx::shapes& output_shapes,
-    std::size_t max_batch_size)
+    std::size_t max_batch_size,
+    hipStream_t stream)
 {
   auto& pio = mgx_state->pinned_io;
   if (pio.allocated) return;
@@ -1456,8 +1463,8 @@ static void allocate_pinned_io(
     std::size_t bytes = max_shape.bytes();
 
     void* ptr = nullptr;
-    HIP_CALL_THROW(hipMalloc(&ptr, bytes));
-    HIP_CALL_THROW(hipMemset(ptr, 0, bytes));
+    HIP_CALL_THROW(hipMallocAsync(&ptr, bytes, stream));
+    HIP_CALL_THROW(hipMemsetAsync(ptr, 0, bytes, stream));
     pio.inputs.push_back({ptr, bytes, max_shape});
   }
 
@@ -1469,10 +1476,12 @@ static void allocate_pinned_io(
     std::size_t bytes = max_shape.bytes();
 
     void* ptr = nullptr;
-    HIP_CALL_THROW(hipMalloc(&ptr, bytes));
-    HIP_CALL_THROW(hipMemset(ptr, 0, bytes));
+    HIP_CALL_THROW(hipMallocAsync(&ptr, bytes, stream));
+    HIP_CALL_THROW(hipMemsetAsync(ptr, 0, bytes, stream));
     pio.outputs.push_back({ptr, bytes, max_shape});
   }
+
+  HIP_CALL_THROW(hipStreamSynchronize(stream));
 
   pio.max_batch_size = max_batch_size;
   pio.allocated = true;
@@ -1486,15 +1495,16 @@ static void allocate_pinned_io(
                      << " total=" << (total_bytes / (1024.0 * 1024.0)) << " MB";
 }
 
-static void free_pinned_io(MIGraphXFuncState* mgx_state) {
+static void free_pinned_io(MIGraphXFuncState* mgx_state, hipStream_t stream) {
   auto& pio = mgx_state->pinned_io;
   for (auto& buf : pio.inputs) {
-    if (buf.data) { (void)hipFree(buf.data); buf.data = nullptr; }
+    if (buf.data) { (void)hipFreeAsync(buf.data, stream); buf.data = nullptr; }
   }
-  pio.inputs.clear();
   for (auto& buf : pio.outputs) {
-    if (buf.data) { (void)hipFree(buf.data); buf.data = nullptr; }
+    if (buf.data) { (void)hipFreeAsync(buf.data, stream); buf.data = nullptr; }
   }
+  HIP_CALL_THROW(hipStreamSynchronize(stream));
+  pio.inputs.clear();
   pio.outputs.clear();
   pio.allocated = false;
 }
@@ -2111,9 +2121,12 @@ std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program
               temp_buffer = (*temp_output_buffers)[temp_buffer_count];
             } else {
               // Allocate new buffer (first run or buffer list is empty)
-              auto hip_status = hipMalloc(&temp_buffer, output_size_bytes);
-              if (hip_status != hipSuccess) {
-                ORT_THROW("hipMalloc failed for temporary output buffer");
+              {
+                std::lock_guard<std::mutex> alloc_lock(g_hip_alloc_mutex);
+                auto hip_status = hipMalloc(&temp_buffer, output_size_bytes);
+                if (hip_status != hipSuccess) {
+                  ORT_THROW("hipMalloc failed for temporary output buffer");
+                }
               }
               temp_output_buffers->push_back(temp_buffer);
             }
@@ -2740,7 +2753,7 @@ static void compile_dynamic_batch_models(
       auto ps = last_prog.get_parameter_shapes();
       auto os = last_prog.get_output_shapes();
       if (max_batch > 0) {
-        allocate_pinned_io(mgx_state, ps, os, max_batch);
+        allocate_pinned_io(mgx_state, ps, os, max_batch, mgx_state->stream);
       }
     }
   }
@@ -2841,7 +2854,7 @@ static void execute_standard_path(
                 max_batch = *std::max_element(mgx_state->compiled_batch_sizes.begin(),
                                               mgx_state->compiled_batch_sizes.end());
               }
-              allocate_pinned_io(mgx_state, param_shapes, output_shapes, max_batch);
+              allocate_pinned_io(mgx_state, param_shapes, output_shapes, max_batch, rocm_stream);
             }
 
             copy_inputs_to_pinned(mgx_state, param_shapes, ctx, original_batch_size, padded_batch_size, rocm_stream);
@@ -2916,7 +2929,7 @@ static void execute_standard_path(
       }
     }
     if (batch_for_alloc > 0) {
-      allocate_pinned_io(mgx_state, param_shapes, output_shapes, batch_for_alloc);
+      allocate_pinned_io(mgx_state, param_shapes, output_shapes, batch_for_alloc, rocm_stream);
     }
   }
 
@@ -3902,7 +3915,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             int8_calibration_cache_available_, dynamic_range_map_,
             model_cache_path_, dump_model_ops_, exhaustive_tune_, max_dynamic_batch_,
             std::ref(cached_programs_[context->node_name])};
-      
+      p->stream = stream_;
+
       // Initialize dynamic batch support if max_dynamic_batch > 0
       if (max_dynamic_batch_ > 0) {
         p->has_dynamic_batch = true;
@@ -3959,7 +3973,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         if (largest_prog && max_batch > 0) {
           auto ps = largest_prog->get_parameter_shapes();
           auto os = largest_prog->get_output_shapes();
-          allocate_pinned_io(p.get(), ps, os, max_batch);
+          allocate_pinned_io(p.get(), ps, os, max_batch, stream_);
         }
 
         // If all batch sizes are pre-loaded, disable deferred compilation
@@ -3980,7 +3994,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     compute_info.release_state_func = [](FunctionState state) {
       if (state) {
         auto* s = static_cast<MIGraphXFuncState*>(state);
-        free_pinned_io(s);
+        free_pinned_io(s, s->stream);
         delete s;
       }
     };
