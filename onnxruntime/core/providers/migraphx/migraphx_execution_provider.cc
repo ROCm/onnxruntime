@@ -1321,7 +1321,7 @@ std::string to_hex(const uint64_t v) {
 template <typename T>
 std::string make_hash(T v) {
   std::array<std::uint32_t, 4> temp{};
-  MurmurHash3::x86_128(v.data(), gsl::narrow_cast<int32_t>(v.size()), temp.front(), temp.data());
+  MurmurHash3::x86_128(v.data(), gsl::narrow_cast<int32_t>(v.size() * sizeof(*v.data())), temp.front(), temp.data());
   return to_hex(temp.at(0) | static_cast<uint64_t>(temp.at(1)) << 32);
 }
 
@@ -1476,10 +1476,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       } else {
         LOGS_DEFAULT(VERBOSE) << "Assigning inputs, and parameters from compiled model";
         param_shapes = prog.get_parameter_shapes();
-        auto prog_output_shapes = prog.get_output_shapes();
 
         // check whether input shapes match with shapes of program inputs
-        // migraphx::onnx_options cmp_options;
         if (param_shapes.size() > 0) {
           for (auto&& name : param_shapes.names()) {
             if (map_input_name_index.count(name) > 0) {
@@ -1500,10 +1498,21 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
                 cmp_options.set_input_parameter_shape(name, ort_lens);
                 input_shape_match = false;
               }
-              input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
             }
           }
         }
+      }
+
+      // Compute hash over all model inputs, consistent across both branches.
+      // The shape comparison above iterates param_shapes.names() which may be
+      // a subset of map_input_name_index. Using map_input_name_index ensures
+      // the cache key is identical for identical input shapes regardless of
+      // which program is currently active.
+      for (auto& [name, index] : map_input_name_index) {
+        auto input_tensor = ctx.GetInput(index);
+        auto tensor_info = input_tensor.GetTensorTypeAndShapeInfo();
+        const auto tensor_shape = tensor_info.GetShape();
+        input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
       }
 
       // input shapes are different, needs to re-parse onnx and
