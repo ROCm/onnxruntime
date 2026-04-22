@@ -2248,18 +2248,14 @@ static void populate_ultra_fast_caches(
         // This is an output parameter
         const int output_index = compute_output_index(name);
         if (output_index != -1) {
-          // When slicing, don't cache outputs (ultra-fast path won't be used)
-          if (!needs_slicing) {
-            MIGraphXFuncState::CachedOutputParam out;
-            out.name = name;
-            out.output_index = output_index;
-            out.mgx_shape = param_shapes[name];
-            mgx_state->cached_outputs.push_back(std::move(out));
+          MIGraphXFuncState::CachedOutputParam out;
+          out.name = name;
+          out.output_index = output_index;
+          out.mgx_shape = param_shapes[name];
+          mgx_state->cached_outputs.push_back(std::move(out));
 
-            // Pre-allocate ORT-format output shape vector
-            const auto& lens = output_shapes[output_index].lengths();
-            mgx_state->cached_output_ort_shapes.emplace_back(lens.begin(), lens.end());
-          }
+          const auto& lens = output_shapes[output_index].lengths();
+          mgx_state->cached_output_ort_shapes.emplace_back(lens.begin(), lens.end());
         }
       }
     }
@@ -2307,87 +2303,60 @@ static bool execute_ultra_fast_path(
     hipStream_t rocm_stream,
     Ort::KernelContext& ctx)
 {
-  if (!mgx_state->caches_valid || mgx_state->last_input_shapes_raw.empty()) {
-    return false;
-  }
-  
-  // Ultra-fast path not supported when outputs need dynamic slicing
-  if (mgx_state->cached_outputs.empty()) {
+  if (!mgx_state->caches_valid || mgx_state->last_input_shapes_raw.empty() ||
+      mgx_state->cached_outputs.empty()) {
     return false;
   }
 
-  // Quick shape comparison
   bool shapes_match = true;
   std::size_t offset = 0;
   const auto& last_shapes = mgx_state->last_input_shapes_raw;
-  
+
   std::size_t original_batch_size = 0;
   std::size_t padded_batch_size = 0;
   bool is_first = true;
 
   for (const auto& inp : mgx_state->cached_inputs) {
     const auto& shape = ctx.GetInput(inp.ort_index).GetTensorTypeAndShapeInfo().GetShape();
-    
+
     if (offset + shape.size() > last_shapes.size()) {
       shapes_match = false;
       break;
     }
-    
-    // For dynamic batch, we check if the current batch needs padding
+
     if (mgx_state->has_dynamic_batch && !mgx_state->compiled_batch_sizes.empty()) {
-      // Get batch sizes from first input
       if (is_first) {
         original_batch_size = static_cast<std::size_t>(shape[0]);
         padded_batch_size = static_cast<std::size_t>(last_shapes[offset]);
         is_first = false;
-        
-        // Check if the batch size matches (original or padded)
+
         if (shape[0] != last_shapes[offset]) {
-          // Batch size changed - check if we can use padding
           std::size_t required_padded = find_nearest_compiled_batch_size(
               original_batch_size, mgx_state->compiled_batch_sizes);
-          
           if (required_padded != padded_batch_size) {
             shapes_match = false;
             break;
           }
         }
       }
-      
-      // All current inputs should have the same batch size (original_batch_size)
+
       if (static_cast<std::size_t>(shape[0]) != original_batch_size) {
         shapes_match = false;
         break;
       }
-      
-      // Cached shape should have padded batch size in dimension 0
       if (last_shapes[offset] != static_cast<std::int64_t>(padded_batch_size)) {
         shapes_match = false;
         break;
       }
-      
-      // Check non-batch dimensions (current vs cached)
-      bool rest_matches = true;
       for (std::size_t i = 1; i < shape.size(); ++i) {
-        if (last_shapes[offset + i] != shape[i]) {
-          rest_matches = false;
-          break;
-        }
-      }
-      if (!rest_matches) {
-        shapes_match = false;
-        break;
+        if (last_shapes[offset + i] != shape[i]) { shapes_match = false; break; }
       }
     } else {
-      // No dynamic batching - strict comparison
       for (std::size_t i = 0; i < shape.size(); ++i) {
-        if (last_shapes[offset + i] != shape[i]) {
-          shapes_match = false;
-          break;
-        }
+        if (last_shapes[offset + i] != shape[i]) { shapes_match = false; break; }
       }
     }
-    
+
     if (!shapes_match) break;
     offset += shape.size();
   }
@@ -2396,40 +2365,50 @@ static bool execute_ultra_fast_path(
     return false;
   }
 
-  // Ultra-fast path doesn't support output slicing because cached_output_ort_shapes
-  // contains padded shapes, not sliced shapes. Fall back to fast path which handles
-  // slicing properly via temp output buffers.
-  if (padded_batch_size > 0 && original_batch_size > 0 && padded_batch_size > original_batch_size) {
-    return false;
-  }
-
-  // Shapes unchanged (or compatible with padding) - rebind pointers and run directly
   auto& m = mgx_state->cached_prog_params.value();
   auto& prog = mgx_state->prog;
-  
-  // Allocate and pad inputs if needed for dynamic batching
-  bool using_padded_inputs = false;
-  if (padded_batch_size > original_batch_size) {
-    using_padded_inputs = allocate_and_pad_inputs(mgx_state, ctx, original_batch_size, 
-                                                  padded_batch_size, rocm_stream);
+  bool needs_slicing = (original_batch_size > 0 && padded_batch_size > 0 &&
+                        padded_batch_size > original_batch_size);
+
+  if (needs_slicing) {
+    if (!mgx_state->cached_mgx_param_shapes.has_value() ||
+        !mgx_state->cached_mgx_output_shapes.has_value()) {
+      return false;
+    }
+
+    bool using_padded_inputs = allocate_and_pad_inputs(
+        mgx_state, ctx, original_batch_size, padded_batch_size, rocm_stream);
+
+    if (using_padded_inputs) {
+      for (std::size_t i = 0; i < mgx_state->cached_inputs.size(); ++i) {
+        const auto& inp = mgx_state->cached_inputs[i];
+        const auto& padded_buf = mgx_state->padded_input_buffers[i];
+        m.add(inp.name.c_str(), migraphx::argument(padded_buf.mgx_shape, padded_buf.data));
+      }
+    }
+
+    auto temp_ptrs = get_or_allocate_temp_output_buffers(
+        mgx_state, mgx_state->cached_mgx_param_shapes.value(),
+        mgx_state->cached_mgx_output_shapes.value(),
+        mgx_state->input_name_indexes, padded_batch_size);
+
+    for (std::size_t i = 0; i < mgx_state->cached_outputs.size(); ++i) {
+      const auto& out = mgx_state->cached_outputs[i];
+      m.add(out.name.c_str(), migraphx::argument(out.mgx_shape, temp_ptrs[i]));
+    }
+
+    run_migraphx_program(mgx_state->mgx_mu_ptr, rocm_stream, ctx, prog, m,
+                         mgx_state->cached_prog_output_indices,
+                         original_batch_size, padded_batch_size);
+    return true;
   }
 
-  // Rebind inputs - use padded buffers if available, otherwise use original inputs
-  if (using_padded_inputs && mgx_state->padded_input_buffers.size() == mgx_state->cached_inputs.size()) {
-    for (size_t i = 0; i < mgx_state->cached_inputs.size(); ++i) {
-      const auto& inp = mgx_state->cached_inputs[i];
-      const auto& padded_buf = mgx_state->padded_input_buffers[i];
-      m.add(inp.name.c_str(), migraphx::argument(padded_buf.mgx_shape, padded_buf.data));
-    }
-  } else {
-    for (const auto& inp : mgx_state->cached_inputs) {
-      const auto& input_tensor = ctx.GetInput(inp.ort_index);
-      m.add(inp.name.c_str(), migraphx::argument(inp.mgx_shape,
-                                         const_cast<void*>(input_tensor.GetTensorRawData())));
-    }
+  // Exact match path: rebind ORT pointers directly — zero memcpy overhead
+  for (const auto& inp : mgx_state->cached_inputs) {
+    const auto& input_tensor = ctx.GetInput(inp.ort_index);
+    m.add(inp.name.c_str(), migraphx::argument(inp.mgx_shape,
+                                       const_cast<void*>(input_tensor.GetTensorRawData())));
   }
-
-  // Rebind outputs - direct iteration, uses pre-allocated shape vectors
   for (std::size_t i = 0; i < mgx_state->cached_outputs.size(); ++i) {
     const auto& out = mgx_state->cached_outputs[i];
     const auto& ort_shape = mgx_state->cached_output_ort_shapes[i];
@@ -2437,12 +2416,8 @@ static bool execute_ultra_fast_path(
     m.add(out.name.c_str(), migraphx::argument(out.mgx_shape,
                                        output_tensor.GetTensorMutableRawData()));
   }
-
-  // Run directly - minimal overhead path
   run_migraphx_program(mgx_state->mgx_mu_ptr, rocm_stream, ctx, prog, m,
-                       mgx_state->cached_prog_output_indices,
-                       original_batch_size, padded_batch_size);
-  
+                       mgx_state->cached_prog_output_indices);
   return true;
 }
 
