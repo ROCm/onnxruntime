@@ -2221,9 +2221,6 @@ static void populate_ultra_fast_caches(
     std::size_t original_batch_size = 0,
     std::size_t padded_batch_size = 0)
 {
-  bool needs_slicing = (original_batch_size > 0 && padded_batch_size > 0 && 
-                        original_batch_size < padded_batch_size);
-  
   // Clear existing caches
   mgx_state->cached_inputs.clear();
   mgx_state->cached_outputs.clear();
