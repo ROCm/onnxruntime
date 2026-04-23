@@ -148,8 +148,20 @@ struct MIGraphXFuncState {
   
   // Track which program hash the cached shapes belong to (invalidate when program changes)
   std::string cached_program_hash;
-  
-  
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // hipGraph CAPTURE / REPLAY
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  struct CapturedHipGraph {
+    hipGraph_t graph = nullptr;
+    hipGraphExec_t exec = nullptr;
+    bool captured = false;
+  };
+
+  bool hip_graph_enabled = false;
+  // shape_hash -> captured graph (one per compiled program variant)
+  std::unordered_map<std::string, CapturedHipGraph> hip_graph_cache;
 };
 
 // Logical device representation.
