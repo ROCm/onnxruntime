@@ -216,6 +216,34 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   GET_ENV_STRING(migraphx_env_vars::kCompileBatches, compile_batches_);
   GET_ENV_BOOL(migraphx_env_vars::kHipGraphEnable, hip_graph_enable_);
 
+  // hipGraph requires single-stream MIGraphX execution (MIGRAPHX_NSTREAMS=1).
+  if (hip_graph_enable_) {
+    const auto nstreams_env = GetEnvironmentVar("MIGRAPHX_NSTREAMS");
+    int nstreams = nstreams_env.empty() ? 1 : std::stoi(nstreams_env);
+    if (nstreams > 1) {
+      LOGS_DEFAULT(WARNING)
+          << "[MIGraphX EP] MIGRAPHX_NSTREAMS=" << nstreams
+          << " is incompatible with hipGraph capture. Disabling hipGraph.";
+      hip_graph_enable_ = false;
+    }
+
+    const auto trace_env = GetEnvironmentVar("MIGRAPHX_TRACE_EVAL");
+    if (!trace_env.empty() && std::stoi(trace_env) != 0) {
+      LOGS_DEFAULT(WARNING)
+          << "[MIGraphX EP] MIGRAPHX_TRACE_EVAL is enabled, which calls hipStreamSynchronize "
+          << "per instruction. Disabling hipGraph.";
+      hip_graph_enable_ = false;
+    }
+
+    const auto null_stream_env = GetEnvironmentVar("MIGRAPHX_ENABLE_NULL_STREAM");
+    if (!null_stream_env.empty() && std::stoi(null_stream_env) != 0) {
+      LOGS_DEFAULT(WARNING)
+          << "[MIGraphX EP] MIGRAPHX_ENABLE_NULL_STREAM is enabled (default stream = illegal "
+          << "during capture). Disabling hipGraph.";
+      hip_graph_enable_ = false;
+    }
+  }
+
   // If compile_batches is set, auto-derive max_dynamic_batch from the spec's max value
   if (!compile_batches_.empty()) {
     auto explicit_sizes = parse_compile_batches(compile_batches_);
