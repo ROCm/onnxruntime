@@ -87,6 +87,8 @@ struct MIGraphXFuncState {
   struct PinnedIOSet {
     std::vector<PinnedIOBuffer> inputs;
     std::vector<PinnedIOBuffer> outputs;
+    std::unordered_map<std::string, std::size_t> input_name_to_idx;
+    std::unordered_map<std::string, std::size_t> output_name_to_idx;
     std::size_t max_batch_size = 0;
     bool allocated = false;
   };
@@ -123,6 +125,7 @@ struct MIGraphXFuncState {
 
   // Cached output indices for pre-allocated outputs (used by run_migraphx_program)
   std::vector<std::size_t> cached_prog_output_indices;
+  std::vector<std::size_t> cached_pinned_output_indices;
 
   // Last input shapes for quick comparison (avoids hash computation in ultra-fast path)
   std::vector<std::int64_t> last_input_shapes_raw;
@@ -153,10 +156,18 @@ struct MIGraphXFuncState {
   // hipGraph CAPTURE / REPLAY
   // ═══════════════════════════════════════════════════════════════════════════
 
+  struct ExtraOutputInfo {
+    std::size_t output_index;
+    std::vector<int64_t> ort_shape;
+    void* gpu_data;
+    std::size_t bytes;
+  };
+
   struct CapturedHipGraph {
     hipGraph_t graph = nullptr;
     hipGraphExec_t exec = nullptr;
     bool captured = false;
+    std::vector<ExtraOutputInfo> extra_outputs;
   };
 
   bool hip_graph_enabled = false;
