@@ -2020,7 +2020,16 @@ static void run_program_or_hip_graph_direct(
   auto it = mgx_state->hip_graph_cache.find(shape_hash);
   if (it != mgx_state->hip_graph_cache.end() && it->second.captured) {
     if (!check_captured_ptrs_match(it->second, input_ptrs, output_ptrs)) {
-      // Pointer drift -- destroy old graph and re-capture
+      ++mgx_state->direct_recapture_count;
+      if (mgx_state->direct_recapture_count > MIGraphXFuncState::kMaxDirectRecaptures) {
+        LOGS_DEFAULT(WARNING) << "[HipGraph] Too many pointer-drift re-captures ("
+                              << mgx_state->direct_recapture_count
+                              << "), falling back to eager execution";
+        mgx_state->use_direct_hip_graph = false;
+        run_migraphx_program(mgx_state->mgx_mu_ptr, stream, ctx, prog, m,
+                             prog_output_indices, original_batch_size, padded_batch_size);
+        return;
+      }
       if (it->second.exec) { (void)hipGraphExecDestroy(it->second.exec); it->second.exec = nullptr; }
       if (it->second.graph) { (void)hipGraphDestroy(it->second.graph); it->second.graph = nullptr; }
       it->second.captured = false;

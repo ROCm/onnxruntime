@@ -179,6 +179,9 @@ struct MIGraphXFuncState {
   // When true, capture/replay binds ORT tensor pointers directly (no pinned copies).
   // Requires the pool allocator to provide stable addresses.
   bool use_direct_hip_graph = false;
+  // If pointer drift causes too many re-captures, disable direct mode permanently.
+  static constexpr int kMaxDirectRecaptures = 3;
+  int direct_recapture_count = 0;
   // shape_hash -> captured graph (one per compiled program variant)
   std::unordered_map<std::string, CapturedHipGraph> hip_graph_cache;
 };
