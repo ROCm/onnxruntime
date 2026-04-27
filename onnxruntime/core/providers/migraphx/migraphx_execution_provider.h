@@ -168,9 +168,17 @@ struct MIGraphXFuncState {
     hipGraphExec_t exec = nullptr;
     bool captured = false;
     std::vector<ExtraOutputInfo> extra_outputs;
+
+    // Addresses captured in the graph for direct-bind mode.
+    // Used to detect pointer drift and trigger re-capture.
+    std::unordered_map<std::string, void*> captured_input_ptrs;
+    std::unordered_map<std::string, void*> captured_output_ptrs;
   };
 
   bool hip_graph_enabled = false;
+  // When true, capture/replay binds ORT tensor pointers directly (no pinned copies).
+  // Requires the pool allocator to provide stable addresses.
+  bool use_direct_hip_graph = false;
   // shape_hash -> captured graph (one per compiled program variant)
   std::unordered_map<std::string, CapturedHipGraph> hip_graph_cache;
 };
