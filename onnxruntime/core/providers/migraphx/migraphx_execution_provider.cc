@@ -328,8 +328,12 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
 
 std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators() {
   AllocatorCreationInfo default_memory_info(
-      [](OrtDevice::DeviceId device_id) {
-        return std::make_unique<MIGraphXAllocator>(device_id, onnxruntime::CUDA);
+      [this](OrtDevice::DeviceId device_id) {
+        auto alloc = std::make_unique<MIGraphXAllocator>(device_id, onnxruntime::CUDA);
+        if (hip_graph_enable_) {
+          alloc->EnablePoolMode();
+        }
+        return alloc;
       },
       device_id_);
   AllocatorCreationInfo pinned_allocator_info(
