@@ -2684,8 +2684,35 @@ static bool execute_ultra_fast_path(
                 .GetTensorTypeAndShapeInfo().GetShape()[0])
           : 0);
   std::size_t compiled_batch = padded_batch_size > 0 ? padded_batch_size : actual_batch;
-  // hipGraph requires stable buffer addresses → always route through pinned I/O
-  bool needs_pinned = ((actual_batch < compiled_batch) || mgx_state->hip_graph_enabled)
+  bool needs_padding = (actual_batch < compiled_batch);
+
+  // Direct-bind hipGraph: no copies, bind ORT pointers and replay
+  if (mgx_state->use_direct_hip_graph && !needs_padding) {
+    auto& m = mgx_state->cached_prog_params.value();
+    std::unordered_map<std::string, void*> input_ptrs, output_ptrs;
+    for (const auto& inp : mgx_state->cached_inputs) {
+      const auto& input_tensor = ctx.GetInput(inp.ort_index);
+      void* ptr = const_cast<void*>(input_tensor.GetTensorRawData());
+      m.add(inp.name.c_str(), migraphx::argument(inp.mgx_shape, ptr));
+      input_ptrs[inp.name] = ptr;
+    }
+    for (std::size_t i = 0; i < mgx_state->cached_outputs.size(); ++i) {
+      const auto& out = mgx_state->cached_outputs[i];
+      const auto& ort_shape = mgx_state->cached_output_ort_shapes[i];
+      auto output_tensor = ctx.GetOutput(out.output_index, ort_shape.data(), ort_shape.size());
+      void* ptr = output_tensor.GetTensorMutableRawData();
+      m.add(out.name.c_str(), migraphx::argument(out.mgx_shape, ptr));
+      output_ptrs[out.name] = ptr;
+    }
+    run_program_or_hip_graph_direct(mgx_state, rocm_stream, ctx, prog, m,
+                                     mgx_state->cached_prog_output_indices,
+                                     mgx_state->last_input_shape_hash,
+                                     input_ptrs, output_ptrs);
+    return true;
+  }
+
+  // Pinned-copy path: padding needed or legacy hipGraph path
+  bool needs_pinned = (needs_padding || mgx_state->hip_graph_enabled)
                       && mgx_state->pinned_io.allocated;
 
   if (needs_pinned && mgx_state->cached_mgx_param_shapes.has_value()) {
@@ -2843,8 +2870,45 @@ static bool execute_fast_path(
     }
   }
   std::size_t compiled_batch = padded_batch_size > 0 ? padded_batch_size : actual_batch;
-  // hipGraph requires stable buffer addresses → always route through pinned I/O
-  bool needs_pinned = ((actual_batch < compiled_batch) || mgx_state->hip_graph_enabled)
+  bool fast_needs_padding = (actual_batch < compiled_batch);
+
+  // Direct-bind hipGraph path: bind ORT pointers and replay, no copies
+  if (mgx_state->use_direct_hip_graph && !fast_needs_padding) {
+    auto [m, prog_output_indices] = handle_program_input_outputs(
+        param_shapes, output_shapes, map_input_name_index, ctx);
+
+    std::unordered_map<std::string, void*> input_ptrs, output_ptrs;
+    for (const auto& name : param_shapes.names()) {
+      auto inp_it = map_input_name_index.find(name);
+      if (inp_it != map_input_name_index.end()) {
+        input_ptrs[name] = const_cast<void*>(ctx.GetInput(inp_it->second).GetTensorRawData());
+      } else {
+        const auto oi = compute_output_index(name);
+        if (oi != -1) {
+          const auto& lens = output_shapes[oi].lengths();
+          std::vector<int64_t> ort_shape(lens.begin(), lens.end());
+          auto ot = ctx.GetOutput(oi, ort_shape.data(), ort_shape.size());
+          output_ptrs[name] = ot.GetTensorMutableRawData();
+        }
+      }
+    }
+
+    mgx_state->cached_prog_params = std::move(m);
+    mgx_state->cached_prog_output_indices = std::move(prog_output_indices);
+    mgx_state->last_input_shapes_raw = build_input_shapes_in_cached_order(mgx_state, ctx, 0);
+    mgx_state->last_input_shape_hash = current_hash;
+    mgx_state->caches_valid = true;
+
+    run_program_or_hip_graph_direct(mgx_state, rocm_stream, ctx, prog,
+                                     mgx_state->cached_prog_params.value(),
+                                     mgx_state->cached_prog_output_indices,
+                                     effective_program_hash,
+                                     input_ptrs, output_ptrs);
+    return true;
+  }
+
+  // Pinned-copy path: padding needed or legacy hipGraph
+  bool needs_pinned = (fast_needs_padding || mgx_state->hip_graph_enabled)
                       && mgx_state->pinned_io.allocated;
 
   if (needs_pinned) {
@@ -3304,6 +3368,39 @@ static void execute_standard_path(
     if (batch_for_alloc > 0) {
       allocate_pinned_io(mgx_state, param_shapes, output_shapes, batch_for_alloc, rocm_stream);
     }
+  }
+
+  // Direct-bind hipGraph for standard path (no padding case)
+  if (mgx_state->use_direct_hip_graph) {
+    auto [m, prog_output_indices] = handle_program_input_outputs(
+        param_shapes, output_shapes, map_input_name_index, ctx);
+
+    std::unordered_map<std::string, void*> input_ptrs, output_ptrs;
+    for (const auto& name : param_shapes.names()) {
+      auto inp_it = map_input_name_index.find(name);
+      if (inp_it != map_input_name_index.end()) {
+        input_ptrs[name] = const_cast<void*>(ctx.GetInput(inp_it->second).GetTensorRawData());
+      } else {
+        const auto oi = compute_output_index(name);
+        if (oi != -1) {
+          const auto& lens = output_shapes[oi].lengths();
+          std::vector<int64_t> ort_shape(lens.begin(), lens.end());
+          auto ot = ctx.GetOutput(oi, ort_shape.data(), ort_shape.size());
+          output_ptrs[name] = ot.GetTensorMutableRawData();
+        }
+      }
+    }
+
+    mgx_state->cached_prog_params = m;
+    mgx_state->cached_prog_output_indices = prog_output_indices;
+    mgx_state->last_input_shapes_raw = build_input_shapes_in_cached_order(mgx_state, ctx, 0);
+    mgx_state->last_input_shape_hash = current_hash;
+    mgx_state->caches_valid = true;
+
+    run_program_or_hip_graph_direct(mgx_state, rocm_stream, ctx, prog, m,
+                                     prog_output_indices, current_hash,
+                                     input_ptrs, output_ptrs);
+    return;
   }
 
   if (mgx_state->hip_graph_enabled && mgx_state->pinned_io.allocated) {
