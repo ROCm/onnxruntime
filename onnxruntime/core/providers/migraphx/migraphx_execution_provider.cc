@@ -1915,6 +1915,139 @@ static void replay_hip_graph(MIGraphXFuncState* mgx_state,
   HIP_CALL_THROW(hipGraphLaunch(entry.exec, stream));
 }
 
+// Direct-bind capture: bind ORT tensor pointers directly (no pinned buffers)
+// and capture the hipGraph.  Requires stable pointers from pool allocator.
+static bool warmup_and_capture_hip_graph_direct(
+    MIGraphXFuncState* mgx_state,
+    hipStream_t stream,
+    migraphx::program& prog,
+    migraphx::program_parameters& m,
+    const std::vector<std::size_t>& prog_output_indices,
+    const std::string& shape_hash,
+    const std::unordered_map<std::string, void*>& input_ptrs,
+    const std::unordered_map<std::string, void*>& output_ptrs)
+{
+  std::optional<migraphx::arguments> warmup_outputs;
+  {
+    std::lock_guard<std::mutex> lock(*mgx_state->mgx_mu_ptr);
+    warmup_outputs = prog.run_async(m, stream);
+  }
+  HIP_CALL_THROW(hipStreamSynchronize(stream));
+
+  auto& entry = mgx_state->hip_graph_cache[shape_hash];
+
+  try {
+    HIP_CALL_THROW(hipStreamBeginCapture(stream, hipStreamCaptureModeGlobal));
+    {
+      std::lock_guard<std::mutex> lock(*mgx_state->mgx_mu_ptr);
+      prog.run_async(m, stream);
+    }
+    hipError_t err = hipStreamEndCapture(stream, &entry.graph);
+    if (err != hipSuccess || entry.graph == nullptr) {
+      entry.graph = nullptr;
+      entry.captured = false;
+      mgx_state->use_direct_hip_graph = false;
+      return false;
+    }
+
+    HIP_CALL_THROW(hipGraphInstantiate(&entry.exec, entry.graph, nullptr, nullptr, 0));
+    entry.captured = true;
+    entry.captured_input_ptrs = input_ptrs;
+    entry.captured_output_ptrs = output_ptrs;
+
+    std::unordered_set<std::size_t> pre_alloc_set(prog_output_indices.begin(),
+                                                   prog_output_indices.end());
+    entry.extra_outputs.clear();
+    if (warmup_outputs) {
+      auto output_num = warmup_outputs->size();
+      for (std::size_t i = 0; i < output_num; ++i) {
+        if (pre_alloc_set.count(i) > 0) continue;
+        auto gpu_res = (*warmup_outputs)[i];
+        migraphx::shape res_shape = gpu_res.get_shape();
+        auto res_lens = res_shape.lengths();
+        std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
+        entry.extra_outputs.push_back({i, std::move(ort_shape),
+                                       gpu_res.data(), res_shape.bytes()});
+      }
+    }
+
+    return true;
+  } catch (...) {
+    hipGraph_t dummy = nullptr;
+    (void)hipStreamEndCapture(stream, &dummy);
+    if (dummy) (void)hipGraphDestroy(dummy);
+    entry.graph = nullptr;
+    entry.exec = nullptr;
+    entry.captured = false;
+    mgx_state->use_direct_hip_graph = false;
+    return false;
+  }
+}
+
+// Check whether ORT's current tensor pointers match the addresses stored
+// during capture.  Returns true if all pointers match.
+static bool check_captured_ptrs_match(
+    const MIGraphXFuncState::CapturedHipGraph& entry,
+    const std::unordered_map<std::string, void*>& current_input_ptrs,
+    const std::unordered_map<std::string, void*>& current_output_ptrs)
+{
+  for (const auto& [name, ptr] : current_input_ptrs) {
+    auto it = entry.captured_input_ptrs.find(name);
+    if (it == entry.captured_input_ptrs.end() || it->second != ptr) return false;
+  }
+  for (const auto& [name, ptr] : current_output_ptrs) {
+    auto it = entry.captured_output_ptrs.find(name);
+    if (it == entry.captured_output_ptrs.end() || it->second != ptr) return false;
+  }
+  return true;
+}
+
+// Direct-bind dispatch: replay or capture hipGraph using ORT tensor pointers
+// directly.  Falls back to the pinned-copy path on pointer mismatch.
+static void run_program_or_hip_graph_direct(
+    MIGraphXFuncState* mgx_state,
+    hipStream_t stream,
+    Ort::KernelContext& ctx,
+    migraphx::program& prog,
+    migraphx::program_parameters& m,
+    const std::vector<std::size_t>& prog_output_indices,
+    const std::string& shape_hash,
+    const std::unordered_map<std::string, void*>& input_ptrs,
+    const std::unordered_map<std::string, void*>& output_ptrs,
+    std::size_t original_batch_size = 0,
+    std::size_t padded_batch_size = 0)
+{
+  auto it = mgx_state->hip_graph_cache.find(shape_hash);
+  if (it != mgx_state->hip_graph_cache.end() && it->second.captured) {
+    if (!check_captured_ptrs_match(it->second, input_ptrs, output_ptrs)) {
+      // Pointer drift -- destroy old graph and re-capture
+      if (it->second.exec) { (void)hipGraphExecDestroy(it->second.exec); it->second.exec = nullptr; }
+      if (it->second.graph) { (void)hipGraphDestroy(it->second.graph); it->second.graph = nullptr; }
+      it->second.captured = false;
+    } else {
+      HIP_CALL_THROW(hipGraphLaunch(it->second.exec, stream));
+      if (!it->second.extra_outputs.empty()) {
+        materialize_extra_outputs(ctx, stream, it->second.extra_outputs,
+                                  original_batch_size, padded_batch_size);
+      }
+      return;
+    }
+  }
+
+  if (!warmup_and_capture_hip_graph_direct(mgx_state, stream, prog, m,
+                                            prog_output_indices, shape_hash,
+                                            input_ptrs, output_ptrs)) {
+    run_migraphx_program(mgx_state->mgx_mu_ptr, stream, ctx, prog, m,
+                         prog_output_indices, original_batch_size, padded_batch_size);
+  } else {
+    auto& entry = mgx_state->hip_graph_cache.at(shape_hash);
+    if (!entry.extra_outputs.empty()) {
+      materialize_extra_outputs(ctx, stream, entry.extra_outputs,
+                                original_batch_size, padded_batch_size);
+    }
+  }
+}
+
 // Materialize extra (non-pre-allocated) outputs recorded during hipGraph capture.
 // These are MIGraphX outputs not exposed as named parameters — their GPU data
 // pointers are stable across replays because hipGraph replays the same kernels.
@@ -4232,10 +4365,12 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
       // hipGraph: set per-node enable flag and validate cached programs
       p->hip_graph_enabled = hip_graph_enable_;
+      p->use_direct_hip_graph = hip_graph_enable_;
       if (p->hip_graph_enabled && p->cached_programs_ref.has_value()) {
         for (const auto& [hash, cached_prog] : p->cached_programs_ref.value().get()) {
           if (!check_hip_graph_compatibility(cached_prog, context->node_name)) {
             p->hip_graph_enabled = false;
+            p->use_direct_hip_graph = false;
             break;
           }
         }
