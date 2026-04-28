@@ -1836,6 +1836,8 @@ static void destroy_hip_graphs(MIGraphXFuncState* mgx_state) {
 
 // Warmup run (ensures lazy GPU allocations are finalized) then capture the graph.
 // Stores extra (non-pre-allocated) output metadata so replay can materialize them.
+static constexpr int kHipGraphWarmInIterations = 8;
+
 static bool warmup_and_capture_hip_graph(
     MIGraphXFuncState* mgx_state,
     hipStream_t stream,
@@ -1853,8 +1855,10 @@ static bool warmup_and_capture_hip_graph(
     HIP_CALL_THROW(hipMemsetAsync(pin.data, 0, pin.size_bytes, stream));
   }
 
+  // Run multiple eager warmup iterations before capture to let MIGraphX
+  // internal workspace buffers (scratch, reductions, etc.) stabilize.
   std::optional<migraphx::arguments> warmup_outputs;
-  {
+  for (int i = 0; i < kHipGraphWarmInIterations; ++i) {
     std::lock_guard<std::mutex> lock(*mgx_state->mgx_mu_ptr);
     warmup_outputs = prog.run_async(m, stream);
   }
@@ -1878,6 +1882,13 @@ static bool warmup_and_capture_hip_graph(
 
     HIP_CALL_THROW(hipGraphInstantiate(&entry.exec, entry.graph, nullptr, nullptr, 0));
     entry.captured = true;
+
+    // Replay the captured graph several more times post-capture to ensure
+    // workspace is fully settled before the first real inference.
+    for (int i = 0; i < kHipGraphWarmInIterations; ++i) {
+      HIP_CALL_THROW(hipGraphLaunch(entry.exec, stream));
+    }
+    HIP_CALL_THROW(hipStreamSynchronize(stream));
 
     std::unordered_set<std::size_t> pre_alloc_set(prog_output_indices.begin(),
                                                    prog_output_indices.end());
@@ -1936,7 +1947,7 @@ static bool warmup_and_capture_hip_graph_direct(
     const std::unordered_map<std::string, void*>& output_ptrs)
 {
   std::optional<migraphx::arguments> warmup_outputs;
-  {
+  for (int i = 0; i < kHipGraphWarmInIterations; ++i) {
     std::lock_guard<std::mutex> lock(*mgx_state->mgx_mu_ptr);
     warmup_outputs = prog.run_async(m, stream);
   }
@@ -1962,6 +1973,11 @@ static bool warmup_and_capture_hip_graph_direct(
     entry.captured = true;
     entry.captured_input_ptrs = input_ptrs;
     entry.captured_output_ptrs = output_ptrs;
+
+    for (int i = 0; i < kHipGraphWarmInIterations; ++i) {
+      HIP_CALL_THROW(hipGraphLaunch(entry.exec, stream));
+    }
+    HIP_CALL_THROW(hipStreamSynchronize(stream));
 
     std::unordered_set<std::size_t> pre_alloc_set(prog_output_indices.begin(),
                                                    prog_output_indices.end());
