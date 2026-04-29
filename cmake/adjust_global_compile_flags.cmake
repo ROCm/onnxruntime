@@ -347,6 +347,21 @@ else()
     set(onnxruntime_ENABLE_CPU_FP16_OPS FALSE)
   endif()
 
+  # Suppress warnings from newer Clang shipped with TheRock / ROCm 7.x+
+  check_cxx_compiler_flag("-Wlifetime-safety-intra-tu-suggestions" HAS_LIFETIME_SAFETY_INTRA_TU)
+  if (HAS_LIFETIME_SAFETY_INTRA_TU)
+    string(APPEND CMAKE_CXX_FLAGS " -Wno-lifetime-safety-intra-tu-suggestions")
+  endif()
+  check_cxx_compiler_flag("-Wlifetime-safety-cross-tu-suggestions" HAS_LIFETIME_SAFETY_CROSS_TU)
+  if (HAS_LIFETIME_SAFETY_CROSS_TU)
+    string(APPEND CMAKE_CXX_FLAGS " -Wno-lifetime-safety-cross-tu-suggestions")
+  endif()
+  check_cxx_compiler_flag("-Wc2y-extensions" HAS_C2Y_EXTENSIONS)
+  if (HAS_C2Y_EXTENSIONS)
+    string(APPEND CMAKE_CXX_FLAGS " -Wno-c2y-extensions")
+    string(APPEND CMAKE_C_FLAGS " -Wno-c2y-extensions")
+  endif()
+
 endif()
 
 if (WIN32)

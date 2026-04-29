@@ -10,6 +10,9 @@ cmake_policy(SET CMP0104 OLD)
 # Project
 project(onnxruntime C CXX ASM)
 
+include(DetectPackageBackend)
+detect_package_backend()
+
 # Disable fast-math for Intel oneAPI compiler
 if("${CMAKE_CXX_COMPILER_ID}" MATCHES "IntelLLVM")
   if("${CMAKE_CXX_COMPILER_ID}" MATCHES "MSVC-like")

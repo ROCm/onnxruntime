@@ -1,0 +1,90 @@
+# ONNXRuntime build environment with TheRock (amdrocm-*) deb packages.
+#
+# Build args:
+#   GPU_ARCH          GPU architecture family (e.g. gfx120x, gfx94x)
+#   ROCM_RELEASE_URL  TheRock ROCm apt repository URL
+#
+# Build:
+#   docker build --build-arg GPU_ARCH=<gpu_arch> \
+#       --build-arg ROCM_RELEASE_URL=<rocm_release_url> \
+#       -f dockerfiles/Dockerfile.therock -t onnxruntime-therock .
+#
+# Run:
+#   docker run -it --device=/dev/kfd --device=/dev/dri --group-add video \
+#       -v $(pwd):/code/onnxruntime onnxruntime-therock
+#
+# Build ONNXRuntime inside the container:
+#   cd /code/onnxruntime
+#   ./build.sh --allow_running_as_root --config Release --build_wheel \
+#       --use_rocm --rocm_home /opt/rocm --use_migraphx \
+#       --cmake_extra_defines ORT_PACKAGE_BACKEND=therock \
+#           ORT_THEROCK_GPU_ARCH=$(rocminfo | grep -o -m1 'gfx.*')
+
+FROM ubuntu:24.04
+
+ARG GPU_ARCH=gfx120x
+ARG ROCM_RELEASE_URL=https://rocm.nightlies.amd.com/deb/20260414-24379014014
+
+RUN dpkg --add-architecture i386
+
+# Install apt repository signing key for LLVM.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates gnupg2 curl && \
+    curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
+
+# Add TheRock ROCm nightly repository (unsigned until upstream signs the repo).
+RUN sh -c "echo deb [arch=amd64 trusted=yes] ${ROCM_RELEASE_URL} stable main > /etc/apt/sources.list.d/rocm.list"
+
+RUN sh -c "echo 'Package: *\nPin: release o=repo.radeon.com\nPin-priority: 600' > /etc/apt/preferences.d/rocm-pin-600"
+
+# Add LLVM repository for Clang 17
+RUN sh -c "echo deb [arch=amd64 signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-17 main > /etc/apt/sources.list.d/llvm.list"
+
+# Install build dependencies
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    apt-utils \
+    build-essential \
+    clang-17 \
+    cmake \
+    curl \
+    g++ \
+    gdb \
+    git \
+    locales \
+    pkg-config \
+    python3 \
+    python3-dev \
+    python3-pip \
+    python3-full \
+    wget \
+    libnuma-dev \
+    libomp-17-dev \
+    libssl-dev \
+    zlib1g-dev && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install TheRock ROCm libraries
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    amdrocm-runtime \
+    amdrocm-runtime-dev \
+    amdrocm-llvm \
+    amdrocm-core-${GPU_ARCH} \
+    amdrocm-core-dev-${GPU_ARCH} \
+    amdrocm-blas-${GPU_ARCH} \
+    amdrocm-blas-dev-${GPU_ARCH} \
+    amdrocm-hipblas-common-dev-${GPU_ARCH} \
+    amdrocm-dnn-${GPU_ARCH} \
+    amdrocm-dnn-dev-${GPU_ARCH} && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+ENV PATH=/opt/rocm/bin:$PATH
+
+# Expose GPU arch for CMake (avoids ORT_ prefix "unused env" warning).
+ENV GPU_ARCH_FOR_THEROCK=${GPU_ARCH}
+
+RUN locale-gen en_US.UTF-8 && update-locale LANG=en_US.UTF-8
+
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
