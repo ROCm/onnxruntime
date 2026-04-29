@@ -67,8 +67,8 @@ std::unique_ptr<synchronize::Notification> MIGraphXStream::CreateNotification(si
 }
 
 void MIGraphXStream::Flush() {
-  if (own_stream_)
-    HIP_CALL_THROW(hipStreamSynchronize(static_cast<hipStream_t>(GetHandle())));
+  if (auto* handle = GetHandle())
+    HIP_CALL_THROW(hipStreamSynchronize(static_cast<hipStream_t>(handle)));
 }
 
 void MIGraphXStream::EnqueDeferredCPUBuffer(void* cpu_buffer) {
