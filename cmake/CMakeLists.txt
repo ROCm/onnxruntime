@@ -10,6 +10,9 @@ cmake_policy(SET CMP0104 OLD)
 # Project
 project(onnxruntime C CXX ASM)
 
+add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/wd4875>")
+add_compile_definitions("$<$<CXX_COMPILER_ID:MSVC>:_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS>")
+
 # Set C/C++ standard versions
 if (NOT CMAKE_C_STANDARD)
   # Needed for Java
