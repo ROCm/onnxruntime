@@ -10,6 +10,9 @@ cmake_policy(SET CMP0104 OLD)
 # Project
 project(onnxruntime C CXX ASM)
 
+add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/wd4875>")
+add_compile_definitions("$<$<CXX_COMPILER_ID:MSVC>:_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS>")
+
 include(onnxruntime_language_standard_versions.cmake)
 
 # We don't use C++20 modules yet.
