@@ -3061,12 +3061,21 @@ static InputShapeResult handle_input_shape(
 }
 
 // Helper: Compile models for all configured batch sizes and cache them
+// rocm_stream is the per-Run compute stream resolved from ctx.GetGPUComputeStream()
+// in compute_func.  It MUST be threaded through to allocate_pinned_io so the
+// stream-ordered memory pool used by hipMallocAsync has the same lineage as the
+// stream that will later issue copies, captured-graph launches, and replays
+// against those pinned buffers.  Using a different stream here (e.g. the EP's
+// own mgx_state->stream) is undefined behavior under the hipMemPool semantics
+// and on ROCm typically surfaces as the captured graph reading stale or
+// uninitialized pinned memory on first replay.
 static void compile_dynamic_batch_models(
     MIGraphXFuncState* mgx_state,
     const std::filesystem::path& model_cache_path,
     const std::filesystem::path& model_path,
     const std::string& mxr_filename_prefix,
-    const Ort::KernelContext& ctx) {
+    const Ort::KernelContext& ctx,
+    hipStream_t rocm_stream) {
   
   if (!mgx_state->has_dynamic_batch || mgx_state->compiled_batch_sizes.empty()) {
     return;
@@ -3195,7 +3204,7 @@ static void compile_dynamic_batch_models(
       if (largest_prog && max_batch > 0) {
         auto ps = largest_prog->get_parameter_shapes();
         auto os = largest_prog->get_output_shapes();
-        allocate_pinned_io(mgx_state, ps, os, max_batch, mgx_state->stream);
+        allocate_pinned_io(mgx_state, ps, os, max_batch, rocm_stream);
       }
     }
   }
@@ -3223,7 +3232,7 @@ static void execute_standard_path(
   // If precompilation happened during Compile(), max_dynamic_batch will be > 0 but defer_compilation = false
   // In that case, the programs are already in cache and we can skip runtime compilation
   if (mgx_state->has_dynamic_batch && mgx_state->max_dynamic_batch > 0 && mgx_state->defer_compilation) {
-    compile_dynamic_batch_models(mgx_state, model_cache_path, model_path, mxr_filename_prefix, ctx);
+    compile_dynamic_batch_models(mgx_state, model_cache_path, model_path, mxr_filename_prefix, ctx, rocm_stream);
 
     // Validate newly compiled programs for hipGraph compatibility
     if (mgx_state->hip_graph_enabled && mgx_state->cached_programs_ref.has_value()) {
@@ -4482,6 +4491,13 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       }
 
       // Allocate pinned I/O buffers from the cached programs.
+      // create_state_func runs ONCE at session init (long before any Run()),
+      // so there is no per-Run compute stream to query here — ComputeContext
+      // does not expose one.  We use stream_ (the EP-owned init stream) and
+      // rely on the hipStreamSynchronize(stream) inside allocate_pinned_io to
+      // establish the hipMallocAsync pool memory so the per-Run compute stream
+      // (resolved from ctx.GetGPUComputeStream() in compute_func) can safely
+      // consume these pointers without further cross-stream ordering.
       // Uses the program compiled for the largest batch size so that
       // allocate_pinned_io sees parameter shapes whose batch dim matches
       // max_batch. All smaller batches share the same buffers.
@@ -4558,9 +4574,17 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       Ort::KernelContext ctx(context);
       MIGraphXFuncState* mgx_state = reinterpret_cast<MIGraphXFuncState*>(state);
 
+      // Run on whichever stream ORT elected for this device for THIS Run().
+      // - external_stream_=true   -> ORT wrapper around the user-supplied stream
+      // - external_stream_=false  -> stream ORT created via RegisterCreateStreamFn
+      // Either way, ORT's MemcpyFromHost/MemcpyToHost ran on this stream, so issuing
+      // kernels on it removes the cross-stream race that EP::stream_ would introduce.
+      hipStream_t run_stream = static_cast<hipStream_t>(ctx.GetGPUComputeStream());
+      if (run_stream == nullptr) run_stream = stream_;  // fallback for harnesses w/o stream registry
+
       const auto& map_input_name_index = mgx_state->input_name_indexes;
 
-      if (execute_ultra_fast_path(mgx_state, stream_, ctx)) {
+      if (execute_ultra_fast_path(mgx_state, run_stream, ctx)) {
         return Status::OK();
       }
 
@@ -4572,11 +4596,11 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       }
       const auto current_hash = make_hash(all_input_shapes);
 
-      if (execute_fast_path(mgx_state, stream_, ctx, current_hash, all_input_shapes)) {
+      if (execute_fast_path(mgx_state, run_stream, ctx, current_hash, all_input_shapes)) {
         return Status::OK();
       }
 
-      execute_standard_path(mgx_state, stream_, ctx, current_hash, std::move(all_input_shapes),
+      execute_standard_path(mgx_state, run_stream, ctx, current_hash, std::move(all_input_shapes),
                             model_cache_path_, model_path_, mxr_filename_prefix);
 
       return Status::OK();

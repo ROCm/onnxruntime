@@ -67,8 +67,11 @@ std::unique_ptr<synchronize::Notification> MIGraphXStream::CreateNotification(si
 }
 
 void MIGraphXStream::Flush() {
-  if (auto* handle = GetHandle())
-    HIP_CALL_THROW(hipStreamSynchronize(static_cast<hipStream_t>(handle)));
+  // Only sync streams we own. External streams are caller-managed; implicit sync
+  // here would break async pipelines (e.g. Triton) by serializing every Run().
+  if(own_stream_)
+    if (auto* handle = GetHandle())
+      HIP_CALL_THROW(hipStreamSynchronize(static_cast<hipStream_t>(handle)));
 }
 
 void MIGraphXStream::EnqueDeferredCPUBuffer(void* cpu_buffer) {
