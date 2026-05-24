@@ -1551,6 +1551,105 @@ static void free_pinned_io(MIGraphXFuncState* mgx_state, hipStream_t stream) {
   pio.allocated = false;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Scratch buffer management (one EP-owned buffer per compiled program)
+//
+// Why we own scratch:
+//   MIGraphX programs expose a "scratch" parameter.  If the EP doesn't bind
+//   it, MIGraphX falls back to its internal arena -- whose contents persist
+//   across calls and bleed into any hipGraph kernel that reads scratch before
+//   writing it.  Owning the buffer lets us zero it before every replay and
+//   before capture, anchoring kernels to a deterministic memory baseline.
+//
+// Lifetime:
+//   Keyed by shape_hash so each compiled batch variant has its own buffer.
+//   Allocated lazily on first bind, reused across all subsequent runs for
+//   that shape.  Reallocated only if MIGraphX reports a different scratch
+//   size for the same hash (defensive; in practice the size is constant per
+//   shape).  Freed on session teardown via free_scratch_bufs.
+//
+// Stream semantics:
+//   Allocations and zeroing go through hipMallocAsync/hipMemsetAsync on the
+//   same `stream` the EP uses for compute.  This keeps scratch ordering
+//   consistent with the program runs that consume it.
+// ═══════════════════════════════════════════════════════════════════════════
+
+struct ScratchBindInfo {
+  void* ptr;
+  migraphx::shape mgx_shape;
+};
+
+// Returns scratch buffer info bound to the given program's "scratch" parameter,
+// allocating it on first call for `shape_hash` and zeroing it on every call.
+// Returns std::nullopt if the program has no "scratch" parameter.
+static std::optional<ScratchBindInfo>
+get_or_alloc_scratch(MIGraphXFuncState* mgx_state,
+                     const migraphx::program_parameter_shapes& param_shapes,
+                     const std::string& shape_hash,
+                     hipStream_t stream)
+{
+  bool has_scratch = false;
+  for (const auto& name : param_shapes.names()) {
+    if (std::string_view(name) == "scratch") { has_scratch = true; break; }
+  }
+  if (!has_scratch) return std::nullopt;
+
+  const auto& scratch_shape = param_shapes["scratch"];
+  const std::size_t needed_bytes = scratch_shape.bytes();
+
+  auto& slot = mgx_state->scratch_bufs[shape_hash];
+
+  // (Re)allocate if size grew or buffer is missing.  Shrinking-only is fine to
+  // keep -- avoids freeing in the steady state.
+  if (slot.data == nullptr || needed_bytes > slot.size_bytes) {
+    if (slot.data != nullptr) {
+      (void)hipFreeAsync(slot.data, stream);
+      slot.data = nullptr;
+      slot.size_bytes = 0;
+    }
+    void* ptr = nullptr;
+    HIP_CALL_THROW(hipMallocAsync(&ptr, needed_bytes, stream));
+    slot.data = ptr;
+    slot.size_bytes = needed_bytes;
+    slot.mgx_shape = scratch_shape;
+  } else {
+    // Keep the most recent shape (same hash so usually identical, but be safe).
+    slot.mgx_shape = scratch_shape;
+  }
+
+  // Always zero before handing the buffer back -- this is the whole point of
+  // EP-owning scratch.  Cheap on the order of the scratch size, and bypassed
+  // entirely by the cache-hit path (no allocation) yet still issued on the
+  // compute stream so it serializes correctly against the upcoming run/replay.
+  HIP_CALL_THROW(hipMemsetAsync(slot.data, 0, slot.size_bytes, stream));
+
+  return ScratchBindInfo{slot.data, slot.mgx_shape};
+}
+
+// Zero an already-allocated scratch buffer (no allocation, no shape lookup).
+// Used right before every hipGraph replay so each replay starts from a known
+// memory baseline.  No-op if no scratch was bound for this shape_hash.
+static void zero_scratch_for(MIGraphXFuncState* mgx_state,
+                             const std::string& shape_hash,
+                             hipStream_t stream)
+{
+  auto it = mgx_state->scratch_bufs.find(shape_hash);
+  if (it == mgx_state->scratch_bufs.end()) return;
+  if (it->second.data == nullptr || it->second.size_bytes == 0) return;
+  HIP_CALL_THROW(hipMemsetAsync(it->second.data, 0, it->second.size_bytes, stream));
+}
+
+static void free_scratch_bufs(MIGraphXFuncState* mgx_state, hipStream_t stream) {
+  for (auto& [hash, slot] : mgx_state->scratch_bufs) {
+    if (slot.data) {
+      (void)hipFreeAsync(slot.data, stream);
+      slot.data = nullptr;
+    }
+  }
+  HIP_CALL_THROW(hipStreamSynchronize(stream));
+  mgx_state->scratch_bufs.clear();
+}
+
 // Copy ORT input tensors into pinned buffers and pad if needed.
 static void copy_inputs_to_pinned(
     MIGraphXFuncState* mgx_state,
@@ -1612,7 +1711,9 @@ static PinnedBindResult
 bind_pinned_program_params(
     MIGraphXFuncState* mgx_state,
     const migraphx::program_parameter_shapes& param_shapes,
-    const migraphx::shapes& output_shapes)
+    const migraphx::shapes& output_shapes,
+    const std::string& shape_hash,
+    hipStream_t stream)
 {
   auto& pio = mgx_state->pinned_io;
   const auto& map_input_name_index = mgx_state->input_name_indexes;
@@ -1624,6 +1725,14 @@ bind_pinned_program_params(
       auto pin_it = pio.input_name_to_idx.find(name);
       if (pin_it == pio.input_name_to_idx.end()) continue;
       result.params.add(name, migraphx::argument(param_shapes[name], pio.inputs[pin_it->second].data));
+    } else if (std::string_view(name) == "scratch") {
+      // Bind EP-owned scratch buffer (allocate-and-zero on first use, zero-only
+      // thereafter).  Skipping this would force MIGraphX to use its internal
+      // arena whose state bleeds across runs -- see header note on ScratchBuf.
+      auto scratch = get_or_alloc_scratch(mgx_state, param_shapes, shape_hash, stream);
+      if (scratch) {
+        result.params.add(name, migraphx::argument(scratch->mgx_shape, scratch->ptr));
+      }
     } else {
       const auto oi = compute_output_index(name);
       if (oi != -1) {
@@ -1898,6 +2007,10 @@ static bool warmup_and_capture_hip_graph(
   for (auto& pin : pio.outputs) {
     HIP_CALL_THROW(hipMemsetAsync(pin.data, 0, pin.size_bytes, stream));
   }
+  // Zero EP-owned scratch too -- caller bound it via bind_pinned_program_params
+  // but the warmup runs below would otherwise leave warmup-derived bytes in
+  // scratch that then get baked into the capture.
+  zero_scratch_for(mgx_state, shape_hash, stream);
 
   // Pre-capture eager loop: only enough to finalize MIGraphX's lazy
   // allocations (finalize is idempotent so this can be small).
@@ -1916,6 +2029,11 @@ static bool warmup_and_capture_hip_graph(
 
   auto& entry = mgx_state->hip_graph_cache[shape_hash];
 
+  // Re-zero scratch right before BeginCapture so the captured kernel sequence
+  // is anchored to a known baseline (the warmup loop just dirtied it).
+  zero_scratch_for(mgx_state, shape_hash, stream);
+  HIP_CALL_THROW(hipStreamSynchronize(stream));
+
   try {
     HIP_CALL_THROW(hipStreamBeginCapture(stream, hipStreamCaptureModeGlobal));
     {
@@ -1932,6 +2050,12 @@ static bool warmup_and_capture_hip_graph(
 
     HIP_CALL_THROW(hipGraphInstantiate(&entry.exec, entry.graph, nullptr, nullptr, 0));
     entry.captured = true;
+    // Record the scratch pointer that was baked into the captured kernels so
+    // we can detect re-allocation across replays (e.g. after pool reuse).
+    auto scratch_it = mgx_state->scratch_bufs.find(shape_hash);
+    entry.captured_scratch_ptr = (scratch_it != mgx_state->scratch_bufs.end())
+                                    ? scratch_it->second.data
+                                    : nullptr;
 
     // Replay the captured graph several more times post-capture to ensure
     // workspace is fully settled before the first real inference.
@@ -1972,6 +2096,12 @@ static bool warmup_and_capture_hip_graph(
 static void replay_hip_graph(MIGraphXFuncState* mgx_state,
                              hipStream_t stream,
                              const std::string& shape_hash) {
+  // Zero EP-owned scratch (no-op if none) before each replay so the captured
+  // kernels see the same memory baseline every time.  Without this, any
+  // captured kernel that reads scratch before writing it inherits residue
+  // from the previous replay, which is the source of the non-deterministic
+  // back-to-back outputs we observed.
+  zero_scratch_for(mgx_state, shape_hash, stream);
   auto& entry = mgx_state->hip_graph_cache.at(shape_hash);
   HIP_CALL_THROW(hipGraphLaunch(entry.exec, stream));
 }
@@ -2030,6 +2160,11 @@ static bool warmup_and_capture_hip_graph_direct(
     if (bytes == 0) continue;
     HIP_CALL_THROW(hipMemsetAsync(it->second, 0, bytes, stream));
   }
+  // Also zero EP-owned scratch -- this is the structural fix that replaces
+  // the "do nothing about scratch" gap noted in the prior comment.  Whatever
+  // ran before this Run() left arbitrary bytes in scratch; zero them so the
+  // warmup runs and the subsequent capture start from a known baseline.
+  zero_scratch_for(mgx_state, shape_hash, stream);
 
   // Pre-capture eager loop: only enough to finalize MIGraphX's lazy
   // allocations.  (See the comment near kCaptureFinalizeIterations above for
@@ -2056,6 +2191,9 @@ static bool warmup_and_capture_hip_graph_direct(
     if (bytes == 0) continue;
     HIP_CALL_THROW(hipMemsetAsync(it->second, 0, bytes, stream));
   }
+  // And re-zero scratch right before BeginCapture, for the same reason -- the
+  // warmup runs just wrote warmup-derived bytes into scratch.
+  zero_scratch_for(mgx_state, shape_hash, stream);
   HIP_CALL_THROW(hipStreamSynchronize(stream));
 
   // ---- Change #2: tune post-capture warm-in to the compiled batch size.
@@ -2083,6 +2221,12 @@ static bool warmup_and_capture_hip_graph_direct(
     entry.captured = true;
     entry.captured_input_ptrs = input_ptrs;
     entry.captured_output_ptrs = output_ptrs;
+    {
+      auto scratch_it = mgx_state->scratch_bufs.find(shape_hash);
+      entry.captured_scratch_ptr = (scratch_it != mgx_state->scratch_bufs.end())
+                                      ? scratch_it->second.data
+                                      : nullptr;
+    }
 
     for (int i = 0; i < post_warmin; ++i) {
       HIP_CALL_THROW(hipGraphLaunch(entry.exec, stream));
@@ -2119,11 +2263,13 @@ static bool warmup_and_capture_hip_graph_direct(
 }
 
 // Check whether ORT's current tensor pointers match the addresses stored
-// during capture.  Returns true if all pointers match.
+// during capture.  Returns true if all pointers match (including the EP-owned
+// scratch buffer, which is also baked into the captured kernel arguments).
 static bool check_captured_ptrs_match(
     const MIGraphXFuncState::CapturedHipGraph& entry,
     const std::unordered_map<std::string, void*>& current_input_ptrs,
-    const std::unordered_map<std::string, void*>& current_output_ptrs)
+    const std::unordered_map<std::string, void*>& current_output_ptrs,
+    void* current_scratch_ptr)
 {
   for (const auto& [name, ptr] : current_input_ptrs) {
     auto it = entry.captured_input_ptrs.find(name);
@@ -2133,6 +2279,7 @@ static bool check_captured_ptrs_match(
     auto it = entry.captured_output_ptrs.find(name);
     if (it == entry.captured_output_ptrs.end() || it->second != ptr) return false;
   }
+  if (entry.captured_scratch_ptr != current_scratch_ptr) return false;
   return true;
 }
 
@@ -2153,7 +2300,12 @@ static void run_program_or_hip_graph_direct(
 {
   auto it = mgx_state->hip_graph_cache.find(shape_hash);
   if (it != mgx_state->hip_graph_cache.end() && it->second.captured) {
-    if (!check_captured_ptrs_match(it->second, input_ptrs, output_ptrs)) {
+    void* current_scratch = nullptr;
+    {
+      auto sit = mgx_state->scratch_bufs.find(shape_hash);
+      if (sit != mgx_state->scratch_bufs.end()) current_scratch = sit->second.data;
+    }
+    if (!check_captured_ptrs_match(it->second, input_ptrs, output_ptrs, current_scratch)) {
       ++mgx_state->direct_recapture_count;
       if (mgx_state->direct_recapture_count > MIGraphXFuncState::kMaxDirectRecaptures) {
         LOGS_DEFAULT(WARNING) << "[HipGraph] Too many pointer-drift re-captures ("
@@ -2168,6 +2320,10 @@ static void run_program_or_hip_graph_direct(
       if (it->second.graph) { (void)hipGraphDestroy(it->second.graph); it->second.graph = nullptr; }
       it->second.captured = false;
     } else {
+      // Same rationale as in replay_hip_graph: zero EP-owned scratch before
+      // every direct-bind replay so the captured kernel sequence isn't
+      // contaminated by the prior replay's scratch residue.
+      zero_scratch_for(mgx_state, shape_hash, stream);
       HIP_CALL_THROW(hipGraphLaunch(it->second.exec, stream));
       if (!it->second.extra_outputs.empty()) {
         materialize_extra_outputs(ctx, stream, it->second.extra_outputs,
@@ -2586,12 +2742,20 @@ static void handle_input_shape_mismatch(
 // Overload: Handle program inputs and outputs binding with pre-cached output shapes
 // This avoids calling prog.get_output_shapes() when shapes are already cached
 // When needs_slicing is true, allocates temporary GPU buffers for outputs instead of binding directly
+//
+// `mgx_state`, `shape_hash` and `stream` are used to bind the program's
+// "scratch" parameter to an EP-owned, per-shape buffer that we can zero
+// before every replay.  Pass mgx_state=nullptr (and any stream) to skip
+// scratch binding -- MIGraphX will then fall back to its internal arena.
 static
 std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program_input_outputs(
     const migraphx::program_parameter_shapes& param_shapes,
     const migraphx::shapes& output_shapes,
     const std::unordered_map<std::string, std::size_t>& map_input_name_index,
     const Ort::KernelContext& ctx,
+    MIGraphXFuncState* mgx_state,
+    const std::string& shape_hash,
+    hipStream_t stream,
     bool needs_slicing = false,
     std::vector<void*>* temp_output_buffers = nullptr)
 {
@@ -2614,6 +2778,16 @@ std::pair<migraphx::program_parameters, std::vector<std::size_t>> handle_program
         const auto& mgx_s = param_shapes[name];
         m.add(name, migraphx::argument(mgx_s,
                                        const_cast<void*>(input_tensor.GetTensorRawData())));
+      } else if (std::string_view(name) == "scratch") {
+        // Bind EP-owned scratch (allocate-and-zero on first use, zero-only
+        // thereafter).  Without this MIGraphX silently uses its internal
+        // arena and hipGraph replays inherit cross-run state.
+        if (mgx_state != nullptr) {
+          auto scratch = get_or_alloc_scratch(mgx_state, param_shapes, shape_hash, stream);
+          if (scratch) {
+            m.add(name, migraphx::argument(scratch->mgx_shape, scratch->ptr));
+          }
+        }
       } else {
         // Output parameter
         const auto output_index = compute_output_index(name);
@@ -2847,6 +3021,20 @@ static bool execute_ultra_fast_path(
       m.add(out.name.c_str(), migraphx::argument(out.mgx_shape, ptr));
       output_ptrs[out.name] = ptr;
     }
+    // Rebind EP-owned scratch on every invocation.  populate_ultra_fast_caches
+    // only tracks inputs and outputs, never "scratch", so it never lands in
+    // `m` from the caches; we have to add it here.  get_or_alloc_scratch is a
+    // no-op alloc / mandatory zero on the cache-hit path -- exactly what we
+    // need to flush any state the previous run left behind.
+    if (mgx_state->cached_mgx_param_shapes.has_value()) {
+      auto scratch = get_or_alloc_scratch(mgx_state,
+                                          mgx_state->cached_mgx_param_shapes.value(),
+                                          mgx_state->last_input_shape_hash,
+                                          rocm_stream);
+      if (scratch) {
+        m.add("scratch", migraphx::argument(scratch->mgx_shape, scratch->ptr));
+      }
+    }
     run_program_or_hip_graph_direct(mgx_state, rocm_stream, ctx, prog, m,
                                      mgx_state->cached_prog_output_indices,
                                      mgx_state->last_input_shape_hash,
@@ -3018,7 +3206,8 @@ static bool execute_fast_path(
   // Direct-bind hipGraph path: bind ORT pointers and replay, no copies
   if (mgx_state->use_direct_hip_graph && !fast_needs_padding) {
     auto [m, prog_output_indices] = handle_program_input_outputs(
-        param_shapes, output_shapes, map_input_name_index, ctx);
+        param_shapes, output_shapes, map_input_name_index, ctx,
+        mgx_state, effective_program_hash, rocm_stream);
 
     std::unordered_map<std::string, void*> input_ptrs, output_ptrs;
     for (const auto& name : param_shapes.names()) {
@@ -3056,7 +3245,8 @@ static bool execute_fast_path(
 
   if (needs_pinned) {
     copy_inputs_to_pinned(mgx_state, param_shapes, ctx, actual_batch, compiled_batch, rocm_stream);
-    auto bind_result = bind_pinned_program_params(mgx_state, param_shapes, output_shapes);
+    auto bind_result = bind_pinned_program_params(mgx_state, param_shapes, output_shapes,
+                                                  effective_program_hash, rocm_stream);
 
     mgx_state->cached_prog_params = std::move(bind_result.params);
     mgx_state->cached_prog_output_indices = std::move(bind_result.prog_output_indices);
@@ -3078,7 +3268,8 @@ static bool execute_fast_path(
   }
 
   auto [m, prog_output_indices] = handle_program_input_outputs(
-      param_shapes, output_shapes, map_input_name_index, ctx);
+      param_shapes, output_shapes, map_input_name_index, ctx,
+      mgx_state, effective_program_hash, rocm_stream);
 
   mgx_state->cached_prog_params = std::move(m);
   mgx_state->cached_prog_output_indices = std::move(prog_output_indices);
@@ -3415,7 +3606,8 @@ static void execute_standard_path(
           // Direct-bind hipGraph for exact-match batch (no padding)
           if (mgx_state->use_direct_hip_graph && !needs_padding) {
             auto [m, prog_output_indices] = handle_program_input_outputs(
-                param_shapes, output_shapes, map_input_name_index, ctx);
+                param_shapes, output_shapes, map_input_name_index, ctx,
+                mgx_state, padded_hash, rocm_stream);
 
             std::unordered_map<std::string, void*> input_ptrs, output_ptrs;
             for (const auto& name : param_shapes.names()) {
@@ -3478,7 +3670,8 @@ static void execute_standard_path(
 
             std::size_t copy_actual = needs_padding ? original_batch_size : padded_batch_size;
             copy_inputs_to_pinned(mgx_state, param_shapes, ctx, copy_actual, padded_batch_size, rocm_stream);
-            auto bind_result = bind_pinned_program_params(mgx_state, param_shapes, output_shapes);
+            auto bind_result = bind_pinned_program_params(mgx_state, param_shapes, output_shapes,
+                                                          padded_hash, rocm_stream);
 
             mgx_state->cached_prog_params = bind_result.params;
             mgx_state->cached_prog_output_indices = bind_result.prog_output_indices;
@@ -3496,7 +3689,8 @@ static void execute_standard_path(
                                        ctx, copy_actual, rocm_stream);
           } else {
             auto [m, prog_output_indices] = handle_program_input_outputs(
-                param_shapes, output_shapes, map_input_name_index, ctx);
+                param_shapes, output_shapes, map_input_name_index, ctx,
+                mgx_state, padded_hash, rocm_stream);
 
             mgx_state->cached_prog_params = m;
             mgx_state->cached_prog_output_indices = prog_output_indices;
@@ -3560,7 +3754,8 @@ static void execute_standard_path(
   // Direct-bind hipGraph for standard path (no padding case)
   if (mgx_state->use_direct_hip_graph) {
     auto [m, prog_output_indices] = handle_program_input_outputs(
-        param_shapes, output_shapes, map_input_name_index, ctx);
+        param_shapes, output_shapes, map_input_name_index, ctx,
+        mgx_state, current_hash, rocm_stream);
 
     std::unordered_map<std::string, void*> input_ptrs, output_ptrs;
     for (const auto& name : param_shapes.names()) {
@@ -3597,7 +3792,8 @@ static void execute_standard_path(
       if (!shape.empty()) { actual_batch = static_cast<std::size_t>(shape[0]); break; }
     }
     copy_inputs_to_pinned(mgx_state, param_shapes, ctx, actual_batch, actual_batch, rocm_stream);
-    auto bind_result = bind_pinned_program_params(mgx_state, param_shapes, output_shapes);
+    auto bind_result = bind_pinned_program_params(mgx_state, param_shapes, output_shapes,
+                                                  current_hash, rocm_stream);
 
     mgx_state->cached_prog_params = bind_result.params;
     mgx_state->cached_prog_output_indices = bind_result.prog_output_indices;
@@ -3616,7 +3812,8 @@ static void execute_standard_path(
   }
 
   auto [m, prog_output_indices] = handle_program_input_outputs(
-      param_shapes, output_shapes, map_input_name_index, ctx);
+      param_shapes, output_shapes, map_input_name_index, ctx,
+      mgx_state, current_hash, rocm_stream);
 
   mgx_state->cached_prog_params = m;
   mgx_state->cached_prog_output_indices = prog_output_indices;
@@ -4675,6 +4872,9 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       if (state) {
         auto* s = static_cast<MIGraphXFuncState*>(state);
         destroy_hip_graphs(s);
+        // Free EP-owned scratch before pinned I/O -- both use hipFreeAsync on
+        // the EP stream so ordering between them only matters at process exit.
+        free_scratch_bufs(s, s->stream);
         free_pinned_io(s, s->stream);
         delete s;
       }

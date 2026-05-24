@@ -96,6 +96,32 @@ struct MIGraphXFuncState {
   PinnedIOSet pinned_io;
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // SCRATCH BUFFERS (one per compiled program / shape_hash)
+  //
+  // MIGraphX programs expose a "scratch" parameter that the EP must bind to
+  // a device buffer; otherwise MIGraphX falls back to its own internal scratch
+  // arena whose contents persist across runs and whose lifetime is opaque to
+  // hipGraph capture/replay.  When we capture a hipGraph that contains kernels
+  // which read scratch before writing within a single invocation (common with
+  // split-K reductions, fused-attention epilogues, etc.), the captured kernel
+  // sees whatever bytes happened to be in that opaque arena at capture time,
+  // and every subsequent replay inherits the same dependency on whatever the
+  // *previous* replay left behind.  That is the root cause of non-deterministic
+  // back-to-back replays on identical input.
+  //
+  // By owning the scratch buffer in the EP and zeroing it before every replay
+  // (and before capture), we anchor each replay to the same memory baseline
+  // and eliminate the cross-run state bleed.  One buffer per shape_hash means
+  // every compiled batch-size variant gets its own correctly-sized arena.
+  // ═══════════════════════════════════════════════════════════════════════════
+  struct ScratchBuf {
+    void* data = nullptr;
+    std::size_t size_bytes = 0;
+    migraphx::shape mgx_shape;
+  };
+  std::unordered_map<std::string, ScratchBuf> scratch_bufs;
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // PERFORMANCE CACHES - Avoid redundant MIGraphX API calls per inference
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -173,6 +199,13 @@ struct MIGraphXFuncState {
     // Used to detect pointer drift and trigger re-capture.
     std::unordered_map<std::string, void*> captured_input_ptrs;
     std::unordered_map<std::string, void*> captured_output_ptrs;
+
+    // Scratch buffer pointer baked into the captured graph.  Compared against
+    // the current scratch buffer pointer on every replay; a mismatch (e.g.
+    // because the buffer was reallocated for a shape-size change) forces a
+    // re-capture.  nullptr means the program has no "scratch" parameter and
+    // no EP-owned scratch was bound.
+    void* captured_scratch_ptr = nullptr;
   };
 
   bool hip_graph_enabled = false;
