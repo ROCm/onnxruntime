@@ -1836,7 +1836,51 @@ static void destroy_hip_graphs(MIGraphXFuncState* mgx_state) {
 
 // Warmup run (ensures lazy GPU allocations are finalized) then capture the graph.
 // Stores extra (non-pre-allocated) output metadata so replay can materialize them.
-static constexpr int kHipGraphWarmInIterations = 8;
+//
+// The previous design used a single `kHipGraphWarmInIterations = 8` for both
+// the pre-capture eager loop AND the post-capture replay loop, regardless of
+// compiled batch size.  That had two problems:
+//   * `prog.run_async` only needs to be called once for MIGraphX's lazy
+//     allocations to finalize (`hip::hip_allocate_memory::finalize` is
+//     idempotent); the other 7 pre-capture iterations only pollute the
+//     program's persistent scratch arena with warmup-distribution data, which
+//     then bleeds into the *captured* kernel arguments.
+//   * Larger compiled batches tend to select kernels with deeper scratch
+//     dependencies (split-K reductions, attention workspaces, etc.), so a
+//     single fixed post-capture count is simultaneously too high for bs=1
+//     (wastes compile time) and too low for bs=8 (insufficient warm-in).
+//
+// The split below gives us a small constant pre-capture phase (just to
+// finalize lazy allocs) and a post-capture phase that scales gently with the
+// compiled batch size.
+static constexpr int kCaptureFinalizeIterations = 2;
+static constexpr int kPostCaptureWarmInBase     = 6;
+
+// Returns a post-capture replay count tuned to the compiled batch size.
+// One extra iteration per doubling above bs=1: 1->6, 2->7, 4->8, 8->9, 16->10.
+// Caller passes 0 when batch is unknown; we fall back to the base count.
+static inline int post_capture_warmin_for(std::size_t batch) {
+  int extra = 0;
+  for (std::size_t b = batch; b > 1; b >>= 1) ++extra;
+  return kPostCaptureWarmInBase + extra;
+}
+
+// Best-effort extraction of the compiled batch size from a program's input
+// parameter shapes.  Used purely to tune warm-in iteration counts; returns 0
+// if no input-like parameter has a leading dimension we can read.
+static std::size_t infer_compiled_batch_from_params(
+    const migraphx::program_parameter_shapes& param_shapes,
+    const std::unordered_map<std::string, std::size_t>& input_name_indexes) {
+  std::size_t batch = 0;
+  for (const auto& name : param_shapes.names()) {
+    if (input_name_indexes.find(name) == input_name_indexes.end()) continue;
+    const auto& s = param_shapes[name];
+    auto lens = s.lengths();
+    if (lens.empty()) continue;
+    batch = std::max(batch, static_cast<std::size_t>(lens[0]));
+  }
+  return batch;
+}
 
 static bool warmup_and_capture_hip_graph(
     MIGraphXFuncState* mgx_state,
@@ -1855,14 +1899,20 @@ static bool warmup_and_capture_hip_graph(
     HIP_CALL_THROW(hipMemsetAsync(pin.data, 0, pin.size_bytes, stream));
   }
 
-  // Run multiple eager warmup iterations before capture to let MIGraphX
-  // internal workspace buffers (scratch, reductions, etc.) stabilize.
+  // Pre-capture eager loop: only enough to finalize MIGraphX's lazy
+  // allocations (finalize is idempotent so this can be small).
   std::optional<migraphx::arguments> warmup_outputs;
-  for (int i = 0; i < kHipGraphWarmInIterations; ++i) {
+  for (int i = 0; i < kCaptureFinalizeIterations; ++i) {
     std::lock_guard<std::mutex> lock(*mgx_state->mgx_mu_ptr);
     warmup_outputs = prog.run_async(m, stream);
   }
   HIP_CALL_THROW(hipStreamSynchronize(stream));
+
+  // Tune post-capture warm-in to the compiled batch size (see #2 in the
+  // header comment near kCaptureFinalizeIterations).
+  const std::size_t compiled_batch = infer_compiled_batch_from_params(
+      prog.get_parameter_shapes(), mgx_state->input_name_indexes);
+  const int post_warmin = post_capture_warmin_for(compiled_batch);
 
   auto& entry = mgx_state->hip_graph_cache[shape_hash];
 
@@ -1885,7 +1935,7 @@ static bool warmup_and_capture_hip_graph(
 
     // Replay the captured graph several more times post-capture to ensure
     // workspace is fully settled before the first real inference.
-    for (int i = 0; i < kHipGraphWarmInIterations; ++i) {
+    for (int i = 0; i < post_warmin; ++i) {
       HIP_CALL_THROW(hipGraphLaunch(entry.exec, stream));
     }
     HIP_CALL_THROW(hipStreamSynchronize(stream));
@@ -1946,12 +1996,72 @@ static bool warmup_and_capture_hip_graph_direct(
     const std::unordered_map<std::string, void*>& input_ptrs,
     const std::unordered_map<std::string, void*>& output_ptrs)
 {
+  // ---- Change #1: pre-warmup output zeroing (asymmetry fix vs. pinned path).
+  //
+  // The pinned-copy capture path (warmup_and_capture_hip_graph above) zeroes
+  // its pinned input/output mirrors before the warmup loop so the captured
+  // kernel sequence is anchored to a deterministic memory baseline.  The
+  // direct-bind path historically did nothing here, which meant the captured
+  // kernels' device-pointer arguments referenced ORT-owned output buffers
+  // whose contents at first-replay time were leftover bytes from an unrelated
+  // prior call.  For graphs whose captured kernels read an output buffer
+  // before writing it within a single invocation (a common pattern with
+  // fused-attention epilogues and reduction accumulators), that stale data
+  // bleeds into the first verified replay -- the exact failure observed on
+  // bs>=4 in the cross-session interleaved verification test.
+  //
+  // We deliberately do NOT zero ORT *input* pointers: those carry user data
+  // bound by the caller via `m`, and clobbering them would feed zeros into
+  // the warmup runs.  Outputs, however, have not yet been written by this
+  // call and are safe to memset.
+  //
+  // The full structural fix (binding MIGraphX's "scratch" parameter to an
+  // EP-owned, per-shape buffer that we can memset before every replay) is
+  // tracked separately; this change closes the asymmetry vs. the pinned path
+  // and removes the dependence on whatever happened to be at the output
+  // address when capture started.
+  const auto param_shapes_for_zero = prog.get_parameter_shapes();
+  for (const auto& name : param_shapes_for_zero.names()) {
+    const int oi = compute_output_index(name);
+    if (oi < 0) continue;  // skip inputs and the "scratch" parameter
+    auto it = output_ptrs.find(name);
+    if (it == output_ptrs.end() || it->second == nullptr) continue;
+    const std::size_t bytes = param_shapes_for_zero[name].bytes();
+    if (bytes == 0) continue;
+    HIP_CALL_THROW(hipMemsetAsync(it->second, 0, bytes, stream));
+  }
+
+  // Pre-capture eager loop: only enough to finalize MIGraphX's lazy
+  // allocations.  (See the comment near kCaptureFinalizeIterations above for
+  // why this no longer scales with the previous fixed `kHipGraphWarmInIterations`.)
   std::optional<migraphx::arguments> warmup_outputs;
-  for (int i = 0; i < kHipGraphWarmInIterations; ++i) {
+  for (int i = 0; i < kCaptureFinalizeIterations; ++i) {
     std::lock_guard<std::mutex> lock(*mgx_state->mgx_mu_ptr);
     warmup_outputs = prog.run_async(m, stream);
   }
   HIP_CALL_THROW(hipStreamSynchronize(stream));
+
+  // ---- Change #1 (continued): re-zero outputs right before BeginCapture.
+  // The warmup runs above wrote real (warmup-data-derived) values into the
+  // output buffers.  If we capture now, those values become the "starting
+  // state" baked into any read-before-write captured kernel.  Reset to zero
+  // so capture is anchored to a known baseline rather than warmup-data
+  // residuals.
+  for (const auto& name : param_shapes_for_zero.names()) {
+    const int oi = compute_output_index(name);
+    if (oi < 0) continue;
+    auto it = output_ptrs.find(name);
+    if (it == output_ptrs.end() || it->second == nullptr) continue;
+    const std::size_t bytes = param_shapes_for_zero[name].bytes();
+    if (bytes == 0) continue;
+    HIP_CALL_THROW(hipMemsetAsync(it->second, 0, bytes, stream));
+  }
+  HIP_CALL_THROW(hipStreamSynchronize(stream));
+
+  // ---- Change #2: tune post-capture warm-in to the compiled batch size.
+  const std::size_t compiled_batch = infer_compiled_batch_from_params(
+      param_shapes_for_zero, mgx_state->input_name_indexes);
+  const int post_warmin = post_capture_warmin_for(compiled_batch);
 
   auto& entry = mgx_state->hip_graph_cache[shape_hash];
 
@@ -1974,7 +2084,7 @@ static bool warmup_and_capture_hip_graph_direct(
     entry.captured_input_ptrs = input_ptrs;
     entry.captured_output_ptrs = output_ptrs;
 
-    for (int i = 0; i < kHipGraphWarmInIterations; ++i) {
+    for (int i = 0; i < post_warmin; ++i) {
       HIP_CALL_THROW(hipGraphLaunch(entry.exec, stream));
     }
     HIP_CALL_THROW(hipStreamSynchronize(stream));
