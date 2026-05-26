@@ -1405,7 +1405,13 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         calibrate_and_quantize(prog, t_, quant_params, fp16_enable_, bf16_enable_, int8_enable_,
                                fp8_enable_, int8_calibration_cache_available_, dynamic_range_map_);
         compile_program(prog, t_, exhaustive_tune_);
-        save_compiled_model(prog, model_cache_file);
+        try {
+          save_compiled_model(prog, model_cache_file);
+        } catch (const std::exception& e) {
+          LOGS_DEFAULT(WARNING) << ">>>>>> exception caught at Compile::save_compiled_model: " << e.what();
+        } catch (...) {
+          LOGS_DEFAULT(WARNING) << ">>>>>> unknown exception caught at Compile::save_compiled_model";
+        }
       }
 
       auto prog_output_shapes = prog.get_output_shapes();
@@ -1557,7 +1563,13 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
           calibrate_and_quantize(prog, t, quant_params, fp16_enable, bf16_enable, int8_enable,
                                  fp8_enable, int8_calibration_cache_available, map_dynamic_range);
           compile_program(prog, t, exhaustive_tune_);
-          save_compiled_model(prog, model_cache_file);
+          try {
+            save_compiled_model(prog, model_cache_file);
+          } catch (const std::exception& e) {
+            LOGS_DEFAULT(WARNING) << ">>>>>> exception caught at recompile::save_compiled_model: " << e.what();
+          } catch (...) {
+            LOGS_DEFAULT(WARNING) << ">>>>>> unknown exception caught at recompile::save_compiled_model";
+          }
         }
 
         mgx_state->prog = prog;
