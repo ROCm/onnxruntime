@@ -1579,9 +1579,19 @@ struct ScratchBindInfo {
   migraphx::shape mgx_shape;
 };
 
-// Returns scratch buffer info bound to the given program's "scratch" parameter,
-// allocating it on first call for `shape_hash` and zeroing it on every call.
-// Returns std::nullopt if the program has no "scratch" parameter.
+// Ensure an EP-owned scratch buffer exists (and is large enough) for the given
+// `shape_hash`, allocating on first call or when the program's scratch size
+// has grown.  Freshly-allocated buffers are zeroed; *existing* buffers are
+// NOT zeroed here, on the assumption that whoever consumes the buffer (the
+// capture/replay paths) will issue `zero_scratch_for` themselves immediately
+// before use.  This avoids a redundant `hipMemsetAsync` on every ultra-fast
+// bind (where we go straight into `run_program_or_hip_graph_direct` which
+// already does the zero), recovering most of the perf gap that the previous
+// always-zero behavior introduced.
+//
+// Returns std::nullopt if the program has no "scratch" parameter -- in that
+// case the caller should not bind anything and MIGraphX will fall back to
+// whatever internal scratch handling it has for that program.
 static std::optional<ScratchBindInfo>
 get_or_alloc_scratch(MIGraphXFuncState* mgx_state,
                      const migraphx::program_parameter_shapes& param_shapes,
@@ -1612,16 +1622,14 @@ get_or_alloc_scratch(MIGraphXFuncState* mgx_state,
     slot.data = ptr;
     slot.size_bytes = needed_bytes;
     slot.mgx_shape = scratch_shape;
+    // Zero on fresh allocation only.  Subsequent calls rely on
+    // `zero_scratch_for` at the capture/replay site to enforce the
+    // deterministic baseline.
+    HIP_CALL_THROW(hipMemsetAsync(slot.data, 0, slot.size_bytes, stream));
   } else {
     // Keep the most recent shape (same hash so usually identical, but be safe).
     slot.mgx_shape = scratch_shape;
   }
-
-  // Always zero before handing the buffer back -- this is the whole point of
-  // EP-owning scratch.  Cheap on the order of the scratch size, and bypassed
-  // entirely by the cache-hit path (no allocation) yet still issued on the
-  // compute stream so it serializes correctly against the upcoming run/replay.
-  HIP_CALL_THROW(hipMemsetAsync(slot.data, 0, slot.size_bytes, stream));
 
   return ScratchBindInfo{slot.data, slot.mgx_shape};
 }
@@ -1963,10 +1971,15 @@ static void destroy_hip_graphs(MIGraphXFuncState* mgx_state) {
 // finalize lazy allocs) and a post-capture phase that scales gently with the
 // compiled batch size.
 static constexpr int kCaptureFinalizeIterations = 2;
-static constexpr int kPostCaptureWarmInBase     = 6;
+// Bumped from 6 -> 10 after observing that the first user-data replay of bs=4
+// was tripping the test's strict rtol=0.001 by ~2/256 elements.  More warmin
+// iterations push the captured graph's internal-state-dependent kernels
+// (atomic-reduction accumulators, etc.) closer to steady state so the first
+// post-warmup user replay produces near-steady-state output.
+static constexpr int kPostCaptureWarmInBase     = 10;
 
 // Returns a post-capture replay count tuned to the compiled batch size.
-// One extra iteration per doubling above bs=1: 1->6, 2->7, 4->8, 8->9, 16->10.
+// One extra iteration per doubling above bs=1: 1->10, 2->11, 4->12, 8->13, 16->14.
 // Caller passes 0 when batch is unknown; we fall back to the base count.
 static inline int post_capture_warmin_for(std::size_t batch) {
   int extra = 0;
@@ -2058,8 +2071,17 @@ static bool warmup_and_capture_hip_graph(
                                     : nullptr;
 
     // Replay the captured graph several more times post-capture to ensure
-    // workspace is fully settled before the first real inference.
+    // workspace is fully settled before the first real inference.  Zero
+    // scratch AND the pinned output buffers between iterations so every
+    // warmin sees the same memory baseline a real replay will see -- same
+    // rationale as the direct-bind warmin loop.  (Pinned outputs are the
+    // pio.outputs[] buffers; zeroing them is cheap and matches what the
+    // pre-warmup zero already does at the start of this function.)
     for (int i = 0; i < post_warmin; ++i) {
+      zero_scratch_for(mgx_state, shape_hash, stream);
+      for (auto& pin : pio.outputs) {
+        HIP_CALL_THROW(hipMemsetAsync(pin.data, 0, pin.size_bytes, stream));
+      }
       HIP_CALL_THROW(hipGraphLaunch(entry.exec, stream));
     }
     HIP_CALL_THROW(hipStreamSynchronize(stream));
@@ -2102,6 +2124,19 @@ static void replay_hip_graph(MIGraphXFuncState* mgx_state,
   // from the previous replay, which is the source of the non-deterministic
   // back-to-back outputs we observed.
   zero_scratch_for(mgx_state, shape_hash, stream);
+  // Same rationale for the pinned output buffers: captured kernels that do
+  // read-modify-write on outputs would otherwise inherit the previous
+  // replay's output values.  copy_pinned_outputs_to_ort runs after every
+  // replay so the prior contents have already been copied out by the time
+  // we get here -- safe to clobber.
+  auto& pio = mgx_state->pinned_io;
+  if (pio.allocated) {
+    for (auto& pin : pio.outputs) {
+      if (pin.data) {
+        HIP_CALL_THROW(hipMemsetAsync(pin.data, 0, pin.size_bytes, stream));
+      }
+    }
+  }
   auto& entry = mgx_state->hip_graph_cache.at(shape_hash);
   HIP_CALL_THROW(hipGraphLaunch(entry.exec, stream));
 }
@@ -2228,7 +2263,33 @@ static bool warmup_and_capture_hip_graph_direct(
                                       : nullptr;
     }
 
+    // Record (ptr, bytes) for every ORT-bound output so replay can zero them
+    // before each launch.  We use param_shapes_for_zero[name].bytes() rather
+    // than output_shapes[oi].bytes() because the captured kernels touch the
+    // *program-side* buffer extent, which for padded-batch programs is the
+    // padded shape -- exactly what we want to zero.
+    entry.captured_output_zeroes.clear();
+    entry.captured_output_zeroes.reserve(output_ptrs.size());
+    for (const auto& [name, ptr] : output_ptrs) {
+      if (ptr == nullptr) continue;
+      // program_parameter_shapes::operator[] takes const char*, not std::string.
+      const std::size_t bytes = param_shapes_for_zero[name.c_str()].bytes();
+      if (bytes == 0) continue;
+      entry.captured_output_zeroes.emplace_back(ptr, bytes);
+    }
+
+    // Post-capture warmin loop: zero scratch AND outputs before each launch so
+    // every warmin iteration sees the same memory baseline that real replays
+    // will see.  Without this, the 8th warmin iteration (e.g.) feeds the 9th
+    // its dirty-scratch / dirty-output state, leaving the captured graph in a
+    // post-warmin state that differs from what the first user replay starts
+    // from (we zero before every replay).  That mismatch is what was leaving
+    // the first user replay ~5e-3 away from eager on the larger reductions.
     for (int i = 0; i < post_warmin; ++i) {
+      zero_scratch_for(mgx_state, shape_hash, stream);
+      for (const auto& [ptr, bytes] : entry.captured_output_zeroes) {
+        HIP_CALL_THROW(hipMemsetAsync(ptr, 0, bytes, stream));
+      }
       HIP_CALL_THROW(hipGraphLaunch(entry.exec, stream));
     }
     HIP_CALL_THROW(hipStreamSynchronize(stream));
@@ -2324,6 +2385,17 @@ static void run_program_or_hip_graph_direct(
       // every direct-bind replay so the captured kernel sequence isn't
       // contaminated by the prior replay's scratch residue.
       zero_scratch_for(mgx_state, shape_hash, stream);
+      // Also zero every ORT-bound output before the launch.  Required because
+      // some captured kernels (split-K, fused-attention epilogues) do
+      // read-modify-write on the output buffer.  The ORT allocator pool
+      // recycles addresses across batch-size transitions, so a fresh user
+      // call may inherit the previous batch-size's output residue at the
+      // same address -- producing first-replay drift on the larger-reduction
+      // outputs.  Zeroing here pins the read-side of any R-M-W to zero,
+      // matching the eager allocator's fresh-buffer semantics.
+      for (const auto& [ptr, bytes] : it->second.captured_output_zeroes) {
+        HIP_CALL_THROW(hipMemsetAsync(ptr, 0, bytes, stream));
+      }
       HIP_CALL_THROW(hipGraphLaunch(it->second.exec, stream));
       if (!it->second.extra_outputs.empty()) {
         materialize_extra_outputs(ctx, stream, it->second.extra_outputs,

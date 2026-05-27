@@ -206,6 +206,21 @@ struct MIGraphXFuncState {
     // re-capture.  nullptr means the program has no "scratch" parameter and
     // no EP-owned scratch was bound.
     void* captured_scratch_ptr = nullptr;
+
+    // Output buffers (ptr + byte size) we need to memset to zero before every
+    // replay.  Required because some captured kernels do read-modify-write on
+    // their output (split-K reductions, fused-attention accumulators, etc.).
+    // Without this the first replay after a batch-size transition inherits
+    // residue from the previously-recycled ORT-pool buffer and produces a
+    // small but real numerical drift relative to eager (observed on the
+    // larger-reduction outputs 2/7/11 of feed-gen-rec).  Populated at capture
+    // time from output_ptrs + param_shapes; size is the program-side bytes
+    // (not the original-batch slice), which is what the captured kernels
+    // actually touch.  "Extra" outputs (those returned by prog.run_async
+    // rather than pre-allocated) are intentionally excluded -- they live in
+    // MIGraphX-managed memory and are materialized via a fresh memcpy after
+    // every replay.
+    std::vector<std::pair<void*, std::size_t>> captured_output_zeroes;
   };
 
   bool hip_graph_enabled = false;
