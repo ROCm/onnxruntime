@@ -68,7 +68,7 @@ struct MIGraphXFuncState {
   std::filesystem::path model_cache_dir;
   bool dump_model_ops = false;
   bool exhaustive_tune = false;
-  size_t max_dynamic_batch;
+  size_t max_dynamic_batch = 0;
   // Reference to the cached programs map for this node (keyed by input shape hash)
   std::optional<std::reference_wrapper<std::unordered_map<std::string, migraphx::program>>> cached_programs_ref = std::nullopt;
   
