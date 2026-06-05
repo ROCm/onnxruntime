@@ -90,7 +90,7 @@ class GPUDataTransfer : public IDataTransfer {
   common::Status CopyTensorAsync(const Tensor& src, Tensor& dst, Stream& stream) const override;
 
  private:
-  static constexpr size_t kStagingThreshold = 64 * 1024;  // 64 KiB
+  static constexpr size_t kStagingThreshold = SIZE_MAX; //64 * 1024;  // 64 KiB
   hipStream_t stream_;
   mutable PinnedStagingPool staging_pool_;
 };
