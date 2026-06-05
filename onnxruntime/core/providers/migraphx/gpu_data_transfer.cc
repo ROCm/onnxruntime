@@ -11,22 +11,11 @@
 
 namespace onnxruntime {
 
-namespace {
-
-struct StagingReturnInfo {
-  PinnedStagingPool* pool;
-  void* buffer;
-  size_t capacity;
-};
-
-void StagingReturnCallback(void* raw) {
-  std::unique_ptr<StagingReturnInfo> info(static_cast<StagingReturnInfo*>(raw));
-  info->pool->Release(info->buffer, info->capacity);
+GPUDataTransfer::~GPUDataTransfer() {
+  // Make sure no outstanding async copies are still referencing pinned
+  // staging buffers before we tear the reaper / pools down.
+  (void)hipDeviceSynchronize();
 }
-
-}  // namespace
-
-GPUDataTransfer::~GPUDataTransfer() = default;
 
 bool GPUDataTransfer::CanCopy(const OrtDevice& src_device, const OrtDevice& dst_device) const {
   OrtDevice::DeviceType src_type = src_device.Type();
@@ -118,10 +107,34 @@ common::Status GPUDataTransfer::CopyTensorAsync(const Tensor& src, Tensor& dst, 
           staging_pool_.Release(pinned, bytes);
           HIP_RETURN_IF_ERROR(err);
         }
-        auto cb = std::make_unique<StagingReturnInfo>(StagingReturnInfo{&staging_pool_, pinned, bytes});
-        HIP_RETURN_IF_ERROR(hipLaunchHostFunc(hip_stream, StagingReturnCallback, cb.release()));
+        // Hand the pinned buffer to the reaper, which will return it to the
+        // pool once the recorded event reports complete.  This replaces the
+        // previous hipLaunchHostFunc-based release, which serialised on the
+        // compute stream's host-function dispatcher and could deadlock when
+        // Release happened to invoke hipHostFree under heavy load.
+        hipEvent_t e = event_pool_.Acquire();
+        if (!e) {
+          // Event allocation failed — degrade gracefully by syncing on the
+          // calling thread and releasing the buffer immediately.
+          HIP_RETURN_IF_ERROR(hipStreamSynchronize(hip_stream));
+          staging_pool_.Release(pinned, bytes);
+        } else {
+          auto rec_err = hipEventRecord(e, hip_stream);
+          if (rec_err != hipSuccess) {
+            // Recording failed — same fallback as above, plus return the
+            // event to its pool for reuse.
+            (void)hipStreamSynchronize(hip_stream);
+            staging_pool_.Release(pinned, bytes);
+            event_pool_.Release(e);
+            HIP_RETURN_IF_ERROR(rec_err);
+          }
+          reaper_.Submit(e, pinned, bytes);
+        }
       } else {
-        // hipHostMalloc failed — fall back to the (synchronous) direct path
+        // hipHostMalloc failed — fall back to the direct path.  Note that
+        // hipMemcpyAsync on pageable memory is effectively synchronous from
+        // the host's point of view (the runtime stages internally), which
+        // is the desired behaviour in this degraded path.
         HIP_RETURN_IF_ERROR(hipMemcpyAsync(dst_data, src_data, bytes, hipMemcpyHostToDevice, hip_stream));
       }
     }

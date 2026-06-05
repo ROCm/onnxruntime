@@ -1820,7 +1820,6 @@ static void run_migraphx_program(
     prog_outputs = prog.run_async(m, rocm_stream);
   }
 
-  HIP_CALL_THROW(hipStreamSynchronize(rocm_stream));
 
   bool needs_slicing = (original_batch_size > 0 && padded_batch_size > 0 &&
                         original_batch_size < padded_batch_size);
@@ -1835,6 +1834,7 @@ static void run_migraphx_program(
 
   if (needs_slicing && !prog_output_indices_set.empty()) {
     // Must sync before reallocating any pre-allocated output buffer for slicing.
+    HIP_CALL_THROW(hipStreamSynchronize(rocm_stream));
 
     for (std::size_t i = 0; i < output_num; ++i) {
       if (prog_output_indices_set.count(i) == 0) continue;
@@ -4997,7 +4997,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 void MIGraphXExecutionProvider::RegisterStreamHandlers(IStreamCommandHandleRegistry& stream_handle_registry,
                                                        AllocatorMap& allocators) const {
   auto allocator = allocators[GetOrtDeviceByMemType(OrtMemTypeCPU)];
-  RegisterMIGraphXStreamHandles(stream_handle_registry, OrtDevice::GPU, allocator, true, stream_, true);
+  RegisterMIGraphXStreamHandles(stream_handle_registry, OrtDevice::GPU, allocator, true, stream_, external_stream_);
 }
 
 OrtDevice MIGraphXExecutionProvider::GetOrtDeviceByMemType(OrtMemType mem_type) const {
