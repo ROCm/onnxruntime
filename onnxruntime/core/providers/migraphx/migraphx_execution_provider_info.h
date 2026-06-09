@@ -36,6 +36,7 @@ constexpr auto kGpuExternalEmptyCache = "migraphx_external_empty_cache"sv;
 constexpr auto kModelCacheDir = "migraphx_model_cache_dir"sv;
 constexpr auto kModelMaxDynamicBatch = "migraphx_max_dynamic_batch"sv;
 constexpr auto kCompileBatches = "migraphx_compile_batches"sv;
+constexpr auto kHipGraphEnable = "migraphx_hip_graph_enable"sv;
 constexpr auto kHasUserComputeStream = "has_user_compute_stream"sv;
 constexpr auto kUserComputeStream = "user_compute_stream"sv;
 }  // namespace migraphx_provider_option
@@ -61,6 +62,7 @@ struct MIGraphXExecutionProviderInfo {
   OrtArenaCfg* default_memory_arena_cfg{nullptr};
   size_t max_dynamic_batch{static_cast<size_t>(0)};
   std::string compile_batches{};  // Comma-separated list of batch sizes to compile, e.g. "1,4,8,16,32"
+  bool hip_graph_enable{false};
 
   void* external_alloc{nullptr};
   void* external_free{nullptr};
@@ -94,7 +96,8 @@ struct std::hash<::onnxruntime::MIGraphXExecutionProviderInfo> {
                   (static_cast<size_t>(info.int8_enable) << 19) ^
                   (static_cast<size_t>(info.int8_use_native_calibration_table) << 20) ^
                   (static_cast<size_t>(info.exhaustive_tune) << 21) ^
-                  (static_cast<size_t>(info.bf16_enable) << 22);
+                  (static_cast<size_t>(info.bf16_enable) << 22) ^
+                  (static_cast<size_t>(info.hip_graph_enable) << 23);
 
     onnxruntime::HashCombine(data, value);
 

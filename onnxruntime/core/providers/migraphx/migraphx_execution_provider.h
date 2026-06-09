@@ -37,6 +37,7 @@ constexpr auto kExhaustiveTune = "ORT_MIGRAPHX_EXHAUSTIVE_TUNE"sv;
 constexpr auto kModelCachePath = "ORT_MIGRAPHX_MODEL_CACHE_PATH"sv;
 constexpr auto kModelMaxDynamicBatch = "ORT_MIGRAPHX_MAX_DYNAMIC_BATCH"sv;
 constexpr auto kCompileBatches = "ORT_MIGRAPHX_COMPILE_BATCHES"sv;
+constexpr auto kHipGraphEnable = "ORT_MIGRAPHX_HIP_GRAPH_ENABLE"sv;
 }  // namespace migraphx_env_vars
 
 // Tracks which dimensions are symbolic for a given input
@@ -56,6 +57,7 @@ struct MIGraphXFuncState {
   migraphx::target t{};
   std::unordered_map<std::string, std::size_t> input_name_indexes;
   std::mutex* mgx_mu_ptr = nullptr;
+  hipStream_t stream = nullptr;
   bool defer_compilation = false;
   bool fp16_enable = false;
   bool bf16_enable = false;
@@ -66,7 +68,7 @@ struct MIGraphXFuncState {
   std::filesystem::path model_cache_dir;
   bool dump_model_ops = false;
   bool exhaustive_tune = false;
-  size_t max_dynamic_batch;
+  size_t max_dynamic_batch = 0;
   // Reference to the cached programs map for this node (keyed by input shape hash)
   std::optional<std::reference_wrapper<std::unordered_map<std::string, migraphx::program>>> cached_programs_ref = std::nullopt;
   
@@ -74,17 +76,50 @@ struct MIGraphXFuncState {
   bool has_dynamic_batch = false;
   std::vector<std::size_t> compiled_batch_sizes;
   
-  // Padded input buffers for dynamic batching (allocated on GPU)
-  struct PaddedBuffer {
-    void* data = nullptr;          // GPU buffer pointer
-    std::size_t size_bytes = 0;    // Buffer size in bytes
-    migraphx::shape mgx_shape;     // Padded MIGraphX shape
+  // Pinned I/O buffers: allocated once at max compiled batch, reused across all inferences.
+  // Eliminates per-inference hipMalloc/hipFree for padding and temp outputs.
+  struct PinnedIOBuffer {
+    void* data = nullptr;
+    std::size_t size_bytes = 0;
+    migraphx::shape max_shape;     // Shape at max_batch_size
   };
-  std::vector<PaddedBuffer> padded_input_buffers;  // One per input when padding is active
 
-  // Track last batch sizes to avoid re-allocation when batch size is unchanged
-  std::size_t last_original_batch_size = 0;  // Original batch size from last run
-  std::size_t last_padded_batch_size = 0;    // Padded batch size from last run
+  struct PinnedIOSet {
+    std::vector<PinnedIOBuffer> inputs;
+    std::vector<PinnedIOBuffer> outputs;
+    std::unordered_map<std::string, std::size_t> input_name_to_idx;
+    std::unordered_map<std::string, std::size_t> output_name_to_idx;
+    std::size_t max_batch_size = 0;
+    bool allocated = false;
+  };
+
+  PinnedIOSet pinned_io;
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SCRATCH BUFFERS (one per compiled program / shape_hash)
+  //
+  // MIGraphX programs expose a "scratch" parameter that the EP must bind to
+  // a device buffer; otherwise MIGraphX falls back to its own internal scratch
+  // arena whose contents persist across runs and whose lifetime is opaque to
+  // hipGraph capture/replay.  When we capture a hipGraph that contains kernels
+  // which read scratch before writing within a single invocation (common with
+  // split-K reductions, fused-attention epilogues, etc.), the captured kernel
+  // sees whatever bytes happened to be in that opaque arena at capture time,
+  // and every subsequent replay inherits the same dependency on whatever the
+  // *previous* replay left behind.  That is the root cause of non-deterministic
+  // back-to-back replays on identical input.
+  //
+  // By owning the scratch buffer in the EP and zeroing it before every replay
+  // (and before capture), we anchor each replay to the same memory baseline
+  // and eliminate the cross-run state bleed.  One buffer per shape_hash means
+  // every compiled batch-size variant gets its own correctly-sized arena.
+  // ═══════════════════════════════════════════════════════════════════════════
+  struct ScratchBuf {
+    void* data = nullptr;
+    std::size_t size_bytes = 0;
+    migraphx::shape mgx_shape;
+  };
+  std::unordered_map<std::string, ScratchBuf> scratch_bufs;
 
   // ═══════════════════════════════════════════════════════════════════════════
   // PERFORMANCE CACHES - Avoid redundant MIGraphX API calls per inference
@@ -116,6 +151,7 @@ struct MIGraphXFuncState {
 
   // Cached output indices for pre-allocated outputs (used by run_migraphx_program)
   std::vector<std::size_t> cached_prog_output_indices;
+  std::vector<std::size_t> cached_pinned_output_indices;
 
   // Last input shapes for quick comparison (avoids hash computation in ultra-fast path)
   std::vector<std::int64_t> last_input_shapes_raw;
@@ -141,21 +177,61 @@ struct MIGraphXFuncState {
   
   // Track which program hash the cached shapes belong to (invalidate when program changes)
   std::string cached_program_hash;
-  
+
   // ═══════════════════════════════════════════════════════════════════════════
-  // OPTIMIZATION: Reusable temporary output buffers (for slicing mode)
+  // hipGraph CAPTURE / REPLAY
   // ═══════════════════════════════════════════════════════════════════════════
-  
-  // Temporary output buffers for slicing (allocated at padded size)
-  struct TempOutputBuffer {
-    void* data = nullptr;           // GPU buffer pointer
-    std::size_t size_bytes = 0;     // Buffer size in bytes
-    migraphx::shape mgx_shape;      // Padded MIGraphX shape
+
+  struct ExtraOutputInfo {
+    std::size_t output_index;
+    std::vector<int64_t> ort_shape;
+    void* gpu_data;
+    std::size_t bytes;
   };
-  std::vector<TempOutputBuffer> temp_output_buffers;
-  
-  // Track padded batch size for temp output buffers
-  std::size_t temp_output_padded_batch_size = 0;
+
+  struct CapturedHipGraph {
+    hipGraph_t graph = nullptr;
+    hipGraphExec_t exec = nullptr;
+    bool captured = false;
+    std::vector<ExtraOutputInfo> extra_outputs;
+
+    // Addresses captured in the graph for direct-bind mode.
+    // Used to detect pointer drift and trigger re-capture.
+    std::unordered_map<std::string, void*> captured_input_ptrs;
+    std::unordered_map<std::string, void*> captured_output_ptrs;
+
+    // Scratch buffer pointer baked into the captured graph.  Compared against
+    // the current scratch buffer pointer on every replay; a mismatch (e.g.
+    // because the buffer was reallocated for a shape-size change) forces a
+    // re-capture.  nullptr means the program has no "scratch" parameter and
+    // no EP-owned scratch was bound.
+    void* captured_scratch_ptr = nullptr;
+
+    // Output buffers (ptr + byte size) we need to memset to zero before every
+    // replay.  Required because some captured kernels do read-modify-write on
+    // their output (split-K reductions, fused-attention accumulators, etc.).
+    // Without this the first replay after a batch-size transition inherits
+    // residue from the previously-recycled ORT-pool buffer and produces a
+    // small but real numerical drift relative to eager (observed on the
+    // larger-reduction outputs 2/7/11 of feed-gen-rec).  Populated at capture
+    // time from output_ptrs + param_shapes; size is the program-side bytes
+    // (not the original-batch slice), which is what the captured kernels
+    // actually touch.  "Extra" outputs (those returned by prog.run_async
+    // rather than pre-allocated) are intentionally excluded -- they live in
+    // MIGraphX-managed memory and are materialized via a fresh memcpy after
+    // every replay.
+    std::vector<std::pair<void*, std::size_t>> captured_output_zeroes;
+  };
+
+  bool hip_graph_enabled = false;
+  // When true, capture/replay binds ORT tensor pointers directly (no pinned copies).
+  // Requires the pool allocator to provide stable addresses.
+  bool use_direct_hip_graph = false;
+  // If pointer drift causes too many re-captures, disable direct mode permanently.
+  static constexpr int kMaxDirectRecaptures = 3;
+  int direct_recapture_count = 0;
+  // shape_hash -> captured graph (one per compiled program variant)
+  std::unordered_map<std::string, CapturedHipGraph> hip_graph_cache;
 };
 
 // Logical device representation.
@@ -213,6 +289,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
         {std::string{migraphx_provider_option::kModelCacheDir}, MakeStringWithClassicLocale(model_cache_path_)},
         {std::string{migraphx_provider_option::kModelMaxDynamicBatch}, MakeStringWithClassicLocale(max_dynamic_batch_)},
         {std::string{migraphx_provider_option::kCompileBatches}, compile_batches_},
+        {std::string{migraphx_provider_option::kHipGraphEnable}, MakeStringWithClassicLocale(hip_graph_enable_)},
         {std::string{migraphx_provider_option::kHasUserComputeStream}, MakeStringWithClassicLocale(external_stream_)},
         {std::string{migraphx_provider_option::kUserComputeStream}, MakeStringWithClassicLocale(reinterpret_cast<size_t>(stream_))}};
    }
@@ -257,6 +334,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   bool first_start_ = true;
   size_t max_dynamic_batch_{0};
   std::string compile_batches_{};  // Comma-separated list of batch sizes to compile, e.g. "1,4,8,16,32"
+  bool hip_graph_enable_{false};
 };
 
 }; // namespace onnxruntime

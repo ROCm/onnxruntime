@@ -22,18 +22,50 @@ void MIGraphXAllocator::CheckDevice() const {
 #endif
 }
 
+void MIGraphXAllocator::EnablePoolMode() {
+  std::lock_guard<std::mutex> lock(pool_mu_);
+  pool_enabled_ = true;
+}
+
 void* MIGraphXAllocator::Alloc(size_t size) {
   CheckDevice();
-  void* p = nullptr;
-  if (size > 0) {
-    HIP_CALL_THROW(hipMalloc((void**)&p, size));
+  if (size == 0) return nullptr;
+
+  if (pool_enabled_) {
+    std::lock_guard<std::mutex> lock(pool_mu_);
+    auto it = free_list_.find(size);
+    if (it != free_list_.end() && !it->second.empty()) {
+      void* p = it->second.back();
+      it->second.pop_back();
+      return p;
+    }
   }
+
+  void* p = nullptr;
+  HIP_CALL_THROW(hipMalloc((void**)&p, size));
+
+  if (pool_enabled_) {
+    std::lock_guard<std::mutex> lock(pool_mu_);
+    alloc_sizes_[p] = size;
+  }
+
   return p;
 }
 
 void MIGraphXAllocator::Free(void* p) {
   CheckDevice();
-  (void)hipFree(p);  // do not throw error since it's OK for hipFree to fail during shutdown
+  if (!p) return;
+
+  if (pool_enabled_) {
+    std::lock_guard<std::mutex> lock(pool_mu_);
+    auto it = alloc_sizes_.find(p);
+    if (it != alloc_sizes_.end()) {
+      free_list_[it->second].push_back(p);
+      return;
+    }
+  }
+
+  (void)hipFree(p);
 }
 
 void* MIGraphXExternalAllocator::Alloc(size_t size) {

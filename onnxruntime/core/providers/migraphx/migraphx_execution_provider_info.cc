@@ -74,6 +74,7 @@ MIGraphXExecutionProviderInfo::MIGraphXExecutionProviderInfo(const ProviderOptio
           .AddAssignmentToEnumReference(migraphx_provider_option::kArenaExtendStrategy, arena_extend_strategy_mapping, arena_extend_strategy)
           .AddAssignmentToReference(migraphx_provider_option::kModelMaxDynamicBatch, max_dynamic_batch)
           .AddAssignmentToReference(migraphx_provider_option::kCompileBatches, compile_batches)
+          .AddAssignmentToReference(migraphx_provider_option::kHipGraphEnable, hip_graph_enable)
           .AddAssignmentToReference(migraphx_provider_option::kHasUserComputeStream, has_user_compute_stream)
           .AddValueParser(
               migraphx_provider_option::kUserComputeStream,
@@ -118,6 +119,7 @@ ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions() const {
       {std::string{migraphx_provider_option::kModelCacheDir}, MakeStringWithClassicLocale(model_cache_dir)},
       {std::string{migraphx_provider_option::kModelMaxDynamicBatch}, MakeStringWithClassicLocale(max_dynamic_batch)},
       {std::string{migraphx_provider_option::kCompileBatches}, compile_batches},
+      {std::string{migraphx_provider_option::kHipGraphEnable}, MakeStringWithClassicLocale(hip_graph_enable)},
       {std::string{migraphx_provider_option::kHasUserComputeStream}, MakeStringWithClassicLocale(has_user_compute_stream)},
       {std::string{migraphx_provider_option::kUserComputeStream}, MakeStringWithClassicLocale(reinterpret_cast<size_t>(user_compute_stream))},
   };

@@ -4,7 +4,9 @@
 #pragma once
 
 #include <mutex>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 #include "core/framework/allocator.h"
 
 namespace onnxruntime {
@@ -21,8 +23,20 @@ class MIGraphXAllocator : public IAllocator {
   virtual void* Alloc(size_t size) override;
   virtual void Free(void* p) override;
 
+  void EnablePoolMode();
+  bool IsPoolModeEnabled() const { return pool_enabled_; }
+
  private:
   void CheckDevice() const;
+
+  // When pool mode is enabled (for hipGraph), freed allocations are cached by
+  // size so that subsequent Alloc calls for the same size return the same
+  // device pointer.  This provides pointer stability required by hipGraph
+  // replay without the cost of intermediary buffer copies.
+  bool pool_enabled_ = false;
+  mutable std::mutex pool_mu_;
+  std::unordered_map<size_t, std::vector<void*>> free_list_;
+  std::unordered_map<void*, size_t> alloc_sizes_;
 };
 
 class MIGraphXExternalAllocator : public MIGraphXAllocator {
