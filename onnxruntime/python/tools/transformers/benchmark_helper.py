@@ -338,48 +338,70 @@ def inference_ort_with_io_binding(
     device,
     data_type=numpy.longlong,
     warm_up_repeat=0,
+    provider=None,
 ):
     result = {}
 
-    # Bind inputs and outputs to onnxruntime session
-    io_binding = ort_session.io_binding()
-    # Bind inputs to device
-    for name in ort_inputs:
-        np_input = torch.from_numpy(ort_inputs[name]).to(device)
-        input_type = IO_BINDING_DATA_TYPE_MAP.get(str(ort_inputs[name].dtype), data_type)
-        io_binding.bind_input(
-            name,
-            np_input.device.type,
-            0,
-            input_type,
-            np_input.shape,
-            np_input.data_ptr(),
+    if provider == "migraphx":
+        input_tensors = {}
+        for name in ort_inputs:
+            input_tensors[name] = {
+                "tensor": torch.from_numpy(ort_inputs[name]).to(device),
+                "type": IO_BINDING_DATA_TYPE_MAP.get(str(ort_inputs[name].dtype), data_type),
+            }
+
+        def run_migraphx():
+            iob = ort_session.io_binding()
+            for name, info in input_tensors.items():
+                t = info["tensor"]
+                iob.bind_input(name, t.device.type, 0, info["type"], list(t.shape), t.data_ptr())
+            for oname in ort_output_names:
+                iob.bind_output(oname, device)
+            ort_session.run_with_iobinding(iob)
+
+        timeit.repeat(run_migraphx, number=1, repeat=warm_up_repeat)  # Dry run
+        latency_list = timeit.repeat(run_migraphx, number=1, repeat=repeat_times)
+    else:
+        # Bind inputs and outputs to onnxruntime session
+        io_binding = ort_session.io_binding()
+        # Bind inputs to device
+        for name in ort_inputs:
+            np_input = torch.from_numpy(ort_inputs[name]).to(device)
+            input_type = IO_BINDING_DATA_TYPE_MAP.get(str(ort_inputs[name].dtype), data_type)
+            io_binding.bind_input(
+                name,
+                np_input.device.type,
+                0,
+                input_type,
+                np_input.shape,
+                np_input.data_ptr(),
+            )
+        # Bind outputs buffers with the sizes needed if not allocated already
+        if len(output_buffers) == 0:
+            allocateOutputBuffers(output_buffers, output_buffer_max_sizes, device)
+
+        for i, ort_output_name in enumerate(ort_output_names):
+            io_binding.bind_output(
+                ort_output_name,
+                output_buffers[i].device.type,
+                0,
+                numpy.float32,
+                ort_outputs[i].shape,
+                output_buffers[i].data_ptr(),
+            )
+
+        timeit.repeat(
+            lambda: ort_session.run_with_iobinding(io_binding),
+            number=1,
+            repeat=warm_up_repeat,
+        )  # Dry run
+
+        latency_list = timeit.repeat(
+            lambda: ort_session.run_with_iobinding(io_binding),
+            number=1,
+            repeat=repeat_times,
         )
-    # Bind outputs buffers with the sizes needed if not allocated already
-    if len(output_buffers) == 0:
-        allocateOutputBuffers(output_buffers, output_buffer_max_sizes, device)
 
-    for i, ort_output_name in enumerate(ort_output_names):
-        io_binding.bind_output(
-            ort_output_name,
-            output_buffers[i].device.type,
-            0,
-            numpy.float32,
-            ort_outputs[i].shape,
-            output_buffers[i].data_ptr(),
-        )
-
-    timeit.repeat(
-        lambda: ort_session.run_with_iobinding(io_binding),
-        number=1,
-        repeat=warm_up_repeat,
-    )  # Dry run
-
-    latency_list = timeit.repeat(
-        lambda: ort_session.run_with_iobinding(io_binding),
-        number=1,
-        repeat=repeat_times,
-    )
     result.update(result_template)
     result.update({"io_binding": True})
     result.update(get_latency_result(latency_list, batch_size))

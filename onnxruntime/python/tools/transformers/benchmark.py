@@ -307,6 +307,7 @@ def run_onnxruntime(
                             device,
                             data_type,
                             warm_up_repeat,
+                            provider=provider,
                         )
                     logger.info(result)
                     results.append(result)
