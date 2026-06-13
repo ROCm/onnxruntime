@@ -1,2 +1,24 @@
--r ../requirements.txt
+
+huggingface_hub==0.25.2
+diffusers==0.28.0
+transformers==4.41.2
+numpy>=1.24.1
+accelerate
+onnx==1.17.0
+coloredlogs
+packaging
+# Use newer version of protobuf might cause crash
+protobuf
+psutil
+sympy
+
+
+mediapipe
+controlnet_aux==0.0.9
+# The following are for SDXL
+optimum==1.20.0
+safetensors
+invisible_watermark
+opencv-python-headless
+
 # Install onnxruntime-rocm that is built from source (https://onnxruntime.ai/docs/build/eps.html#amd-rocm)
