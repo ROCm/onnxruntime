@@ -1799,6 +1799,33 @@ static void copy_pinned_outputs_to_ort(
   }
 }
 
+// Defense-in-depth: make sure every ORT graph output has been materialized.
+//
+// An output OrtValue only becomes "produced" once some path calls
+// ctx.GetOutput() for its index.  The hipGraph paths split that responsibility
+// between copy_pinned_outputs_to_ort (pre-allocated #output_N params) and
+// materialize_extra_outputs ("extra" run_async results).  If any output index
+// falls through both (e.g. a partition mismatch), ORT later fails the fetch
+// with "Unsupported OrtValue type".  GetOutput is idempotent -- for an output
+// already produced it returns the existing tensor and ignores the shape -- so
+// calling it here for every program output guarantees none is left unset.
+// Program output position i maps 1:1 to ORT output index i, matching how
+// run_migraphx_program / materialize_extra_outputs index their outputs.
+static void ensure_all_outputs_allocated(
+    Ort::KernelContext& ctx,
+    const migraphx::shapes& output_shapes,
+    std::size_t actual_batch)
+{
+  for (std::size_t i = 0; i < output_shapes.size(); ++i) {
+    auto lens = output_shapes[i].lengths();
+    std::vector<int64_t> ort_shape(lens.begin(), lens.end());
+    if (!ort_shape.empty() && actual_batch > 0) {
+      ort_shape[0] = static_cast<int64_t>(actual_batch);
+    }
+    (void)ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
+  }
+}
+
 
 // Helper: Run the MIGraphX program and handle outputs
 // This function executes the compiled MIGraphX program and copies outputs that
@@ -3146,6 +3173,7 @@ static bool execute_ultra_fast_path(
     copy_pinned_outputs_to_ort(mgx_state, output_shapes, mgx_state->cached_prog_output_indices,
                                mgx_state->cached_pinned_output_indices,
                                ctx, actual_batch, rocm_stream);
+    ensure_all_outputs_allocated(ctx, output_shapes, actual_batch);
     return true;
   }
 
@@ -3350,6 +3378,7 @@ static bool execute_fast_path(
     copy_pinned_outputs_to_ort(mgx_state, output_shapes, mgx_state->cached_prog_output_indices,
                                mgx_state->cached_pinned_output_indices,
                                ctx, actual_batch, rocm_stream);
+    ensure_all_outputs_allocated(ctx, output_shapes, actual_batch);
     return true;
   }
 
@@ -3773,6 +3802,7 @@ static void execute_standard_path(
             copy_pinned_outputs_to_ort(mgx_state, output_shapes, bind_result.prog_output_indices,
                                        bind_result.pinned_output_indices,
                                        ctx, copy_actual, rocm_stream);
+            ensure_all_outputs_allocated(ctx, output_shapes, copy_actual);
           } else {
             auto [m, prog_output_indices] = handle_program_input_outputs(
                 param_shapes, output_shapes, map_input_name_index, ctx,
@@ -3894,6 +3924,7 @@ static void execute_standard_path(
     copy_pinned_outputs_to_ort(mgx_state, output_shapes, bind_result.prog_output_indices,
                                bind_result.pinned_output_indices,
                                ctx, actual_batch, rocm_stream);
+    ensure_all_outputs_allocated(ctx, output_shapes, actual_batch);
     return;
   }
 
