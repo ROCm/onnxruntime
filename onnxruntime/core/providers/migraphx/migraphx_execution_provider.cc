@@ -2064,6 +2064,7 @@ static bool warmup_and_capture_hip_graph(
 
     HIP_CALL_THROW(hipGraphInstantiate(&entry.exec, entry.graph, nullptr, nullptr, 0));
     entry.captured = true;
+    entry.direct_bind = false;
     // Record the scratch pointer that was baked into the captured kernels so
     // we can detect re-allocation across replays (e.g. after pool reuse).
     auto scratch_it = mgx_state->scratch_bufs.find(shape_hash);
@@ -2255,6 +2256,7 @@ static bool warmup_and_capture_hip_graph_direct(
 
     HIP_CALL_THROW(hipGraphInstantiate(&entry.exec, entry.graph, nullptr, nullptr, 0));
     entry.captured = true;
+    entry.direct_bind = true;
     entry.captured_input_ptrs = input_ptrs;
     entry.captured_output_ptrs = output_ptrs;
     {
@@ -2361,7 +2363,7 @@ static void run_program_or_hip_graph_direct(
     std::size_t padded_batch_size = 0)
 {
   auto it = mgx_state->hip_graph_cache.find(shape_hash);
-  if (it != mgx_state->hip_graph_cache.end() && it->second.captured) {
+  if (it != mgx_state->hip_graph_cache.end() && it->second.captured && it->second.direct_bind) {
     void* current_scratch = nullptr;
     {
       auto sit = mgx_state->scratch_bufs.find(shape_hash);
@@ -2474,7 +2476,7 @@ static void run_program_or_hip_graph(
   }
 
   auto it = mgx_state->hip_graph_cache.find(shape_hash);
-  if (it != mgx_state->hip_graph_cache.end() && it->second.captured) {
+  if (it != mgx_state->hip_graph_cache.end() && it->second.captured && !it->second.direct_bind) {
     replay_hip_graph(mgx_state, stream, shape_hash);
 
     if (!it->second.extra_outputs.empty()) {
@@ -2482,6 +2484,17 @@ static void run_program_or_hip_graph(
                                 original_batch_size, padded_batch_size);
     }
   } else {
+    // A captured-but-direct_bind entry here means we just transitioned out of
+    // direct-bind mode (e.g. after pointer-drift fallback).  That graph baked in
+    // ORT tensor addresses and uses a different output partition than the pinned
+    // path, so it must be torn down rather than replayed -- otherwise some ORT
+    // outputs are left unwritten and the fetch fails with "Unsupported OrtValue
+    // type".  Destroy it and re-capture cleanly in pinned-copy mode.
+    if (it != mgx_state->hip_graph_cache.end() && it->second.captured && it->second.direct_bind) {
+      if (it->second.exec)  { (void)hipGraphExecDestroy(it->second.exec); it->second.exec = nullptr; }
+      if (it->second.graph) { (void)hipGraphDestroy(it->second.graph);    it->second.graph = nullptr; }
+      it->second.captured = false;
+    }
     if (!warmup_and_capture_hip_graph(mgx_state, stream, prog, m,
                                        prog_output_indices, shape_hash)) {
       run_migraphx_program(mgx_state->mgx_mu_ptr, stream, ctx, prog, m,

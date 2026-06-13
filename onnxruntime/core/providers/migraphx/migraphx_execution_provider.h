@@ -193,6 +193,12 @@ struct MIGraphXFuncState {
     hipGraph_t graph = nullptr;
     hipGraphExec_t exec = nullptr;
     bool captured = false;
+    // Which capture mode produced this entry.  The direct-bind and pinned-copy
+    // paths partition the program outputs differently (pre-allocated #output_N
+    // params vs. "extra" run_async results), so an entry captured in one mode
+    // must never be replayed by the other -- doing so leaves some ORT outputs
+    // unwritten (empty OrtValue) or bound to stale addresses.
+    bool direct_bind = false;
     std::vector<ExtraOutputInfo> extra_outputs;
 
     // Addresses captured in the graph for direct-bind mode.
