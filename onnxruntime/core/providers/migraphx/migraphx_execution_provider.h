@@ -38,6 +38,12 @@ constexpr auto kModelCachePath = "ORT_MIGRAPHX_MODEL_CACHE_PATH"sv;
 constexpr auto kModelMaxDynamicBatch = "ORT_MIGRAPHX_MAX_DYNAMIC_BATCH"sv;
 constexpr auto kCompileBatches = "ORT_MIGRAPHX_COMPILE_BATCHES"sv;
 constexpr auto kHipGraphEnable = "ORT_MIGRAPHX_HIP_GRAPH_ENABLE"sv;
+// Opt-in for direct-bind hipGraph capture (binds caller I/O pointers into the
+// captured graph for zero-copy replay).  Off by default: the safe pinned-copy
+// path (stable EP-owned buffers) is used unless the caller guarantees stable
+// I/O addresses across runs (e.g. a fixed IoBinding loop).  Under dynamic
+// serving (Triton) addresses rotate per request, so direct-bind must stay off.
+constexpr auto kHipGraphDirectBind = "ORT_MIGRAPHX_HIP_GRAPH_DIRECT_BIND"sv;
 }  // namespace migraphx_env_vars
 
 // Tracks which dimensions are symbolic for a given input
@@ -341,6 +347,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   size_t max_dynamic_batch_{0};
   std::string compile_batches_{};  // Comma-separated list of batch sizes to compile, e.g. "1,4,8,16,32"
   bool hip_graph_enable_{false};
+  bool hip_graph_direct_bind_{false};
 };
 
 }; // namespace onnxruntime

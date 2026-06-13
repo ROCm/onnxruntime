@@ -215,6 +215,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   GET_ENV_BOOL(migraphx_env_vars::kExhaustiveTune, exhaustive_tune_);
   GET_ENV_STRING(migraphx_env_vars::kCompileBatches, compile_batches_);
   GET_ENV_BOOL(migraphx_env_vars::kHipGraphEnable, hip_graph_enable_);
+  GET_ENV_BOOL(migraphx_env_vars::kHipGraphDirectBind, hip_graph_direct_bind_);
 
   // hipGraph requires single-stream MIGraphX execution (MIGRAPHX_NSTREAMS=1).
   if (hip_graph_enable_) {
@@ -323,7 +324,8 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
                         << "\n " << migraphx_provider_option::kModelCacheDir << ": " << model_cache_path_
                         << "\n " << migraphx_provider_option::kModelMaxDynamicBatch << ": " << max_dynamic_batch_
                         << "\n " << migraphx_provider_option::kCompileBatches << ": " << (compile_batches_.empty() ? "(not set)" : compile_batches_)
-                        << "\n " << migraphx_provider_option::kHipGraphEnable << ": " << hip_graph_enable_;
+                        << "\n " << migraphx_provider_option::kHipGraphEnable << ": " << hip_graph_enable_
+                        << "\n hip_graph_direct_bind: " << hip_graph_direct_bind_;
 }
 
 std::vector<AllocatorPtr> MIGraphXExecutionProvider::CreatePreferredAllocators() {
@@ -4968,9 +4970,13 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         }
       }
 
-      // hipGraph: set per-node enable flag and validate cached programs
+      // hipGraph: set per-node enable flag and validate cached programs.
+      // Default to the pinned-copy path (stable EP-owned buffers); only use the
+      // direct-bind path when explicitly opted in, since binding caller I/O
+      // pointers requires stable addresses across runs (not true under dynamic
+      // serving, where per-request buffers rotate and trigger re-capture).
       p->hip_graph_enabled = hip_graph_enable_;
-      p->use_direct_hip_graph = hip_graph_enable_;
+      p->use_direct_hip_graph = hip_graph_enable_ && hip_graph_direct_bind_;
       if (p->hip_graph_enabled && p->cached_programs_ref.has_value()) {
         for (const auto& [hash, cached_prog] : p->cached_programs_ref.value().get()) {
           if (!check_hip_graph_compatibility(cached_prog, context->node_name)) {
