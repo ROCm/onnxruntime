@@ -4,6 +4,7 @@
 #include <hip/hip_version.h>
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -215,6 +216,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   GET_ENV_BOOL(migraphx_env_vars::kExhaustiveTune, exhaustive_tune_);
   GET_ENV_STRING(migraphx_env_vars::kCompileBatches, compile_batches_);
   GET_ENV_BOOL(migraphx_env_vars::kHipGraphEnable, hip_graph_enable_);
+  GET_ENV_BOOL(migraphx_env_vars::kCoalesceIO, coalesce_io_enable_);
 
   // hipGraph requires single-stream MIGraphX execution (MIGRAPHX_NSTREAMS=1).
   if (hip_graph_enable_) {
@@ -242,6 +244,16 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
           << "during capture). Disabling hipGraph.";
       hip_graph_enable_ = false;
     }
+  }
+
+  // Coalesced I/O runs in the pinned-copy path, which is only allocated/used
+  // when hipGraph is active (or padding is required).  Without hipGraph the flag
+  // has no effect, so warn rather than silently no-op.
+  if (coalesce_io_enable_ && !hip_graph_enable_) {
+    LOGS_DEFAULT(WARNING)
+        << "[MIGraphX EP] ORT_MIGRAPHX_COALESCE_IO is set but hipGraph is disabled; "
+        << "input coalescing runs in the pinned-copy path and will be inactive. "
+        << "Enable ORT_MIGRAPHX_HIP_GRAPH_ENABLE to use it.";
   }
 
   // If compile_batches is set, auto-derive max_dynamic_batch from the spec's max value
@@ -1490,21 +1502,61 @@ static void allocate_pinned_io(
 
   const auto& map_input_name_index = mgx_state->input_name_indexes;
 
+  // Round each arena slot up to this boundary so every sub-view stays aligned
+  // for the device kernels that consume it.
+  constexpr std::size_t kArenaAlign = 256;
+  auto align_up = [](std::size_t v, std::size_t a) { return (v + a - 1) / a * a; };
+
   pio.inputs.clear();
   pio.input_name_to_idx.clear();
-  for (const auto& name : param_shapes.names()) {
-    if (map_input_name_index.find(name) == map_input_name_index.end()) continue;
-    const auto& base_shape = param_shapes[name];
-    auto lens = base_shape.lengths();
-    if (!lens.empty()) lens[0] = max_batch_size;
-    auto max_shape = migraphx::shape(base_shape.type(), lens);
-    std::size_t bytes = max_shape.bytes();
+  pio.input_offsets.clear();
+  pio.coalesced = mgx_state->coalesce_io;
 
-    pio.input_name_to_idx[name] = pio.inputs.size();
-    void* ptr = nullptr;
-    HIP_CALL_THROW(hipMallocAsync(&ptr, bytes, stream));
-    HIP_CALL_THROW(hipMemsetAsync(ptr, 0, bytes, stream));
-    pio.inputs.push_back({ptr, bytes, max_shape});
+  if (pio.coalesced) {
+    // ── Single-arena layout: one device alloc + one pinned host staging buffer.
+    // First pass assigns aligned offsets and records per-input metadata; the
+    // device pointers are patched in once the arena is allocated.
+    std::size_t off = 0;
+    for (const auto& name : param_shapes.names()) {
+      if (map_input_name_index.find(name) == map_input_name_index.end()) continue;
+      const auto& base_shape = param_shapes[name];
+      auto lens = base_shape.lengths();
+      if (!lens.empty()) lens[0] = max_batch_size;
+      auto max_shape = migraphx::shape(base_shape.type(), lens);
+      std::size_t bytes = max_shape.bytes();
+
+      pio.input_name_to_idx[name] = pio.inputs.size();
+      pio.input_offsets.push_back(off);
+      pio.inputs.push_back({nullptr, bytes, max_shape});  // .data patched below
+      off += align_up(bytes, kArenaAlign);
+    }
+    pio.in_arena_bytes = off;
+
+    if (pio.in_arena_bytes > 0) {
+      HIP_CALL_THROW(hipMallocAsync(&pio.in_arena_dev, pio.in_arena_bytes, stream));
+      HIP_CALL_THROW(hipMemsetAsync(pio.in_arena_dev, 0, pio.in_arena_bytes, stream));
+      // Pinned host staging: page-locked so the single H2D is truly async.
+      HIP_CALL_THROW(hipHostMalloc(&pio.in_staging_host, pio.in_arena_bytes, hipHostMallocDefault));
+      std::memset(pio.in_staging_host, 0, pio.in_arena_bytes);
+      for (std::size_t i = 0; i < pio.inputs.size(); ++i) {
+        pio.inputs[i].data = static_cast<char*>(pio.in_arena_dev) + pio.input_offsets[i];
+      }
+    }
+  } else {
+    for (const auto& name : param_shapes.names()) {
+      if (map_input_name_index.find(name) == map_input_name_index.end()) continue;
+      const auto& base_shape = param_shapes[name];
+      auto lens = base_shape.lengths();
+      if (!lens.empty()) lens[0] = max_batch_size;
+      auto max_shape = migraphx::shape(base_shape.type(), lens);
+      std::size_t bytes = max_shape.bytes();
+
+      pio.input_name_to_idx[name] = pio.inputs.size();
+      void* ptr = nullptr;
+      HIP_CALL_THROW(hipMallocAsync(&ptr, bytes, stream));
+      HIP_CALL_THROW(hipMemsetAsync(ptr, 0, bytes, stream));
+      pio.inputs.push_back({ptr, bytes, max_shape});
+    }
   }
 
   pio.outputs.clear();
@@ -1539,8 +1591,18 @@ static void allocate_pinned_io(
 
 static void free_pinned_io(MIGraphXFuncState* mgx_state, hipStream_t stream) {
   auto& pio = mgx_state->pinned_io;
-  for (auto& buf : pio.inputs) {
-    if (buf.data) { (void)hipFreeAsync(buf.data, stream); buf.data = nullptr; }
+  if (pio.coalesced) {
+    // Inputs are sub-views of a single arena: free the arena once, never the
+    // individual .data pointers (they are not separate allocations).
+    if (pio.in_arena_dev) { (void)hipFreeAsync(pio.in_arena_dev, stream); pio.in_arena_dev = nullptr; }
+    if (pio.in_staging_host) { (void)hipHostFree(pio.in_staging_host); pio.in_staging_host = nullptr; }
+    pio.in_arena_bytes = 0;
+    pio.input_offsets.clear();
+    pio.coalesced = false;
+  } else {
+    for (auto& buf : pio.inputs) {
+      if (buf.data) { (void)hipFreeAsync(buf.data, stream); buf.data = nullptr; }
+    }
   }
   for (auto& buf : pio.outputs) {
     if (buf.data) { (void)hipFreeAsync(buf.data, stream); buf.data = nullptr; }
@@ -1669,6 +1731,57 @@ static void copy_inputs_to_pinned(
 {
   auto& pio = mgx_state->pinned_io;
   const auto& map_input_name_index = mgx_state->input_name_indexes;
+
+  // ── Coalesced fast path ───────────────────────────────────────────────────
+  // When the input arena is active, there is no padding, and every input is
+  // host-resident, gather all inputs into the pinned staging buffer and issue a
+  // single H2D for the whole arena.  This collapses the ~N per-input
+  // hipMemcpyAsync launches (which dominate batch-1 many-input models) into one.
+  // Any other case (padding, or a device-resident input) falls through to the
+  // per-input loop below, which is still correct because each pin.data points
+  // into the arena.
+  if (pio.coalesced && pio.in_staging_host != nullptr && actual_batch == compiled_batch) {
+    bool all_host = true;
+    for (const auto& name : param_shapes.names()) {
+      auto it = map_input_name_index.find(name);
+      if (it == map_input_name_index.end()) continue;
+      auto mem = ctx.GetInput(it->second).GetTensorMemoryInfo();
+      if (mem.GetDeviceType() != OrtMemoryInfoDeviceType_CPU) { all_host = false; break; }
+    }
+
+    if (all_host) {
+      char* host_base = static_cast<char*>(pio.in_staging_host);
+      for (const auto& name : param_shapes.names()) {
+        auto it = map_input_name_index.find(name);
+        if (it == map_input_name_index.end()) continue;
+        auto pin_it = pio.input_name_to_idx.find(name);
+        if (pin_it == pio.input_name_to_idx.end()) continue;
+        const auto idx = pin_it->second;
+        const auto& pin = pio.inputs[idx];
+
+        const auto& input_tensor = ctx.GetInput(it->second);
+        const void* src = input_tensor.GetTensorRawData();
+        const auto& base_shape = param_shapes[name];
+        auto lens = base_shape.lengths();
+        std::size_t elements_per_batch = std::accumulate(
+            lens.begin() + 1, lens.end(), std::size_t{1}, std::multiplies<>{});
+        std::size_t total_elems = 1;
+        for (auto l : lens) total_elems *= l;
+        std::size_t byte_per_elem = (total_elems > 0) ? base_shape.bytes() / total_elems : 0;
+        std::size_t copy_bytes = actual_batch * elements_per_batch * byte_per_elem;
+        if (copy_bytes > pin.size_bytes) copy_bytes = pin.size_bytes;
+        if (copy_bytes > 0) {
+          std::memcpy(host_base + pio.input_offsets[idx], src, copy_bytes);
+        }
+      }
+      // One transfer for every input.  Copying the whole arena (including the
+      // harmless aligned gaps / unused slot tails) keeps it a single contiguous
+      // DMA; the program only ever reads the bound [compiled_batch] rows.
+      HIP_CALL_THROW(hipMemcpyAsync(pio.in_arena_dev, pio.in_staging_host,
+                                    pio.in_arena_bytes, hipMemcpyHostToDevice, stream));
+      return;
+    }
+  }
 
   for (const auto& name : param_shapes.names()) {
     auto it = map_input_name_index.find(name);
@@ -4914,6 +5027,12 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         LOGS_DEFAULT(VERBOSE) << "[Compile][CREATE_STATE] defer_compilation=" << p->defer_compilation;
       }
 
+      // Coalesced input H2D: when enabled, the pinned-copy path batches all
+      // host-resident inputs into a single transfer (see copy_inputs_to_pinned).
+      // Must be set BEFORE allocate_pinned_io below, which reads it to decide
+      // between the single-arena and per-input buffer layouts.
+      p->coalesce_io = coalesce_io_enable_;
+
       // Allocate pinned I/O buffers from the cached programs.
       // create_state_func runs ONCE at session init (long before any Run()),
       // so there is no per-Run compute stream to query here — ComputeContext
@@ -4970,7 +5089,11 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
       // hipGraph: set per-node enable flag and validate cached programs
       p->hip_graph_enabled = hip_graph_enable_;
-      p->use_direct_hip_graph = hip_graph_enable_;
+      // Coalescing operates in the pinned-copy path and consumes host-resident
+      // inputs, which direct-bind cannot bind into a device program.  When
+      // coalescing is requested, force the pinned path (keep hipGraph
+      // capture/replay, just not the direct-bind variant).
+      p->use_direct_hip_graph = hip_graph_enable_ && !coalesce_io_enable_;
       if (p->hip_graph_enabled && p->cached_programs_ref.has_value()) {
         for (const auto& [hash, cached_prog] : p->cached_programs_ref.value().get()) {
           if (!check_hip_graph_compatibility(cached_prog, context->node_name)) {
