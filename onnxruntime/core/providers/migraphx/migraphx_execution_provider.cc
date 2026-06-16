@@ -2960,6 +2960,8 @@ static void handle_input_shape_mismatch(
   mgx_state->cached_prog_output_indices.clear();
   mgx_state->last_input_shapes_raw.clear();
   mgx_state->last_input_shape_hash.clear();
+  mgx_state->cached_binding_is_pinned = false;
+  mgx_state->cached_binding_actual_batch = 0;
 
   param_shapes = prog.get_parameter_shapes();
   mgx_state->defer_compilation = false;
@@ -3229,6 +3231,27 @@ static bool execute_ultra_fast_path(
   std::size_t compiled_batch = padded_batch_size > 0 ? padded_batch_size : actual_batch;
   bool needs_padding = (actual_batch < compiled_batch);
 
+  // Reuse the cached binding only when it was built for THIS request's actual
+  // batch size AND the same binding mode it now needs.  The ultra-fast caches
+  // are typically populated by an exact-batch run (direct-bind: ORT pointers at
+  // the compiled batch).  Reusing that binding for a padded request runs the
+  // model at the compiled batch and hands ORT the compiled output shape instead
+  // of the request's actual shape -> "OrtValue shape verification failed.
+  // Current shape:{compiled} Requested shape:{actual}", which is what surfaced
+  // under alternating batch sizes at higher concurrency.  The inverse (reusing a
+  // pinned binding on the direct-bind/eager path) is equally unsafe.  On any
+  // mismatch, bail to the fast path, which rebinds correctly: pinned staging +
+  // output slice-back for padded, direct-bind for exact.
+  const bool req_direct = mgx_state->use_direct_hip_graph && !needs_padding;
+  const bool req_pinned = !req_direct &&
+                          (needs_padding || mgx_state->hip_graph_enabled) &&
+                          mgx_state->pinned_io.allocated &&
+                          mgx_state->cached_mgx_param_shapes.has_value();
+  if (mgx_state->cached_binding_actual_batch != actual_batch ||
+      mgx_state->cached_binding_is_pinned != req_pinned) {
+    return false;
+  }
+
   // Direct-bind hipGraph: no copies, bind ORT pointers and replay
   if (mgx_state->use_direct_hip_graph && !needs_padding) {
     auto& m = mgx_state->cached_prog_params.value();
@@ -3457,6 +3480,8 @@ static bool execute_fast_path(
     mgx_state->last_input_shapes_raw = build_input_shapes_in_cached_order(mgx_state, ctx, 0);
     mgx_state->last_input_shape_hash = current_hash;
     mgx_state->caches_valid = true;
+    mgx_state->cached_binding_is_pinned = false;
+    mgx_state->cached_binding_actual_batch = actual_batch;
 
     run_program_or_hip_graph_direct(mgx_state, rocm_stream, ctx, prog,
                                      mgx_state->cached_prog_params.value(),
@@ -3482,6 +3507,8 @@ static bool execute_fast_path(
         mgx_state, ctx, padded_batch_size);
     mgx_state->last_input_shape_hash = current_hash;
     mgx_state->caches_valid = true;
+    mgx_state->cached_binding_is_pinned = true;
+    mgx_state->cached_binding_actual_batch = actual_batch;
 
     run_program_or_hip_graph(mgx_state, rocm_stream, ctx, prog,
                              mgx_state->cached_prog_params.value(),
@@ -3504,11 +3531,13 @@ static bool execute_fast_path(
   mgx_state->last_input_shapes_raw = build_input_shapes_in_cached_order(mgx_state, ctx, 0);
   mgx_state->last_input_shape_hash = current_hash;
   mgx_state->caches_valid = true;
+  mgx_state->cached_binding_is_pinned = false;
+  mgx_state->cached_binding_actual_batch = actual_batch;
 
   run_migraphx_program(mgx_state->mgx_mu_ptr, rocm_stream, ctx, prog,
                        mgx_state->cached_prog_params.value(),
                        mgx_state->cached_prog_output_indices);
-  return true;
+    return true;
 }
 
 // Result structure for handle_input_shape function
@@ -3858,6 +3887,8 @@ static void execute_standard_path(
             mgx_state->last_input_shapes_raw = build_input_shapes_in_cached_order(mgx_state, ctx, 0);
             mgx_state->last_input_shape_hash = padded_hash;
             mgx_state->caches_valid = true;
+            mgx_state->cached_binding_is_pinned = false;
+            mgx_state->cached_binding_actual_batch = original_batch_size;
 
             run_program_or_hip_graph_direct(mgx_state, rocm_stream, ctx, prog, m,
                                              prog_output_indices, padded_hash,
@@ -3908,6 +3939,8 @@ static void execute_standard_path(
                 mgx_state, ctx, padded_batch_size);
             mgx_state->last_input_shape_hash = padded_hash;
             mgx_state->caches_valid = true;
+            mgx_state->cached_binding_is_pinned = true;
+            mgx_state->cached_binding_actual_batch = copy_actual;
 
             run_program_or_hip_graph(mgx_state, rocm_stream, ctx, prog, bind_result.params,
                                      bind_result.prog_output_indices, padded_hash);
@@ -3926,6 +3959,8 @@ static void execute_standard_path(
             mgx_state->last_input_shapes_raw = build_input_shapes_in_cached_order(mgx_state, ctx, 0);
             mgx_state->last_input_shape_hash = current_hash;
             mgx_state->caches_valid = true;
+            mgx_state->cached_binding_is_pinned = false;
+            mgx_state->cached_binding_actual_batch = original_batch_size;
 
             run_migraphx_program(mgx_state->mgx_mu_ptr, rocm_stream, ctx, prog, m, prog_output_indices);
           }
@@ -4007,6 +4042,8 @@ static void execute_standard_path(
     mgx_state->last_input_shapes_raw = build_input_shapes_in_cached_order(mgx_state, ctx, 0);
     mgx_state->last_input_shape_hash = current_hash;
     mgx_state->caches_valid = true;
+    mgx_state->cached_binding_is_pinned = false;
+    mgx_state->cached_binding_actual_batch = 0;
 
     run_program_or_hip_graph_direct(mgx_state, rocm_stream, ctx, prog, m,
                                      prog_output_indices, current_hash,
@@ -4030,6 +4067,8 @@ static void execute_standard_path(
     mgx_state->last_input_shapes_raw = build_input_shapes_in_cached_order(mgx_state, ctx, 0);
     mgx_state->last_input_shape_hash = current_hash;
     mgx_state->caches_valid = true;
+    mgx_state->cached_binding_is_pinned = true;
+    mgx_state->cached_binding_actual_batch = actual_batch;
 
     run_program_or_hip_graph(mgx_state, rocm_stream, ctx, prog, bind_result.params,
                              bind_result.prog_output_indices, current_hash);
@@ -4050,6 +4089,8 @@ static void execute_standard_path(
   mgx_state->last_input_shapes_raw = build_input_shapes_in_cached_order(mgx_state, ctx, 0);
   mgx_state->last_input_shape_hash = current_hash;
   mgx_state->caches_valid = true;
+  mgx_state->cached_binding_is_pinned = false;
+  mgx_state->cached_binding_actual_batch = 0;
 
   run_migraphx_program(mgx_state->mgx_mu_ptr, rocm_stream, ctx, prog, m, prog_output_indices);
 }

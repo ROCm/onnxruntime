@@ -181,6 +181,16 @@ struct MIGraphXFuncState {
 
   // Flag indicating caches are valid
   bool caches_valid = false;
+
+  // Describes how cached_prog_params was last bound, so the ultra-fast path
+  // never reuses a binding built for a different actual batch size or a
+  // different binding mode (direct-bind vs pinned-copy/slice).  Mixing these
+  // across alternating batch sizes (e.g. an exact batch-4 direct-bind binding
+  // being reused to service a padded batch-3 request) leaked the compiled
+  // batch shape to ORT and triggered the {compiled}/{actual} output-shape
+  // verification failure observed at higher concurrency.
+  bool cached_binding_is_pinned = false;
+  std::size_t cached_binding_actual_batch = 0;
   
   // ═══════════════════════════════════════════════════════════════════════════
   // OPTIMIZATION: Cached MIGraphX API results (avoid redundant API calls)
