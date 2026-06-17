@@ -65,6 +65,7 @@ struct MIGraphXFuncState {
   std::unordered_map<std::string, std::size_t> input_name_indexes;
   std::mutex* mgx_mu_ptr = nullptr;
   hipStream_t stream = nullptr;
+  int device_id = 0;
   bool defer_compilation = false;
   bool fp16_enable = false;
   bool bf16_enable = false;

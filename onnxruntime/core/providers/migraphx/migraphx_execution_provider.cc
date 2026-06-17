@@ -150,6 +150,24 @@ static std::vector<std::size_t> parse_compile_batches(const std::string& spec);
 // but a few fallback paths still use synchronous hipMalloc.
 static std::mutex g_hip_alloc_mutex;
 
+// HIP's current device is a per-thread setting.  ORT/Triton may invoke Compile()
+// and the compute function on threads that never ran the EP constructor's
+// hipSetDevice, so they default to device 0.  On a non-zero-device instance that
+// loads code objects / launches kernels on the wrong device, producing
+// "no kernel image is available for execution on the device" and
+// "invalid resource handle".  This guard pins the calling thread to the EP's
+// device for the duration of a scope and restores the previous device on exit.
+struct HipDeviceGuard {
+  int prev_{0};
+  explicit HipDeviceGuard(int dev) {
+    HIP_CALL_THROW(hipGetDevice(&prev_));
+    if (dev != prev_) HIP_CALL_THROW(hipSetDevice(dev));
+  }
+  ~HipDeviceGuard() {
+    (void)hipSetDevice(prev_);  // best-effort restore; never throw from a dtor
+  }
+};
+
 MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProviderInfo& info)
     : IExecutionProvider{kMIGraphXExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, OrtDevice::VendorIds::AMD, info.device_id)},
       device_id_{info.device_id},
@@ -4938,6 +4956,10 @@ constexpr std::uint64_t MIGraphX_Version =
 
 Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& fused_nodes,
                                           std::vector<NodeComputeInfo>& node_compute_funcs) {
+  // Compile()/load may run on a thread that never ran the constructor's
+  // hipSetDevice.  Pin it to this EP's GPU so code objects are loaded/finalized
+  // on the correct device (otherwise: "no kernel image is available...").
+  HipDeviceGuard dev_guard(device_id_);
   for (const auto& fused_node_graph : fused_nodes) {
     const GraphViewer& graph_body_viewer = fused_node_graph.filtered_graph;
     const Node& fused_node = fused_node_graph.fused_node;
@@ -5035,6 +5057,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       p->input_name_indexes = map_input_index_[context->node_name];
       p->mgx_mu_ptr = &mgx_mu_;
       p->stream = stream_;
+      p->device_id = device_id_;
       p->defer_compilation = map_defer_compilation_[context->node_name];
       p->fp16_enable = fp16_enable_;
       p->bf16_enable = bf16_enable_;
@@ -5166,8 +5189,13 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
     };
 
     compute_info.compute_func = [this, mxr_filename_prefix](FunctionState state, const OrtApi* /*api*/, OrtKernelContext* context) {
-      Ort::KernelContext ctx(context);
       MIGraphXFuncState* mgx_state = reinterpret_cast<MIGraphXFuncState*>(state);
+      // Pin this worker thread to the EP's GPU before any HIP work (kernel
+      // launch, hipGraph capture/replay, deferred compile/load).  HIP's current
+      // device is thread-local, so without this a non-zero-device instance runs
+      // on device 0 and fails with "invalid resource handle".
+      HipDeviceGuard dev_guard(mgx_state->device_id);
+      Ort::KernelContext ctx(context);
 
       // Run on whichever stream ORT elected for this device for THIS Run().
       // - external_stream_=true   -> ORT wrapper around the user-supplied stream
