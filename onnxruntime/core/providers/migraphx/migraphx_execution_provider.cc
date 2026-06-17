@@ -3304,7 +3304,8 @@ static bool execute_ultra_fast_path(
     auto& m = mgx_state->cached_prog_params.value();
     run_program_or_hip_graph(mgx_state, rocm_stream, ctx, prog, m,
                              mgx_state->cached_prog_output_indices,
-                             mgx_state->last_input_shape_hash);
+                             mgx_state->last_input_shape_hash,
+                             actual_batch, compiled_batch);
 
     copy_pinned_outputs_to_ort(mgx_state, output_shapes, mgx_state->cached_prog_output_indices,
                                mgx_state->cached_pinned_output_indices,
@@ -3513,7 +3514,8 @@ static bool execute_fast_path(
     run_program_or_hip_graph(mgx_state, rocm_stream, ctx, prog,
                              mgx_state->cached_prog_params.value(),
                              mgx_state->cached_prog_output_indices,
-                             effective_program_hash);
+                             effective_program_hash,
+                             actual_batch, compiled_batch);
 
     copy_pinned_outputs_to_ort(mgx_state, output_shapes, mgx_state->cached_prog_output_indices,
                                mgx_state->cached_pinned_output_indices,
@@ -3943,7 +3945,8 @@ static void execute_standard_path(
             mgx_state->cached_binding_actual_batch = copy_actual;
 
             run_program_or_hip_graph(mgx_state, rocm_stream, ctx, prog, bind_result.params,
-                                     bind_result.prog_output_indices, padded_hash);
+                                     bind_result.prog_output_indices, padded_hash,
+                                     copy_actual, padded_batch_size);
 
             copy_pinned_outputs_to_ort(mgx_state, output_shapes, bind_result.prog_output_indices,
                                        bind_result.pinned_output_indices,
@@ -4071,7 +4074,8 @@ static void execute_standard_path(
     mgx_state->cached_binding_actual_batch = actual_batch;
 
     run_program_or_hip_graph(mgx_state, rocm_stream, ctx, prog, bind_result.params,
-                             bind_result.prog_output_indices, current_hash);
+                             bind_result.prog_output_indices, current_hash,
+                             actual_batch, actual_batch);
 
     copy_pinned_outputs_to_ort(mgx_state, output_shapes, bind_result.prog_output_indices,
                                bind_result.pinned_output_indices,
