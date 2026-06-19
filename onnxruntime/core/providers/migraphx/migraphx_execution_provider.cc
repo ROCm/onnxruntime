@@ -22,6 +22,12 @@
 #include <utility>
 #include <vector>
 
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+#endif
+
 #include "core/providers/shared_library/provider_api.h"
 #define ORT_API_MANUAL_INIT
 #include "core/session/onnxruntime_cxx_api.h"
@@ -166,6 +172,69 @@ struct HipDeviceGuard {
   ~HipDeviceGuard() {
     (void)hipSetDevice(prev_);  // best-effort restore; never throw from a dtor
   }
+};
+
+// ---------------------------------------------------------------------------
+// Compile / cache concurrency primitives
+// ---------------------------------------------------------------------------
+//
+// MIGraphX's ONNX parse + codegen path (parse_onnx_buffer / compile_program) is
+// NOT thread-safe.  Multiple EP instances (one per GPU) sharing a process will
+// otherwise compile concurrently and crash or corrupt internal state.  This
+// mutex serializes every compile in the process to exactly one at a time.  It
+// is the load-bearing piece for compile thread-safety; the per-key lock below
+// only governs cache herd control, not compiler reentrancy.
+static std::mutex g_migraphx_compile_mutex;
+
+// One mutex per cache-file key.  Ensures a given .mxr is compiled exactly once
+// in-process: the first thread to miss compiles + publishes, every other thread
+// waiting on the same key then re-checks the cache and loads.  The registry
+// mutex guards only the short map lookup, never the compile itself.
+static std::mutex& mutex_for_cache_key(const std::string& key) {
+  static std::mutex registry_mu;
+  static std::unordered_map<std::string, std::unique_ptr<std::mutex>> registry;
+  std::lock_guard<std::mutex> g(registry_mu);
+  auto& slot = registry[key];
+  if (!slot) {
+    slot = std::make_unique<std::mutex>();
+  }
+  return *slot;
+}
+
+// Cross-process advisory lock on "<cache_file>.lock".  When several containers
+// share a cache volume this serializes compile/publish across processes so they
+// don't trample each other's .mxr writes.  No-op when no cache file is set or on
+// platforms without flock; in-process safety still comes from the mutexes above.
+struct CacheFileLock {
+#ifndef _WIN32
+  int fd_{-1};
+#endif
+  explicit CacheFileLock(const std::filesystem::path& cache_file) {
+#ifndef _WIN32
+    if (cache_file.empty()) {
+      return;
+    }
+    auto lock_path = cache_file;
+    lock_path += ".lock";
+    fd_ = ::open(lock_path.c_str(), O_CREAT | O_RDWR, 0644);
+    if (fd_ >= 0 && ::flock(fd_, LOCK_EX) != 0) {
+      ::close(fd_);
+      fd_ = -1;
+    }
+#else
+    (void)cache_file;
+#endif
+  }
+  ~CacheFileLock() {
+#ifndef _WIN32
+    if (fd_ >= 0) {
+      (void)::flock(fd_, LOCK_UN);
+      ::close(fd_);
+    }
+#endif
+  }
+  CacheFileLock(const CacheFileLock&) = delete;
+  CacheFileLock& operator=(const CacheFileLock&) = delete;
 };
 
 MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProviderInfo& info)
