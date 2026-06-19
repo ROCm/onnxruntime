@@ -4643,8 +4643,12 @@ static inline void precompile_all_dynamic_batch_models(
       LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Compiling batch size " 
                          << info.batch_size << "...";
       
-      // Compile the model (this is the thread-unsafe part that must be serialized)
-      migraphx::program batch_prog = CompileProgramWithBatch(
+      // Route through load_or_compile_model so this path shares the same
+      // per-key cache lock, cross-process file lock, double-checked load and
+      // atomic save as every other compile path.  Compilation itself remains
+      // serialized by the global compile mutex inside CompileProgramWithBatch.
+      migraphx::program batch_prog = load_or_compile_model(
+          info.cache_file,
           onnx_string,
           options,
           t,
@@ -4662,15 +4666,8 @@ static inline void precompile_all_dynamic_batch_models(
           all_input_base_shapes,
           info.batch_size);
       
-      LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] ✓ Compiled batch size " 
+      LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] ✓ Ready batch size " 
                          << info.batch_size;
-      
-      // Save to disk cache
-      save_compiled_model(batch_prog, info.cache_file);
-      if (!info.cache_file.empty()) {
-        LOGS_DEFAULT(VERBOSE) << "[precompile_all_dynamic_batch_models] Saved to disk: " 
-                              << info.cache_file.string();
-      }
       
       // Store in memory cache
       cached_programs[info.cache_hash] = std::move(batch_prog);
