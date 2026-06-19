@@ -100,7 +100,7 @@ MIGraphXExecutionProviderInfo::MIGraphXExecutionProviderInfo(const OrtMIGraphXPr
                                       : ""},
       int8_use_native_calibration_table{options.migraphx_use_native_calibration_table != 0},
       model_cache_dir{options.migraphx_cache_dir != nullptr
-                          ? ToPathString(std::string{options.migraphx_cache_dir})
+                          ? std::filesystem::path{ToPathString(std::string{options.migraphx_cache_dir})}
                           : std::filesystem::path{}},
       exhaustive_tune{options.migraphx_exhaustive_tune != 0},
       mem_limit{options.migraphx_mem_limit},
