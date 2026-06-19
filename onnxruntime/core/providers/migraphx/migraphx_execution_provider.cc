@@ -2966,9 +2966,10 @@ static migraphx::program load_or_compile_model(
 {
   migraphx::program prog;
 
-  if (!load_precompiled_model(prog, cache_file)) {
-
-    prog = CompileProgramWithBatch(
+  // No cache configured: just compile.  CompileProgramWithBatch still serializes
+  // itself via the global compile mutex, so this remains thread-safe.
+  if (cache_file.empty()) {
+    return CompileProgramWithBatch(
         onnx_string,
         options,
         t,
@@ -2985,9 +2986,41 @@ static migraphx::program load_or_compile_model(
         input_names,
         all_input_base_shapes,
         batch_size);
-
-    save_compiled_model(prog, cache_file);
   }
+
+  // Per-key locks: only one thread/process compiles+publishes this cache file;
+  // everyone else waiting on the same key falls through to the double-checked
+  // load below.  Ordering is always per-key -> (inside compile) global compile
+  // mutex, never the reverse, so no deadlock is possible.
+  std::lock_guard<std::mutex> key_lock(mutex_for_cache_key(cache_file.string()));
+  CacheFileLock cross_proc_lock(cache_file);
+
+  // Double-checked load: another thread/process may have produced the cache file
+  // while we were blocked on the lock above.
+  if (load_precompiled_model(prog, cache_file)) {
+    return prog;
+  }
+
+  // Cache miss and we hold the key: we are the single compiler for this file.
+  prog = CompileProgramWithBatch(
+      onnx_string,
+      options,
+      t,
+      fp16_enable,
+      bf16_enable,
+      int8_enable,
+      fp8_enable,
+      int8_calibration_cache_available,
+      dynamic_range_map,
+      exhaustive_tune,
+      model_path,
+      ctx,
+      map_input_name_index,
+      input_names,
+      all_input_base_shapes,
+      batch_size);
+
+  save_compiled_model(prog, cache_file);
   return prog;
 }
 
