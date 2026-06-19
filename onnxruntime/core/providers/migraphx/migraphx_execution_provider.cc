@@ -4529,7 +4529,8 @@ static inline void precompile_all_dynamic_batch_models(
     const std::filesystem::path& model_path,
     const std::filesystem::path& model_cache_path,
     const std::string& mxr_filename_prefix,
-    std::unordered_map<std::string, migraphx::program>& cached_programs)
+    std::unordered_map<std::string, migraphx::program>& cached_programs,
+    int device_id)
 {
   LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Processing " 
                      << compiled_batch_sizes.size() << " batch models...";
@@ -4594,7 +4595,12 @@ static inline void precompile_all_dynamic_batch_models(
   
   for (const auto& info : batch_infos) {
     load_futures.push_back(std::async(std::launch::async, 
-      [&, info]() {
+      [&, info, device_id]() {
+        // HIP's current device is thread-local and NOT inherited by this async
+        // worker; pin it to the EP's device so the loaded code objects bind to
+        // the correct GPU (otherwise non-zero-device instances fail to launch
+        // with "invalid device ordinal").
+        HipDeviceGuard dev_guard(device_id);
         LOGS_DEFAULT(VERBOSE) << "[precompile_all_dynamic_batch_models] Trying to load batch " 
                               << info.batch_size << " from disk...";
         
@@ -4844,7 +4850,8 @@ static inline void precompile_static_model(
 static void preload_mxr_cache_from_disk(
     const std::filesystem::path& model_cache_path,
     const std::string& mxr_filename_prefix,
-    std::unordered_map<std::string, migraphx::program>& cached_programs)
+    std::unordered_map<std::string, migraphx::program>& cached_programs,
+    int device_id)
 {
   if (model_cache_path.empty() || !std::filesystem::exists(model_cache_path)) return;
 
@@ -4872,7 +4879,12 @@ static void preload_mxr_cache_from_disk(
   std::mutex mu;
   std::vector<std::future<void>> futs;
   for (const auto& [hash, path] : to_load) {
-    futs.push_back(std::async(std::launch::async, [&, hash, path]() {
+    futs.push_back(std::async(std::launch::async, [&, hash, path, device_id]() {
+      // HIP's current device is thread-local and NOT inherited by this async
+      // worker; pin it to the EP's device so the loaded code objects bind to
+      // the correct GPU (otherwise non-zero-device instances fail to launch
+      // with "invalid device ordinal").
+      HipDeviceGuard dev_guard(device_id);
       migraphx::program prog;
       if (load_precompiled_model(prog, path)) {
         std::lock_guard<std::mutex> lk(mu);
@@ -4909,7 +4921,8 @@ static inline bool handle_precompilation_decision(
     const std::string& mxr_filename_prefix,
     std::unordered_map<std::string, migraphx::program>& cached_programs,
     std::size_t max_dynamic_batch,
-    const std::string& compile_batches_spec)
+    const std::string& compile_batches_spec,
+    int device_id)
 {
   // ═══════════════════════════════════════════════════════════════════════════
   // PRECOMPILATION: Compile models during Compile() phase instead of compute_func()
@@ -4986,7 +4999,8 @@ static inline bool handle_precompilation_decision(
             model_path,
             model_cache_path,
             mxr_filename_prefix,
-            cached_programs);
+            cached_programs,
+            device_id);
         
         // Precompilation complete - disable deferred compilation
         LOGS_DEFAULT(VERBOSE) << "[Compile][PRECOMPILE] ✓✓✓ Dynamic batch precompilation COMPLETE for node '" 
@@ -5160,11 +5174,13 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
         mxr_filename_prefix,
         cached_programs_[fused_node.Name()],
         max_dynamic_batch_,
-        compile_batches_);
+        compile_batches_,
+        device_id_);
 
     // Pre-load any .mxr files from disk that aren't already in memory.
     preload_mxr_cache_from_disk(model_cache_path_, mxr_filename_prefix,
-                                cached_programs_[fused_node.Name()]);
+                                cached_programs_[fused_node.Name()],
+                                device_id_);
 
     // Create program object (may be empty if precompiled programs are in cache)
     migraphx::program prog;
