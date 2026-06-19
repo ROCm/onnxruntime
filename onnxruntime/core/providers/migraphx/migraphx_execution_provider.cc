@@ -2861,6 +2861,13 @@ migraphx::program CompileProgramWithBatch(
     const std::vector<std::vector<std::int64_t>>& all_input_base_shapes = {},
     size_t batch_size = 0)
 {
+  // MIGraphX parse + codegen is not thread-safe.  This is the single chokepoint
+  // every compile path flows through, so serializing here guarantees at most one
+  // compile in the process at a time across all EP instances / GPUs.  Held for
+  // the whole parse+quantize+compile span; per-key locks (if any) are always
+  // acquired *before* this one, so the ordering is one-way and deadlock-free.
+  std::lock_guard<std::mutex> compile_guard(g_migraphx_compile_mutex);
+
   LOGS_DEFAULT(VERBOSE) << "[CompileBatch] Starting compilation";
 
   // Set input shapes with the specified batch size for ALL inputs (if provided)
