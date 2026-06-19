@@ -1415,17 +1415,42 @@ bool load_precompiled_model(migraphx::program& prog, const std::filesystem::path
 }
 
 void save_compiled_model(const migraphx::program& prog, const std::filesystem::path& path) {
-  if (!path.empty()) {
-    LOGS_DEFAULT(INFO) << "[save_compiled_model] Saving compiled model to disk: " << path.string();
-    migraphx::file_options fo;
-    fo.set_file_format("msgpack");
-    save(prog, path.string().c_str(), fo);
-    if (std::filesystem::exists(path)) {
-      auto file_sz = std::filesystem::file_size(path);
-      LOGS_DEFAULT(INFO) << "[save_compiled_model] Saved: " << path.string()
-                         << " (file size: " << file_sz << " bytes, "
-                         << (file_sz / (1024.0 * 1024.0)) << " MB)";
-    }
+  if (path.empty()) {
+    return;
+  }
+  LOGS_DEFAULT(INFO) << "[save_compiled_model] Saving compiled model to disk: " << path.string();
+  migraphx::file_options fo;
+  fo.set_file_format("msgpack");
+
+  // Atomic publish: serialize to a unique temp file in the same directory, then
+  // rename over the target.  rename(2) is atomic on a single filesystem, so a
+  // concurrent reader (or a crash mid-write) never observes a torn .mxr, which
+  // otherwise surfaces as "no kernel image is available" on load.
+  auto tmp_path = path;
+  tmp_path += "." + std::to_string(static_cast<long long>(
+#ifndef _WIN32
+                  ::getpid()
+#else
+                  0
+#endif
+                  )) + ".tmp";
+
+  save(prog, tmp_path.string().c_str(), fo);
+
+  std::error_code ec;
+  std::filesystem::rename(tmp_path, path, ec);
+  if (ec) {
+    std::filesystem::remove(tmp_path, ec);
+    LOGS_DEFAULT(WARNING) << "[save_compiled_model] Atomic publish failed for "
+                          << path.string() << ": " << ec.message();
+    return;
+  }
+
+  if (std::filesystem::exists(path)) {
+    auto file_sz = std::filesystem::file_size(path);
+    LOGS_DEFAULT(INFO) << "[save_compiled_model] Saved: " << path.string()
+                       << " (file size: " << file_sz << " bytes, "
+                       << (file_sz / (1024.0 * 1024.0)) << " MB)";
   }
 }
 
