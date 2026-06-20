@@ -2493,7 +2493,7 @@ static bool warmup_and_capture_hip_graph_direct(
   auto& entry = mgx_state->hip_graph_cache[shape_hash];
 
   try {
-    HIP_CALL_THROW(hipStreamBeginCapture(stream, hipStreamCaptureModeGlobal));
+    HIP_CALL_THROW(hipStreamBeginCapture(stream, hipStreamCaptureModeThreadLocal));
     {
       std::lock_guard<std::mutex> lock(*mgx_state->mgx_mu_ptr);
       prog.run_async(m, stream);
