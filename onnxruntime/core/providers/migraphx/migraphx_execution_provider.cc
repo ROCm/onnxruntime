@@ -200,7 +200,12 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   GET_ENV(migraphx_env_vars::kINT8CalibrationTableName, int8_calibration_cache_name_);
   GET_ENV(migraphx_env_vars::kINT8UseNativeMIGraphXCalibrationTable, int8_use_native_migraphx_calibration_table_);
   GET_ENV_STRING(migraphx_env_vars::kCachePath, calibration_cache_path_);
-  GET_ENV_STRING(migraphx_env_vars::kModelCachePath, model_cache_path_);
+
+  // Only consult the env var when the provider option didn't supply a path,
+  // so an explicit migraphx_model_cache_dir is never silently overridden.
+  if (model_cache_path_.empty()) {
+    GET_ENV_STRING(migraphx_env_vars::kModelCachePath, model_cache_path_);
+  }
 
   // Strip surrounding quotes from cache path.
   {

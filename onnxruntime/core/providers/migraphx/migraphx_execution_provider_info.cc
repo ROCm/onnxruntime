@@ -95,6 +95,13 @@ MIGraphXExecutionProviderInfo::MIGraphXExecutionProviderInfo(const OrtMIGraphXPr
       bf16_enable{options.migraphx_bf16_enable != 0},
       fp8_enable{options.migraphx_fp8_enable != 0},
       int8_enable{options.migraphx_int8_enable != 0},
+      int8_calibration_table_name{options.migraphx_int8_calibration_table_name != nullptr
+                                      ? options.migraphx_int8_calibration_table_name
+                                      : ""},
+      int8_use_native_calibration_table{options.migraphx_use_native_calibration_table != 0},
+      model_cache_dir{options.migraphx_cache_dir != nullptr
+                          ? std::filesystem::path{ToPathString(std::string{options.migraphx_cache_dir})}
+                          : std::filesystem::path{}},
       exhaustive_tune{options.migraphx_exhaustive_tune != 0},
       mem_limit{options.migraphx_mem_limit},
       arena_extend_strategy{options.migraphx_arena_extend_strategy},
