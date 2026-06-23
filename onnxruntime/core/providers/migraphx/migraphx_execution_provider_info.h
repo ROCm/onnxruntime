@@ -21,6 +21,7 @@ namespace onnxruntime {
 
 namespace migraphx_provider_option {
 constexpr auto kDeviceId = "device_id"sv;
+constexpr auto kCompileTarget = "migraphx_compile_target"sv;
 constexpr auto kFp16Enable = "migraphx_fp16_enable"sv;
 constexpr auto kBf16Enable = "migraphx_bf16_enable"sv;
 constexpr auto kFp8Enable = "migraphx_fp8_enable"sv;
@@ -42,6 +43,10 @@ constexpr auto kUserComputeStream = "user_compute_stream"sv;
 }  // namespace migraphx_provider_option
 
 extern const EnumNameMapping<ArenaExtendStrategy> arena_extend_strategy_mapping;
+
+// Validates and normalizes a MIGraphX compile target name ("gpu", "ref", "cpu", "mps").
+// On success, writes the lower-cased target into target_device.
+Status ValidateMIGraphXCompileTarget(const std::string& value_str, std::string& target_device);
 
 // Information needed to construct trt execution providers.
 struct MIGraphXExecutionProviderInfo {

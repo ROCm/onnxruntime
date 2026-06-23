@@ -25,6 +25,7 @@ using namespace std::literals::string_view_literals;
 namespace onnxruntime {
 
 namespace migraphx_env_vars {
+constexpr auto kCompileTarget = "ORT_MIGRAPHX_COMPILE_TARGET"sv;
 constexpr auto kFP16Enable = "ORT_MIGRAPHX_FP16_ENABLE"sv;
 constexpr auto kBF16Enable = "ORT_MIGRAPHX_BF16_ENABLE"sv;
 constexpr auto kFP8Enable = "ORT_MIGRAPHX_FP8_ENABLE"sv;
@@ -274,6 +275,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   ProviderOptions GetProviderOptions() const override {
     return {
         {std::string{migraphx_provider_option::kDeviceId}, MakeStringWithClassicLocale(device_id_)},
+        {std::string{migraphx_provider_option::kCompileTarget}, target_device_},
         {std::string{migraphx_provider_option::kFp16Enable}, MakeStringWithClassicLocale(fp16_enable_)},
         {std::string{migraphx_provider_option::kBf16Enable}, MakeStringWithClassicLocale(bf16_enable_)},
         {std::string{migraphx_provider_option::kFp8Enable}, MakeStringWithClassicLocale(fp8_enable_)},
@@ -296,6 +298,8 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
 
  private:
   OrtDevice::DeviceId device_id_{0};
+  // MIGraphX compile target: "gpu" (default), "ref", "cpu", or "mps".
+  std::string target_device_{"gpu"};
   bool fp16_enable_ = false;
   bool bf16_enable_ = false;
   bool fp8_enable_ = false;

@@ -152,6 +152,7 @@ static std::mutex g_hip_alloc_mutex;
 MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProviderInfo& info)
     : IExecutionProvider{kMIGraphXExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, OrtDevice::VendorIds::AMD, info.device_id)},
       device_id_{info.device_id},
+      target_device_{info.target_device.empty() ? "gpu" : info.target_device},
       fp16_enable_{info.fp16_enable},
 #if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && (HIP_VERSION_MINOR > 4 || (HIP_VERSION_MINOR == 4 && HIP_VERSION_PATCH >= 2)))
       bf16_enable_{info.bf16_enable},
@@ -161,7 +162,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
 #endif
       int8_enable_{info.int8_enable},
       model_cache_path_{info.model_cache_dir},
-      t_{info.target_device.c_str()},
+      t_{target_device_.c_str()},
       exhaustive_tune_{info.exhaustive_tune},
       metadef_id_generator_{ModelMetadefIdGenerator::Create()},
       external_alloc_{info.external_alloc},
@@ -189,6 +190,25 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
   // Overwrite initialized values with values from environment variables.
 
   LOGS_DEFAULT(INFO) << "[MIGraphX EP] MIGraphX ENV Override Variables Set:";
+
+  // Compile target override (gpu/ref/cpu). Reconstruct the MIGraphX target if a
+  // valid value is provided; an invalid value keeps the existing target.
+  {
+    const auto compile_target_env = GetEnvironmentVar(std::string{migraphx_env_vars::kCompileTarget});
+    if (!compile_target_env.empty()) {
+      std::string normalized_target;
+      if (ValidateMIGraphXCompileTarget(compile_target_env, normalized_target).IsOK()) {
+        target_device_ = normalized_target;
+        t_ = migraphx::target{target_device_.c_str()};
+        LOGS_DEFAULT(INFO) << "\n " << migraphx_env_vars::kCompileTarget << ": " << target_device_;
+      } else {
+        LOGS_DEFAULT(WARNING)
+            << "[MIGraphX EP] Ignoring invalid " << migraphx_env_vars::kCompileTarget
+            << "='" << compile_target_env << "'. Supported targets are 'gpu', 'ref', 'cpu', and 'mps'.";
+      }
+    }
+  }
+
   GET_ENV_BOOL(migraphx_env_vars::kFP16Enable, fp16_enable_);
 #if HIP_VERSION_MAJOR > 6 || (HIP_VERSION_MAJOR == 6 && (HIP_VERSION_MINOR > 4 || (HIP_VERSION_MINOR == 4 && HIP_VERSION_PATCH >= 2)))
   GET_ENV_BOOL(migraphx_env_vars::kBF16Enable, bf16_enable_);
@@ -314,6 +334,7 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
 
   LOGS_DEFAULT(VERBOSE) << "[MIGraphX EP] MIGraphX provider Session Options:"
                         << "\n " << migraphx_provider_option::kDeviceId << ": " << device_id_
+                        << "\n " << migraphx_provider_option::kCompileTarget << ": " << target_device_
                         << "\n " << migraphx_provider_option::kFp16Enable << ": " << fp16_enable_
                         << "\n " << migraphx_provider_option::kBf16Enable << ": " << bf16_enable_
                         << "\n " << migraphx_provider_option::kFp8Enable << ": " << fp8_enable_
