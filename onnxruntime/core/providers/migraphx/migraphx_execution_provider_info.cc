@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
+#include <cctype>
 #include <string>
+#include <utility>
 
 #include "core/providers/shared_library/provider_api.h"
 #include "core/providers/migraphx/migraphx_execution_provider_info.h"
@@ -18,9 +20,30 @@ const EnumNameMapping<ArenaExtendStrategy> arena_extend_strategy_mapping{
     {ArenaExtendStrategy::kSameAsRequested, "kSameAsRequested"},
 };
 
+// Validates and normalizes a MIGraphX compile target name. Accepts the three
+// MIGraphX targets ("gpu", "ref", "cpu") case-insensitively.
+Status ValidateMIGraphXCompileTarget(const std::string& value_str, std::string& target_device) {
+  std::string normalized;
+  normalized.reserve(value_str.size());
+  for (char ch : value_str) {
+    normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+  ORT_RETURN_IF_NOT(
+      normalized == "gpu" || normalized == "ref" || normalized == "cpu" || normalized == "mps",
+      "Invalid MIGraphX compile target: '", value_str,
+      "'. Supported targets are 'gpu', 'ref', 'cpu', and 'mps'.");
+  target_device = std::move(normalized);
+  return Status::OK();
+}
+
 MIGraphXExecutionProviderInfo::MIGraphXExecutionProviderInfo(const ProviderOptions& options) {
   ORT_THROW_IF_ERROR(
       ProviderOptionsParser{}
+          .AddValueParser(
+              migraphx_provider_option::kCompileTarget,
+              [this](const std::string& value_str) -> Status {
+                return ValidateMIGraphXCompileTarget(value_str, target_device);
+              })
           .AddValueParser(
               migraphx_provider_option::kDeviceId,
               [this](const std::string& value_str) -> Status {
@@ -111,6 +134,7 @@ MIGraphXExecutionProviderInfo::MIGraphXExecutionProviderInfo(const OrtMIGraphXPr
 ProviderOptions MIGraphXExecutionProviderInfo::ToProviderOptions() const {
   return {
       {std::string{migraphx_provider_option::kDeviceId}, MakeStringWithClassicLocale(device_id)},
+      {std::string{migraphx_provider_option::kCompileTarget}, target_device},
       {std::string{migraphx_provider_option::kFp16Enable}, MakeStringWithClassicLocale(fp16_enable)},
       {std::string{migraphx_provider_option::kBf16Enable}, MakeStringWithClassicLocale(bf16_enable)},
       {std::string{migraphx_provider_option::kFp8Enable}, MakeStringWithClassicLocale(fp8_enable)},
