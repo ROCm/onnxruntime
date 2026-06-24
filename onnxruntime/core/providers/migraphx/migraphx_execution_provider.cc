@@ -181,25 +181,11 @@ struct HipDeviceGuard {
 // MIGraphX's ONNX parse + codegen path (parse_onnx_buffer / compile_program) is
 // NOT thread-safe.  Multiple EP instances (one per GPU) sharing a process will
 // otherwise compile concurrently and crash or corrupt internal state.  This
-// mutex serializes every compile in the process to exactly one at a time.  It
-// is the load-bearing piece for compile thread-safety; the per-key lock below
-// only governs cache herd control, not compiler reentrancy.
+// single mutex serializes every compile in the process to exactly one at a time.
+// load_or_compile_model holds it across the double-checked cache load + compile +
+// save, so it doubles as in-process herd control: a second thread waiting on the
+// same cache file falls through to the load instead of recompiling.
 static std::mutex g_migraphx_compile_mutex;
-
-// One mutex per cache-file key.  Ensures a given .mxr is compiled exactly once
-// in-process: the first thread to miss compiles + publishes, every other thread
-// waiting on the same key then re-checks the cache and loads.  The registry
-// mutex guards only the short map lookup, never the compile itself.
-static std::mutex& mutex_for_cache_key(const std::string& key) {
-  static std::mutex registry_mu;
-  static std::unordered_map<std::string, std::unique_ptr<std::mutex>> registry;
-  std::lock_guard<std::mutex> g(registry_mu);
-  auto& slot = registry[key];
-  if (!slot) {
-    slot = std::make_unique<std::mutex>();
-  }
-  return *slot;
-}
 
 // Cross-process advisory lock on "<cache_file>.lock".  When several containers
 // share a cache volume this serializes compile/publish across processes so they
@@ -2861,13 +2847,10 @@ migraphx::program CompileProgramWithBatch(
     const std::vector<std::vector<std::int64_t>>& all_input_base_shapes = {},
     size_t batch_size = 0)
 {
-  // MIGraphX parse + codegen is not thread-safe.  This is the single chokepoint
-  // every compile path flows through, so serializing here guarantees at most one
-  // compile in the process at a time across all EP instances / GPUs.  Held for
-  // the whole parse+quantize+compile span; per-key locks (if any) are always
-  // acquired *before* this one, so the ordering is one-way and deadlock-free.
-  std::lock_guard<std::mutex> compile_guard(g_migraphx_compile_mutex);
-
+  // NOTE: MIGraphX parse + codegen is not thread-safe.  Callers must hold
+  // g_migraphx_compile_mutex; load_or_compile_model is the single entry point and
+  // owns that lock.  This helper is intentionally lock-free so it can run inside
+  // that critical section without recursive locking.
   LOGS_DEFAULT(VERBOSE) << "[CompileBatch] Starting compilation";
 
   // Set input shapes with the specified batch size for ALL inputs (if provided)
@@ -2966,34 +2949,20 @@ static migraphx::program load_or_compile_model(
 {
   migraphx::program prog;
 
-  // No cache configured: just compile.  CompileProgramWithBatch still serializes
-  // itself via the global compile mutex, so this remains thread-safe.
-  if (cache_file.empty()) {
-    return CompileProgramWithBatch(
-        onnx_string,
-        options,
-        t,
-        fp16_enable,
-        bf16_enable,
-        int8_enable,
-        fp8_enable,
-        int8_calibration_cache_available,
-        dynamic_range_map,
-        exhaustive_tune,
-        model_path,
-        ctx,
-        map_input_name_index,
-        input_names,
-        all_input_base_shapes,
-        batch_size);
+  // Fast path: try loading from the cache without any lock.  Disk loads ARE
+  // thread-safe (and atomic saves guarantee readers never see a torn .mxr), so
+  // many EP instances / batch workers can load concurrently here.
+  if (load_precompiled_model(prog, cache_file)) {
+    return prog;
   }
 
-  // Per-key locks: only one thread/process compiles+publishes this cache file;
-  // everyone else waiting on the same key falls through to the double-checked
-  // load below.  Ordering is always per-key -> (inside compile) global compile
-  // mutex, never the reverse, so no deadlock is possible.
-  std::lock_guard<std::mutex> key_lock(mutex_for_cache_key(cache_file.string()));
-  CacheFileLock cross_proc_lock(cache_file);
+  // Cache miss: serialize the compile.  The global compile mutex makes MIGraphX
+  // codegen (which is not thread-safe) run one-at-a-time process-wide, and held
+  // across the double-checked load below it also dedups concurrent compiles of
+  // the same cache file in-process.  The cross-process flock extends that herd
+  // control across processes sharing a cache volume.
+  std::lock_guard<std::mutex> compile_guard(g_migraphx_compile_mutex);
+  CacheFileLock cross_proc_lock(cache_file);  // no-op when cache_file is empty
 
   // Double-checked load: another thread/process may have produced the cache file
   // while we were blocked on the lock above.
@@ -3001,7 +2970,7 @@ static migraphx::program load_or_compile_model(
     return prog;
   }
 
-  // Cache miss and we hold the key: we are the single compiler for this file.
+  // Confirmed miss and we hold the lock: we are the single compiler for this file.
   prog = CompileProgramWithBatch(
       onnx_string,
       options,
@@ -3020,7 +2989,7 @@ static migraphx::program load_or_compile_model(
       all_input_base_shapes,
       batch_size);
 
-  save_compiled_model(prog, cache_file);
+  save_compiled_model(prog, cache_file);  // no-op when cache_file is empty
   return prog;
 }
 
@@ -4579,109 +4548,60 @@ static inline void precompile_all_dynamic_batch_models(
   }
   
   // ============================================================================
-  // PHASE 1: Parallel loading from disk cache
+  // Load-or-compile every batch in parallel.
   // ============================================================================
-  LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Phase 1: Attempting parallel load from disk cache...";
-  
-  // Mutex to protect shared state
-  std::mutex cache_mutex;
-  
-  // Track which batch sizes need compilation (cache misses)
-  std::vector<BatchInfo> needs_compilation;
-  std::mutex compile_list_mutex;
-  
-  // Launch async tasks for parallel loading
-  std::vector<std::future<void>> load_futures;
-  
+  // load_or_compile_model encapsulates the double-checked cache load, compile and
+  // atomic save under the global compile mutex + cross-process file lock, so we no
+  // longer need a separate parallel-load phase and a sequential-compile phase:
+  // disk loads run concurrently while any actual compiles serialize on the mutex.
+  LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Loading/compiling "
+                     << batch_infos.size() << " batch models...";
+
+  std::mutex cache_mutex;  // protects cached_programs
+  std::vector<std::future<void>> futures;
+
   for (const auto& info : batch_infos) {
-    load_futures.push_back(std::async(std::launch::async, 
+    futures.push_back(std::async(std::launch::async,
       [&, info, device_id]() {
         // HIP's current device is thread-local and NOT inherited by this async
         // worker; pin it to the EP's device so the loaded code objects bind to
         // the correct GPU (otherwise non-zero-device instances fail to launch
         // with "invalid device ordinal").
         HipDeviceGuard dev_guard(device_id);
-        LOGS_DEFAULT(VERBOSE) << "[precompile_all_dynamic_batch_models] Trying to load batch " 
-                              << info.batch_size << " from disk...";
-        
-        migraphx::program prog;
-        bool loaded = load_precompiled_model(prog, info.cache_file);
-        
-        if (loaded) {
-          // Cache hit - store in memory cache
-          std::lock_guard<std::mutex> lock(cache_mutex);
-          cached_programs[info.cache_hash] = std::move(prog);
-          LOGS_DEFAULT(VERBOSE) << "[precompile_all_dynamic_batch_models] ✓ Loaded batch " 
-                                << info.batch_size << " from disk cache";
-        } else {
-          // Cache miss - add to compilation list
-          std::lock_guard<std::mutex> lock(compile_list_mutex);
-          needs_compilation.push_back(info);
-          LOGS_DEFAULT(VERBOSE) << "[precompile_all_dynamic_batch_models] ✗ Batch " 
-                                << info.batch_size << " not in disk cache, needs compilation";
-        }
+
+        migraphx::program batch_prog = load_or_compile_model(
+            info.cache_file,
+            onnx_string,
+            options,
+            t,
+            fp16_enable,
+            bf16_enable,
+            int8_enable,
+            fp8_enable,
+            int8_calibration_cache_available,
+            dynamic_range_map,
+            exhaustive_tune,
+            model_path,
+            nullptr,  // ctx not needed for precompilation
+            nullptr,  // map_input_name_index not needed
+            input_names,
+            all_input_base_shapes,
+            info.batch_size);
+
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        cached_programs[info.cache_hash] = std::move(batch_prog);
+        LOGS_DEFAULT(VERBOSE) << "[precompile_all_dynamic_batch_models] ✓ Ready batch size "
+                              << info.batch_size;
       }
     ));
   }
-  
-  // Wait for all loading tasks to complete
-  for (auto& future : load_futures) {
+
+  for (auto& future : futures) {
     future.get();
   }
-  
-  std::size_t loaded_count = batch_infos.size() - needs_compilation.size();
-  LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Phase 1 complete: " 
-                     << loaded_count << " loaded from cache, " 
-                     << needs_compilation.size() << " need compilation";
-  
-  // ============================================================================
-  // PHASE 2: Sequential compilation for cache misses
-  // ============================================================================
-  if (!needs_compilation.empty()) {
-    LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Phase 2: Compiling " 
-                       << needs_compilation.size() << " models sequentially...";
-    
-    // Sort by batch size for consistent ordering
-    std::sort(needs_compilation.begin(), needs_compilation.end(),
-              [](const BatchInfo& a, const BatchInfo& b) { return a.batch_size < b.batch_size; });
-    
-    for (const auto& info : needs_compilation) {
-      LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Compiling batch size " 
-                         << info.batch_size << "...";
-      
-      // Route through load_or_compile_model so this path shares the same
-      // per-key cache lock, cross-process file lock, double-checked load and
-      // atomic save as every other compile path.  Compilation itself remains
-      // serialized by the global compile mutex inside CompileProgramWithBatch.
-      migraphx::program batch_prog = load_or_compile_model(
-          info.cache_file,
-          onnx_string,
-          options,
-          t,
-          fp16_enable,
-          bf16_enable,
-          int8_enable,
-          fp8_enable,
-          int8_calibration_cache_available,
-          dynamic_range_map,
-          exhaustive_tune,
-          model_path,
-          nullptr,  // ctx not needed for precompilation
-          nullptr,  // map_input_name_index not needed
-          input_names,
-          all_input_base_shapes,
-          info.batch_size);
-      
-      LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] ✓ Ready batch size " 
-                         << info.batch_size;
-      
-      // Store in memory cache
-      cached_programs[info.cache_hash] = std::move(batch_prog);
-    }
-    
-    LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Phase 2 complete: " 
-                       << needs_compilation.size() << " models compiled";
-  }
+
+  LOGS_DEFAULT(INFO) << "[precompile_all_dynamic_batch_models] Loaded/compiled "
+                     << batch_infos.size() << " batch models";
   
   // Summary: report total disk and in-memory cache sizes
   {
