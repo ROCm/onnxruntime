@@ -2636,6 +2636,13 @@ static void run_program_or_hip_graph_direct(
       if (it->second.graph) { (void)hipGraphDestroy(it->second.graph); it->second.graph = nullptr; }
       it->second.captured = false;
     } else {
+      // Pointers matched: any earlier drift was transient (e.g. a one-off
+      // allocator shuffle), not a sustained rebinding pattern.  Reset the
+      // counter so only *consecutive* mismatches can trip the permanent eager
+      // fallback above.  Without this the count is monotonic and rare,
+      // recoverable drift accumulates over a long-lived session until it
+      // needlessly disables the fast path for good.
+      mgx_state->direct_recapture_count = 0;
       // Same rationale as in replay_hip_graph: zero EP-owned scratch before
       // every direct-bind replay so the captured kernel sequence isn't
       // contaminated by the prior replay's scratch residue.
