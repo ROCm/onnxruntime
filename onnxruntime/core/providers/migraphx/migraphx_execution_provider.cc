@@ -2570,7 +2570,7 @@ std::string to_hex(const uint64_t v) {
 template <typename T>
 std::string make_hash(T v) {
   std::array<std::uint32_t, 4> temp{};
-  MurmurHash3::x86_128(v.data(), gsl::narrow_cast<int32_t>(v.size()), temp[0], temp.data());
+  MurmurHash3::x86_128(v.data(), gsl::narrow_cast<int32_t>(v.size() * sizeof(*v.data())), temp[0], temp.data());
   return to_hex(temp[0] | static_cast<uint64_t>(temp[1]) << 32);
 }
 
