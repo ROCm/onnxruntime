@@ -38,6 +38,13 @@ constexpr auto kModelCachePath = "ORT_MIGRAPHX_MODEL_CACHE_PATH"sv;
 constexpr auto kModelMaxDynamicBatch = "ORT_MIGRAPHX_MAX_DYNAMIC_BATCH"sv;
 constexpr auto kCompileBatches = "ORT_MIGRAPHX_COMPILE_BATCHES"sv;
 constexpr auto kHipGraphEnable = "ORT_MIGRAPHX_HIP_GRAPH_ENABLE"sv;
+// When enabled, the pinned-copy path gathers all (host-resident) input tensors
+// into a single contiguous pinned staging buffer and issues ONE host->device
+// transfer into a single device arena, instead of one copy per input.  This
+// collapses the per-input H2D launch overhead that dominates batch-1 models
+// with many small inputs (e.g. feed-gen-rec, ~190 inputs).  Inputs are then
+// bound as sub-views into the arena.  See copy_inputs_to_pinned.
+constexpr auto kCoalesceIO = "ORT_MIGRAPHX_COALESCE_IO"sv;
 }  // namespace migraphx_env_vars
 
 // Tracks which dimensions are symbolic for a given input
@@ -58,6 +65,7 @@ struct MIGraphXFuncState {
   std::unordered_map<std::string, std::size_t> input_name_indexes;
   std::mutex* mgx_mu_ptr = nullptr;
   hipStream_t stream = nullptr;
+  int device_id = 0;
   bool defer_compilation = false;
   bool fp16_enable = false;
   bool bf16_enable = false;
@@ -91,6 +99,19 @@ struct MIGraphXFuncState {
     std::unordered_map<std::string, std::size_t> output_name_to_idx;
     std::size_t max_batch_size = 0;
     bool allocated = false;
+
+    // ── Coalesced-input arena (enabled by ORT_MIGRAPHX_COALESCE_IO) ──────────
+    // When `coalesced` is true, the per-input device buffers are NOT independent
+    // allocations: every inputs[i].data points to (in_arena_dev + input_offsets[i])
+    // inside a single device allocation `in_arena_dev` of `in_arena_bytes`.
+    // `in_staging_host` is a pinned host buffer with the identical layout that
+    // copy_inputs_to_pinned gathers into before issuing one H2D for the whole
+    // arena.  free_pinned_io must free the arena once (not per input buffer).
+    bool coalesced = false;
+    void* in_arena_dev = nullptr;       // single device arena backing all inputs
+    void* in_staging_host = nullptr;    // pinned host staging buffer (gather target)
+    std::size_t in_arena_bytes = 0;     // total arena size (aligned slot sum)
+    std::vector<std::size_t> input_offsets;  // byte offset per input, parallel to `inputs`
   };
 
   PinnedIOSet pinned_io;
@@ -161,6 +182,16 @@ struct MIGraphXFuncState {
 
   // Flag indicating caches are valid
   bool caches_valid = false;
+
+  // Describes how cached_prog_params was last bound, so the ultra-fast path
+  // never reuses a binding built for a different actual batch size or a
+  // different binding mode (direct-bind vs pinned-copy/slice).  Mixing these
+  // across alternating batch sizes (e.g. an exact batch-4 direct-bind binding
+  // being reused to service a padded batch-3 request) leaked the compiled
+  // batch shape to ORT and triggered the {compiled}/{actual} output-shape
+  // verification failure observed at higher concurrency.
+  bool cached_binding_is_pinned = false;
+  std::size_t cached_binding_actual_batch = 0;
   
   // ═══════════════════════════════════════════════════════════════════════════
   // OPTIMIZATION: Cached MIGraphX API results (avoid redundant API calls)
@@ -193,6 +224,12 @@ struct MIGraphXFuncState {
     hipGraph_t graph = nullptr;
     hipGraphExec_t exec = nullptr;
     bool captured = false;
+    // Which capture mode produced this entry.  The direct-bind and pinned-copy
+    // paths partition the program outputs differently (pre-allocated #output_N
+    // params vs. "extra" run_async results), so an entry captured in one mode
+    // must never be replayed by the other -- doing so leaves some ORT outputs
+    // unwritten (empty OrtValue) or bound to stale addresses.
+    bool direct_bind = false;
     std::vector<ExtraOutputInfo> extra_outputs;
 
     // Addresses captured in the graph for direct-bind mode.
@@ -224,6 +261,9 @@ struct MIGraphXFuncState {
   };
 
   bool hip_graph_enabled = false;
+  // When true, the pinned-copy path coalesces all host-resident inputs into a
+  // single H2D transfer into pinned_io.in_arena_dev (see kCoalesceIO).
+  bool coalesce_io = false;
   // When true, capture/replay binds ORT tensor pointers directly (no pinned copies).
   // Requires the pool allocator to provide stable addresses.
   bool use_direct_hip_graph = false;
@@ -335,6 +375,7 @@ class MIGraphXExecutionProvider : public IExecutionProvider {
   size_t max_dynamic_batch_{0};
   std::string compile_batches_{};  // Comma-separated list of batch sizes to compile, e.g. "1,4,8,16,32"
   bool hip_graph_enable_{false};
+  bool coalesce_io_enable_{false};  // ORT_MIGRAPHX_COALESCE_IO: coalesce per-input H2D copies
 };
 
 }; // namespace onnxruntime
