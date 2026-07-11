@@ -2270,17 +2270,26 @@ static bool warmup_and_capture_hip_graph(
     const std::vector<std::size_t>& prog_output_indices,
     const std::string& shape_hash)
 {
-  // Zero all pinned buffers before warmup to avoid stale data from prior batch runs
+  // Do NOT zero the pinned inputs here.  copy_inputs_to_pinned (called by the
+  // caller immediately before this) has already populated them with this
+  // request's real data; in coalesced mode the pin.data pointers are sub-views
+  // of in_arena_dev, so zeroing them wipes the real inputs out of the arena and
+  // makes capture -- and the value copied back as the first request's output --
+  // compute f(0).  That is the AIMIGRAPHX-1156 first-request corruption.
+  //
+  // No input zeroing is needed for a deterministic capture baseline: every
+  // input-copy path fully overwrites the extent the program reads (the coalesced
+  // fast path and per-input path write `compiled` rows; pad_input_tensor writes
+  // the real rows plus a replicated pad tail), and the arena's aligned inter-slot
+  // gaps are already zeroed once in allocate_pinned_io and never read.
+  //
+  // Outputs and scratch DO need a zero baseline: captured kernels may
+  // read-modify-write them (split-K reductions, fused-attention accumulators),
+  // so anchor those to zero before the warmup runs get baked into the capture.
   auto& pio = mgx_state->pinned_io;
-  for (auto& pin : pio.inputs) {
-    HIP_CALL_THROW(hipMemsetAsync(pin.data, 0, pin.size_bytes, stream));
-  }
   for (auto& pin : pio.outputs) {
     HIP_CALL_THROW(hipMemsetAsync(pin.data, 0, pin.size_bytes, stream));
   }
-  // Zero EP-owned scratch too -- caller bound it via bind_pinned_program_params
-  // but the warmup runs below would otherwise leave warmup-derived bytes in
-  // scratch that then get baked into the capture.
   zero_scratch_for(mgx_state, shape_hash, stream);
 
   // Pre-capture eager loop: only enough to finalize MIGraphX's lazy
