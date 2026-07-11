@@ -1561,17 +1561,23 @@ static void pad_input_tensor(const void* src_data, void* dst_data,
                              std::size_t element_size_bytes, std::size_t elements_per_batch,
                              hipStream_t stream) {
   std::size_t bytes_per_batch = element_size_bytes * elements_per_batch;
-  
-  // Copy original data
-  HIP_CALL_THROW(hipMemcpyAsync(dst_data, src_data, 
+
+  // Copy original data.  src_data may be host-resident (an ORT CPU tensor) or
+  // device-resident; hipMemcpyDefault infers the direction from the pointers,
+  // so this is correct either way.  The previous hardcoded DeviceToDevice was
+  // wrong for host-resident inputs (it would read the host pointer as device).
+  HIP_CALL_THROW(hipMemcpyAsync(dst_data, src_data,
                                 original_batch * bytes_per_batch,
-                                hipMemcpyDeviceToDevice, stream));
-  
+                                hipMemcpyDefault, stream));
+
   // Pad by replicating the last batch element using exponential doubling.
   // Seed one copy, then double the filled region each iteration so the number
   // of hipMemcpyAsync calls is O(log N) instead of O(N).
   if (original_batch > 0 && padded_batch > original_batch) {
-    const char* last_batch = static_cast<const char*>(src_data) + (original_batch - 1) * bytes_per_batch;
+    // Replicate from the already-copied last row in the DEVICE destination so
+    // the direction is unambiguously DeviceToDevice regardless of where src
+    // lived (replicating from a host src, as before, would have been wrong).
+    const char* last_batch = static_cast<char*>(dst_data) + (original_batch - 1) * bytes_per_batch;
     char* pad_start = static_cast<char*>(dst_data) + original_batch * bytes_per_batch;
     std::size_t slots_to_fill = padded_batch - original_batch;
 
