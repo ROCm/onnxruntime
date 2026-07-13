@@ -4,6 +4,7 @@
 #include <hip/hip_version.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -1561,17 +1562,23 @@ static void pad_input_tensor(const void* src_data, void* dst_data,
                              std::size_t element_size_bytes, std::size_t elements_per_batch,
                              hipStream_t stream) {
   std::size_t bytes_per_batch = element_size_bytes * elements_per_batch;
-  
-  // Copy original data
-  HIP_CALL_THROW(hipMemcpyAsync(dst_data, src_data, 
+
+  // Copy original data.  src_data may be host-resident (an ORT CPU tensor) or
+  // device-resident; hipMemcpyDefault infers the direction from the pointers,
+  // so this is correct either way.  The previous hardcoded DeviceToDevice was
+  // wrong for host-resident inputs (it would read the host pointer as device).
+  HIP_CALL_THROW(hipMemcpyAsync(dst_data, src_data,
                                 original_batch * bytes_per_batch,
-                                hipMemcpyDeviceToDevice, stream));
-  
+                                hipMemcpyDefault, stream));
+
   // Pad by replicating the last batch element using exponential doubling.
   // Seed one copy, then double the filled region each iteration so the number
   // of hipMemcpyAsync calls is O(log N) instead of O(N).
   if (original_batch > 0 && padded_batch > original_batch) {
-    const char* last_batch = static_cast<const char*>(src_data) + (original_batch - 1) * bytes_per_batch;
+    // Replicate from the already-copied last row in the DEVICE destination so
+    // the direction is unambiguously DeviceToDevice regardless of where src
+    // lived (replicating from a host src, as before, would have been wrong).
+    const char* last_batch = static_cast<char*>(dst_data) + (original_batch - 1) * bytes_per_batch;
     char* pad_start = static_cast<char*>(dst_data) + original_batch * bytes_per_batch;
     std::size_t slots_to_fill = padded_batch - original_batch;
 
@@ -2270,17 +2277,26 @@ static bool warmup_and_capture_hip_graph(
     const std::vector<std::size_t>& prog_output_indices,
     const std::string& shape_hash)
 {
-  // Zero all pinned buffers before warmup to avoid stale data from prior batch runs
+  // Do NOT zero the pinned inputs here.  copy_inputs_to_pinned (called by the
+  // caller immediately before this) has already populated them with this
+  // request's real data; in coalesced mode the pin.data pointers are sub-views
+  // of in_arena_dev, so zeroing them wipes the real inputs out of the arena and
+  // makes capture -- and the value copied back as the first request's output --
+  // compute f(0).  That is the AIMIGRAPHX-1156 first-request corruption.
+  //
+  // No input zeroing is needed for a deterministic capture baseline: every
+  // input-copy path fully overwrites the extent the program reads (the coalesced
+  // fast path and per-input path write `compiled` rows; pad_input_tensor writes
+  // the real rows plus a replicated pad tail), and the arena's aligned inter-slot
+  // gaps are already zeroed once in allocate_pinned_io and never read.
+  //
+  // Outputs and scratch DO need a zero baseline: captured kernels may
+  // read-modify-write them (split-K reductions, fused-attention accumulators),
+  // so anchor those to zero before the warmup runs get baked into the capture.
   auto& pio = mgx_state->pinned_io;
-  for (auto& pin : pio.inputs) {
-    HIP_CALL_THROW(hipMemsetAsync(pin.data, 0, pin.size_bytes, stream));
-  }
   for (auto& pin : pio.outputs) {
     HIP_CALL_THROW(hipMemsetAsync(pin.data, 0, pin.size_bytes, stream));
   }
-  // Zero EP-owned scratch too -- caller bound it via bind_pinned_program_params
-  // but the warmup runs below would otherwise leave warmup-derived bytes in
-  // scratch that then get baked into the capture.
   zero_scratch_for(mgx_state, shape_hash, stream);
 
   // Pre-capture eager loop: only enough to finalize MIGraphX's lazy
@@ -2718,6 +2734,77 @@ static void materialize_extra_outputs(
   }
 }
 
+// Opt-in guard for the post-capture self-check.  Off by default so production
+// pays no host-copy cost; set ORT_MIGRAPHX_VERIFY_HIP_GRAPH=1 to enable.
+static bool hip_graph_verify_enabled() {
+  static const bool enabled = [] {
+    const auto v = GetEnvironmentVar("ORT_MIGRAPHX_VERIFY_HIP_GRAPH");
+    return v == "1" || v == "true" || v == "True";
+  }();
+  return enabled;
+}
+
+// Post-capture safety net: run one eager pass and one hipGraph replay on the
+// SAME (real) bound inputs and compare the pre-allocated pinned outputs.  Returns
+// true if they agree within tolerance.  A mismatch means the captured graph baked
+// in a bad baseline (e.g. a future regression reintroducing input zeroing); the
+// caller should disable hipGraph for the node and serve eagerly.
+//
+// Notes/limitations:
+//  - Only the pre-allocated pinned outputs are checked; MIGraphX-managed "extra"
+//    outputs are not covered here.
+//  - float compared with an absolute tolerance; other dtypes are compared
+//    bit-exact (eager vs replay of identical kernels should match exactly).
+static bool verify_capture_matches_eager(MIGraphXFuncState* mgx_state,
+                                         hipStream_t stream,
+                                         migraphx::program& prog,
+                                         migraphx::program_parameters& m,
+                                         const std::string& shape_hash) {
+  auto& pio = mgx_state->pinned_io;
+  if (pio.outputs.empty()) return true;
+
+  // 1) Eager reference pass into the pinned outputs, then snapshot to host.
+  {
+    std::lock_guard<std::mutex> lock(*mgx_state->mgx_mu_ptr);
+    zero_scratch_for(mgx_state, shape_hash, stream);
+    for (auto& pin : pio.outputs) {
+      HIP_CALL_THROW(hipMemsetAsync(pin.data, 0, pin.size_bytes, stream));
+    }
+    prog.run_async(m, stream);
+  }
+  HIP_CALL_THROW(hipStreamSynchronize(stream));
+
+  std::vector<std::vector<char>> ref(pio.outputs.size());
+  for (std::size_t i = 0; i < pio.outputs.size(); ++i) {
+    ref[i].resize(pio.outputs[i].size_bytes);
+    HIP_CALL_THROW(hipMemcpy(ref[i].data(), pio.outputs[i].data,
+                             pio.outputs[i].size_bytes, hipMemcpyDeviceToHost));
+  }
+
+  // 2) Replay the captured graph, then snapshot and compare.
+  replay_hip_graph(mgx_state, stream, shape_hash);
+  HIP_CALL_THROW(hipStreamSynchronize(stream));
+
+  constexpr float kAtol = 1e-2f;
+  for (std::size_t i = 0; i < pio.outputs.size(); ++i) {
+    std::vector<char> got(pio.outputs[i].size_bytes);
+    HIP_CALL_THROW(hipMemcpy(got.data(), pio.outputs[i].data,
+                             pio.outputs[i].size_bytes, hipMemcpyDeviceToHost));
+
+    if (pio.outputs[i].max_shape.type() == migraphx_shape_float_type) {
+      const auto* a = reinterpret_cast<const float*>(ref[i].data());
+      const auto* b = reinterpret_cast<const float*>(got.data());
+      const std::size_t n = pio.outputs[i].size_bytes / sizeof(float);
+      for (std::size_t k = 0; k < n; ++k) {
+        if (std::fabs(a[k] - b[k]) > kAtol) return false;
+      }
+    } else if (std::memcmp(ref[i].data(), got.data(), pio.outputs[i].size_bytes) != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Dispatch point: replay a cached hipGraph, capture one on first use, or fall back to eager.
 // This replaces run_migraphx_program in all pinned-I/O paths when hipGraph is enabled.
 // IMPORTANT: when hipGraph is enabled this function must ONLY be called via the pinned-I/O
@@ -2764,6 +2851,19 @@ static void run_program_or_hip_graph(
       run_migraphx_program(mgx_state->mgx_mu_ptr, stream, ctx, prog, m,
                            prog_output_indices, original_batch_size, padded_batch_size);
     } else {
+      // Optional post-capture self-check (opt-in via ORT_MIGRAPHX_VERIFY_HIP_GRAPH).
+      // If the captured graph disagrees with an eager run on the same real
+      // inputs, tear it down, disable hipGraph for this node, and serve eagerly.
+      if (hip_graph_verify_enabled() and
+          not verify_capture_matches_eager(mgx_state, stream, prog, m, shape_hash)) {
+        LOGS_DEFAULT(WARNING) << "[HipGraph] captured graph disagrees with eager "
+                                 "execution; disabling hipGraph for this node";
+        destroy_hip_graphs(mgx_state);
+        mgx_state->hip_graph_enabled = false;
+        run_migraphx_program(mgx_state->mgx_mu_ptr, stream, ctx, prog, m,
+                             prog_output_indices, original_batch_size, padded_batch_size);
+        return;
+      }
       auto& entry = mgx_state->hip_graph_cache.at(shape_hash);
       if (!entry.extra_outputs.empty()) {
         materialize_extra_outputs(ctx, stream, entry.extra_outputs,
