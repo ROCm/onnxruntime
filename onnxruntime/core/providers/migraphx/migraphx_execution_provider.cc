@@ -181,6 +181,17 @@ MIGraphXExecutionProvider::MIGraphXExecutionProvider(const MIGraphXExecutionProv
     external_stream_ = true;
     stream_ = static_cast<hipStream_t>(info.user_compute_stream);
     LOGS_DEFAULT(INFO) << "[MIGraphX EP] Using external user compute stream: " << stream_;
+    // When Triton passes an external stream via cuda { graphs: true }, automatically
+    // enable HIP graph capture. This means users only need cuda { graphs: true } in
+    // config.pbtxt — no AMD-specific env vars (ORT_MIGRAPHX_HIP_GRAPH_ENABLE) required.
+    // use_direct_hip_graph is set automatically from hip_graph_enable_ during kernel
+    // registration, so direct IO binding (no H2D/D2H memcpy) is also activated.
+    if (!hip_graph_enable_) {
+      hip_graph_enable_ = true;
+      LOGS_DEFAULT(INFO) << "[MIGraphX EP] External stream provided via cuda{graphs:true}: "
+                         << "auto-enabling HIP graph capture + direct IO binding. "
+                         << "No ORT_MIGRAPHX_HIP_GRAPH_ENABLE env var required.";
+    }
   } else {
     HIP_CALL_THROW(hipStreamCreateWithFlags(&stream_, hipStreamNonBlocking));
     LOGS_DEFAULT(INFO) << "[MIGraphX EP] Created non-blocking compute stream: " << stream_;
