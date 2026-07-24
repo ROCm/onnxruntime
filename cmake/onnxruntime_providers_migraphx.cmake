@@ -20,7 +20,7 @@
     set(HIP_PLATFORM "amd")
   endif()
 
-  find_package(hip REQUIRED)
+  find_package(hip REQUIRED PATHS ${ROCM_PATH} $ENV{ROCM_PATH} ${HIP_PATH} $ENV{HIP_PATH})
   find_package(migraphx REQUIRED PATHS ${AMD_MIGRAPHX_HOME})
 
   file(GLOB_RECURSE onnxruntime_providers_migraphx_cc_srcs CONFIGURE_DEPENDS
@@ -66,8 +66,6 @@
     target_compile_definitions(onnxruntime_providers_migraphx PRIVATE HAVE_MIGRAPHX_API_GET_ONNX_OPERATORS=1)
   endif()
 
-
-
   if (onnxruntime_ENABLE_TRAINING_OPS)
     onnxruntime_add_include_to_target(onnxruntime_providers_migraphx onnxruntime_training)
     target_link_libraries(onnxruntime_providers_migraphx PRIVATE onnxruntime_training)
@@ -77,7 +75,7 @@
   endif()
 
   if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    foreach(file migraphx-hiprtc-driver.exe migraphx.dll migraphx_c.dll migraphx_cpu.dll migraphx_device.dll migraphx_gpu.dll migraphx_onnx.dll migraphx_tf.dll)
+    foreach(file amdmlss.dll amdmlss.pdb migraphx-hiprtc-driver.exe migraphx.dll migraphx_c.dll migraphx_cpu.dll migraphx_device.dll migraphx_gpu.dll migraphx_onnx.dll migraphx_tf.dll)
       set(_source "${AMD_MIGRAPHX_HOME}/bin/${file}")
       if(EXISTS "${_source}")
         add_custom_command(TARGET onnxruntime_providers_migraphx
