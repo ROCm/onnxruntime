@@ -4,7 +4,10 @@
 #include <hip/hip_version.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -57,6 +60,68 @@
 #define MEMCPY_S(dest, src, destsz, srcsz) memcpy(dest, src, std::min(destsz, srcsz))
 
 namespace onnxruntime {
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RUN-PATH PROFILING (debug instrumentation)
+//
+// Emits one INFO line whenever a phase of the inference hot path exceeds a
+// threshold, so periodic/large stalls can be localized WITHOUT drowning the log
+// during the common fast Runs.  All timing uses a monotonic clock and the logs
+// are unconditional INFO (not VERBOSE) so they cannot be filtered out.
+//
+//   ORT_MIGRAPHX_PROFILE_RUN=0            -> disable entirely (default: enabled)
+//   ORT_MIGRAPHX_PROFILE_THRESHOLD_US=N   -> only log phases >= N us (default 50000 = 50 ms)
+//
+// A per-Run sequence id ties the compute_func total, the run_migraphx_program
+// phase breakdown, and the OnRunStart/OnRunEnd bracket together so you can tell
+// whether a stall is inside the EP (which phase) or outside it entirely
+// (compute_func is fast but the OnRunStart->OnRunEnd bracket is slow, i.e. the
+// wait is in ORT's post-Run stream sync / elsewhere).
+// ═══════════════════════════════════════════════════════════════════════════
+namespace mgx_profile {
+
+inline uint64_t now_us() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
+inline bool enabled() {
+  static const bool v = []() {
+    const char* e = std::getenv("ORT_MIGRAPHX_PROFILE_RUN");
+    return !(e != nullptr && e[0] == '0' && e[1] == '\0');
+  }();
+  return v;
+}
+
+inline uint64_t threshold_us() {
+  static const uint64_t v = []() -> uint64_t {
+    const char* e = std::getenv("ORT_MIGRAPHX_PROFILE_THRESHOLD_US");
+    if (e != nullptr && e[0] != '\0') {
+      char* end = nullptr;
+      unsigned long long parsed = std::strtoull(e, &end, 10);
+      if (end != e) return static_cast<uint64_t>(parsed);
+    }
+    return 50000;  // 50 ms
+  }();
+  return v;
+}
+
+// Monotonically increasing id for each compute_func invocation.
+inline uint64_t next_seq() {
+  static std::atomic<uint64_t> counter{0};
+  return counter.fetch_add(1, std::memory_order_relaxed);
+}
+
+// Correlation state shared between compute_func and run_migraphx_program on the
+// same worker thread.
+inline thread_local uint64_t tls_run_seq = 0;
+// Timestamp captured in OnRunStart, consumed in OnRunEnd, to bracket a full ORT
+// Run (including the post-Run stream sync that materializes async GPU work).
+inline thread_local uint64_t tls_onrun_start_us = 0;
+
+}  // namespace mgx_profile
 
 class Memcpy final : public OpKernel {
  public:
@@ -2078,10 +2143,38 @@ static void run_migraphx_program(
     std::size_t original_batch_size = 0,
     std::size_t padded_batch_size = 0)
 {
+  // ── Run-path profiling (see mgx_profile). Localizes lock contention vs the
+  //    async enqueue vs the slice-time stream sync vs the D2D copies. ──────────
+  const bool mgx_prof = mgx_profile::enabled();
+  const uint64_t mgx_seq = mgx_profile::tls_run_seq;
+  const uint64_t t_start = mgx_prof ? mgx_profile::now_us() : 0;
+  uint64_t t_lock = t_start, t_run = t_start, t_sync = 0;
+  bool did_sync = false;
+  auto log_phases = [&]() {
+    if (!mgx_prof) return;
+    const uint64_t t_end = mgx_profile::now_us();
+    const uint64_t total = t_end - t_start;
+    if (total < mgx_profile::threshold_us()) return;
+    const double lock_ms = (t_lock - t_start) / 1000.0;
+    const double run_ms = (t_run - t_lock) / 1000.0;
+    const double sync_ms = did_sync ? (t_sync - t_run) / 1000.0 : 0.0;
+    const double copy_ms = (t_end - (did_sync ? t_sync : t_run)) / 1000.0;
+    LOGS_DEFAULT(INFO) << "[MIGraphX][PROFILE][run#" << mgx_seq
+                       << "] run_migraphx_program total=" << (total / 1000.0)
+                       << "ms lock_wait=" << lock_ms
+                       << "ms run_async=" << run_ms
+                       << "ms slice_sync=" << sync_ms
+                       << "ms copies=" << copy_ms
+                       << "ms (orig_batch=" << original_batch_size
+                       << " padded_batch=" << padded_batch_size << ")";
+  };
+
   std::optional<migraphx::arguments> prog_outputs;
   {
     std::lock_guard<std::mutex> lock(*mgx_mu_ptr);
+    if (mgx_prof) t_lock = mgx_profile::now_us();
     prog_outputs = prog.run_async(m, rocm_stream);
+    if (mgx_prof) t_run = mgx_profile::now_us();
   }
 
 
@@ -2091,14 +2184,17 @@ static void run_migraphx_program(
   auto output_num = prog_outputs->size();
 
   // Fast path: no padding/slicing and all outputs were pre-allocated — nothing to do.
-  if (!needs_slicing && prog_output_indices.size() == output_num)
+  if (!needs_slicing && prog_output_indices.size() == output_num) {
+    log_phases();
     return;
+  }
 
   std::unordered_set<std::size_t> prog_output_indices_set(prog_output_indices.begin(), prog_output_indices.end());
 
   if (needs_slicing && !prog_output_indices_set.empty()) {
     // Must sync before reallocating any pre-allocated output buffer for slicing.
     HIP_CALL_THROW(hipStreamSynchronize(rocm_stream));
+    if (mgx_prof) { t_sync = mgx_profile::now_us(); did_sync = true; }
 
     for (std::size_t i = 0; i < output_num; ++i) {
       if (prog_output_indices_set.count(i) == 0) continue;
@@ -2157,6 +2253,8 @@ static void run_migraphx_program(
                                        hipMemcpyDeviceToDevice,
                                        rocm_stream));
   }
+
+  log_phases();
 }
 
 
@@ -5466,7 +5564,26 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
       const auto& map_input_name_index = mgx_state->input_name_indexes;
 
+      // ── Run-path profiling: bracket the whole compute_func and record which
+      //    path served this Run.  Assigns the per-Run seq that run_migraphx_program
+      //    reuses so its phase breakdown can be tied to this line. ──────────────
+      const bool mgx_prof = mgx_profile::enabled();
+      const uint64_t mgx_seq = mgx_prof ? mgx_profile::next_seq() : 0;
+      if (mgx_prof) mgx_profile::tls_run_seq = mgx_seq;
+      const uint64_t t_entry = mgx_prof ? mgx_profile::now_us() : 0;
+      const char* run_path = "standard";
+      auto log_total = [&]() {
+        if (!mgx_prof) return;
+        const uint64_t dur = mgx_profile::now_us() - t_entry;
+        if (dur < mgx_profile::threshold_us()) return;
+        LOGS_DEFAULT(INFO) << "[MIGraphX][PROFILE][run#" << mgx_seq
+                           << "] compute_func TOTAL=" << (dur / 1000.0)
+                           << "ms path=" << run_path;
+      };
+
       if (execute_ultra_fast_path(mgx_state, run_stream, ctx)) {
+        run_path = "ultra_fast";
+        log_total();
         return Status::OK();
       }
 
@@ -5479,12 +5596,16 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       const auto current_hash = make_hash(all_input_shapes);
 
       if (execute_fast_path(mgx_state, run_stream, ctx, current_hash, all_input_shapes)) {
+        run_path = "fast";
+        log_total();
         return Status::OK();
       }
 
       execute_standard_path(mgx_state, run_stream, ctx, current_hash, std::move(all_input_shapes),
                             model_cache_path_, model_path_, mxr_filename_prefix);
 
+      run_path = "standard";
+      log_total();
       return Status::OK();
     };
     node_compute_funcs.push_back(compute_info);
@@ -5519,10 +5640,16 @@ Status MIGraphXExecutionProvider::Sync() const {
 }
 
 Status MIGraphXExecutionProvider::OnRunStart(const onnxruntime::RunOptions& /*run_options*/) {
+  if (mgx_profile::enabled()) {
+    mgx_profile::tls_onrun_start_us = mgx_profile::now_us();
+  }
   return Status::OK();
 }
 
 Status MIGraphXExecutionProvider::OnRunEnd(bool sync_stream, const onnxruntime::RunOptions& /*run_options*/) {
+  const bool mgx_prof = mgx_profile::enabled();
+  const uint64_t t_sync_begin = mgx_prof ? mgx_profile::now_us() : 0;
+
   if (sync_stream && external_stream_) {
     HIP_CALL_THROW(hipStreamSynchronize(stream_));
   } else if (sync_stream) {
@@ -5530,6 +5657,23 @@ Status MIGraphXExecutionProvider::OnRunEnd(bool sync_stream, const onnxruntime::
     if (status != hipSuccess) {
       HIP_CALL_THROW(hipStreamSynchronize(stream_));
     }
+  }
+
+  if (mgx_prof) {
+    const uint64_t t_end = mgx_profile::now_us();
+    const uint64_t sync_us = t_end - t_sync_begin;
+    const uint64_t run_us =
+        mgx_profile::tls_onrun_start_us ? (t_end - mgx_profile::tls_onrun_start_us) : 0;
+    const uint64_t thr = mgx_profile::threshold_us();
+    // Log if the whole EP-visible Run was slow, or if the post-Run stream sync
+    // alone was slow (i.e. the stall is GPU work that compute_func enqueued but
+    // did not wait on -> it surfaces here, not inside compute_func).
+    if (run_us >= thr || sync_us >= thr) {
+      LOGS_DEFAULT(INFO) << "[MIGraphX][PROFILE] OnRunStart->OnRunEnd="
+                         << (run_us / 1000.0) << "ms post_run_stream_sync="
+                         << (sync_us / 1000.0) << "ms";
+    }
+    mgx_profile::tls_onrun_start_us = 0;
   }
   return Status::OK();
 }
