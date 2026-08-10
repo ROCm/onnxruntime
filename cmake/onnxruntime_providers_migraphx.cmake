@@ -92,7 +92,7 @@
             DESTINATION ${CMAKE_INSTALL_BINDIR})
     get_property(_amdhip64_location TARGET hip::amdhip64 PROPERTY IMPORTED_LOCATION_RELEASE)
     cmake_path(GET _amdhip64_location PARENT_PATH _hipsdk_path)
-    foreach(file amd_comgr_3.dll amd_comgr0701.dll amd_comgr0702.dll amdhip64_7.dll hiprtc0701.dll hiprtc0702.dll hiprtc-builtins0701.dll hiprtc-builtins0702.dll)
+    foreach(file amd_comgr_3.dll amd_comgr0701.dll amd_comgr0702.dll amd_comgr0714.dll amd_comgr0715.dll amdhip64_7.dll hiprtc0701.dll hiprtc0702.dll hiprtc0714.dll hiprtc0715.dll hiprtc-builtins0701.dll hiprtc-builtins0702.dll hiprtc-builtins0714.dll hiprtc-builtins0715.dll)
       set(_source "${_hipsdk_path}/${file}")
       if(EXISTS "${_source}")
         add_custom_command(TARGET onnxruntime_providers_migraphx
