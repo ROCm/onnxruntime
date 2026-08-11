@@ -115,8 +115,12 @@ def create_onnxruntime_session(
         elif provider == "rocm":
             providers = ["ROCMExecutionProvider", "CPUExecutionProvider"]
         elif provider == "migraphx":
+            from migraphx_ep import ensure_migraphx_ep  # noqa: PLC0415
+
+            # Register the MIGraphX plugin EP library when it is not a built-in EP
+            # (raises if it cannot be made available so we never silently fall back).
             providers = [
-                "MIGraphXExecutionProvider",
+                *ensure_migraphx_ep(),
                 "ROCMExecutionProvider",
                 "CPUExecutionProvider",
             ]

@@ -179,7 +179,12 @@ def create_ort_session(onnx_model_path, use_gpu=True, optimized=True, verbose=Fa
             execution_providers.append("CUDAExecutionProvider")
         elif torch.version.hip:
             if not optimized:
-                execution_providers.append("MIGraphXExecutionProvider")
+                find_transformers_source()
+                from migraphx_ep import ensure_migraphx_ep  # noqa: PLC0415
+
+                # Register the MIGraphX plugin EP library when it is not a built-in
+                # EP (raises if it cannot be made available).
+                execution_providers.extend(ensure_migraphx_ep())
 
             execution_providers.append("ROCMExecutionProvider")
 
