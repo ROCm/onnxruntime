@@ -115,15 +115,18 @@ def create_onnxruntime_session(
         elif provider == "rocm":
             providers = ["ROCMExecutionProvider", "CPUExecutionProvider"]
         elif provider == "migraphx":
-            from migraphx_ep import ensure_migraphx_ep  # noqa: PLC0415
+            from migraphx_ep import MIGRAPHX_EP, ensure_migraphx_ep  # noqa: PLC0415
 
-            # Register the MIGraphX plugin EP library when it is not a built-in EP
-            # (raises if it cannot be made available so we never silently fall back).
-            providers = [
-                *ensure_migraphx_ep(),
-                "ROCMExecutionProvider",
-                "CPUExecutionProvider",
-            ]
+            # Register the MIGraphX plugin EP library when it is not a built-in EP,
+            # attaching its OrtEpDevice directly to sess_options when the plugin
+            # requires explicit device binding (raises if it cannot be made
+            # available so we never silently fall back).
+            migx_providers = ensure_migraphx_ep(sess_options, provider_options.get(MIGRAPHX_EP))
+            providers = (
+                [*migx_providers, "ROCMExecutionProvider", "CPUExecutionProvider"]
+                if migx_providers is not None
+                else None
+            )
         elif provider == "cuda" or provider is None:
             providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
         elif provider == "tensorrt":
@@ -137,7 +140,7 @@ def create_onnxruntime_session(
     else:
         providers = ["CPUExecutionProvider"]
 
-    if provider_options:
+    if provider_options and providers is not None:
         providers = [(name, provider_options[name]) if name in provider_options else name for name in providers]
 
     if enable_mlas_gemm_fastmath_arm64_bfloat16:

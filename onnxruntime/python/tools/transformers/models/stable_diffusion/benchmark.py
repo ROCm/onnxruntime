@@ -1344,6 +1344,12 @@ def main():
 
     sd_model = SD_MODELS[args.version]
     provider = PROVIDERS[args.provider]
+    if args.provider == "migraphx":
+        from migraphx_ep import ensure_migraphx_ep  # noqa: PLC0415
+
+        # Register the MIGraphX plugin EP library when it is not a built-in EP
+        # (raises if it cannot be made available so we never silently fall back).
+        ensure_migraphx_ep()
     if args.engine == "onnxruntime" and args.provider == "tensorrt":
         if "xl" in args.version:
             print("Testing Txt2ImgXLPipeline with static input shape. Backend is ORT TensorRT EP.")
