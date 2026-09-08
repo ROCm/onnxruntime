@@ -25,6 +25,7 @@ SD_MODELS = {
     "3.0M": "stabilityai/stable-diffusion-3-medium-diffusers",
     "3.5M": "stabilityai/stable-diffusion-3.5-medium",
     "3.5L": "stabilityai/stable-diffusion-3.5-large",
+    "3.5XL": "stabilityai/stable-diffusion-3.5-large-turbo",
     "Flux.1S": "black-forest-labs/FLUX.1-schnell",
     "Flux.1D": "black-forest-labs/FLUX.1-dev",
 }
