@@ -3206,7 +3206,7 @@ static void handle_input_shape_mismatch(
       mgx_state->int8_calibration_cache_available,
       mgx_state->dynamic_range_map,
       mgx_state->exhaustive_tune,
-      mgx_state->model_cache_dir,
+      model_path,
       &ctx,
       &map_input_name_index);
 
