@@ -526,17 +526,16 @@ static bool IsUnsupportedOpMode(const onnxruntime::GraphViewer& graph_viewer, co
       return true;
     }
   } else if (optype == "Slice") {
-    // MIGraphX does not properly handle the situation where any
-    // value of the "starts" attribute is higher than a corresponding
-    // value in the "ends"
-    auto arg_num = node->InputDefs().size();
-    std::vector<std::size_t> vec(arg_num);
-    std::iota(vec.begin(), vec.end(), 0);
-    vec.erase(vec.begin());
-    if (!canEvalNodeArgument(graph_viewer, node, vec, input_nodes)) {
+    // MIGraphX accepts runtime "starts"/"ends"/"axes" inputs but requires constant "steps".
+    const auto& args = node->InputDefs();
+    if (args.size() >= 5 && args[4]->Exists() &&
+        !canEvalNodeArgument(graph_viewer, node, {4}, input_nodes)) {
       return true;
     }
 
+    // MIGraphX does not properly handle the situation where any
+    // value of the "starts" attribute is higher than a corresponding
+    // value in the "ends"
     const auto& attributes = node->GetAttributes();
     if (attributes.count("starts") > 0 && attributes.count("ends") > 0) {
       auto starts = toVector((*attributes.find("starts")).second.ints());
@@ -569,10 +568,6 @@ static bool IsUnsupportedOpMode(const onnxruntime::GraphViewer& graph_viewer, co
       return true;
     }
   } else if (optype == "Tile") {
-    if (!canEvalNodeArgument(graph_viewer, node, {1}, input_nodes)) {
-      return true;
-    }
-  } else if (optype == "TopK") {
     if (!canEvalNodeArgument(graph_viewer, node, {1}, input_nodes)) {
       return true;
     }
@@ -1296,6 +1291,64 @@ std::string make_hash(const char* v) {
 constexpr std::uint64_t MIGraphX_Version =
     ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
 
+// Copies a MIGraphX result into a packed ORT output buffer. The old flat hipMemcpyWithStream
+// assumed a standard layout, which is wrong for MIGraphX's broadcast/strided result shapes;
+// stream-ordered hipMemcpyAsync/hipMemcpy2DAsync now coalesce contiguous regions, and the
+// caller synchronizes the stream once. The caller must synchronize before any scratch storage
+// backing "result" is released.
+static Status CopyMIGraphXOutput(void* output_data, size_t output_bytes,
+                                 const migraphx::argument& result, hipStream_t stream) {
+  const auto shape = result.get_shape();
+  const auto lengths = shape.lengths();
+  const migraphx::shape packed_shape(shape.type(), lengths);
+  ORT_RETURN_IF_NOT(output_bytes == packed_shape.bytes(), "MIGraphX output buffer size does not match its shape");
+  if (output_bytes == 0) {
+    return Status::OK();
+  }
+  if (shape.standard()) {
+    return HIP_CALL(hipMemcpyAsync(output_data, result.data(), output_bytes, hipMemcpyDeviceToDevice, stream));
+  }
+
+  const auto strides = shape.strides();
+  const auto element_bytes = migraphx::shape(shape.type()).bytes();
+  size_t contiguous_elements = 1;
+  size_t axis = lengths.size();
+  while (axis > 0 && (lengths[axis - 1] == 1 || strides[axis - 1] == contiguous_elements)) {
+    contiguous_elements = SafeInt<size_t>(contiguous_elements) * lengths[--axis];
+  }
+  if (axis == 0) {
+    return HIP_CALL(hipMemcpyAsync(output_data, result.data(), output_bytes, hipMemcpyDeviceToDevice, stream));
+  }
+
+  const size_t row_bytes = SafeInt<size_t>(contiguous_elements) * element_bytes;
+  size_t rows = 1;
+  size_t source_pitch = row_bytes;
+  const auto row_stride = strides[axis - 1];
+  if (row_stride >= contiguous_elements) {
+    rows = lengths[--axis];
+    source_pitch = SafeInt<size_t>(row_stride) * element_bytes;
+    while (axis > 0 && (lengths[axis - 1] == 1 || strides[axis - 1] == SafeInt<size_t>(row_stride) * rows)) {
+      rows = SafeInt<size_t>(rows) * lengths[--axis];
+    }
+  }
+
+  const size_t block_elements = SafeInt<size_t>(contiguous_elements) * rows;
+  const auto elements = shape.elements();
+  for (size_t offset = 0; offset < elements; offset += block_elements) {
+    const size_t source_offset = SafeInt<size_t>(shape.index(offset)) * element_bytes;
+    const size_t output_offset = SafeInt<size_t>(offset) * element_bytes;
+    auto* destination = static_cast<char*>(output_data) + output_offset;
+    const auto* source = result.data() + source_offset;
+    if (rows == 1) {
+      HIP_RETURN_IF_ERROR(hipMemcpyAsync(destination, source, row_bytes, hipMemcpyDeviceToDevice, stream));
+    } else {
+      HIP_RETURN_IF_ERROR(hipMemcpy2DAsync(destination, row_bytes, source, source_pitch,
+                                           row_bytes, rows, hipMemcpyDeviceToDevice, stream));
+    }
+  }
+  return Status::OK();
+}
+
 Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& fused_nodes,
                                           std::vector<NodeComputeInfo>& node_compute_funcs) {
   migraphx::onnx_options options;
@@ -1382,6 +1435,9 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
       auto prog_output_shapes = prog.get_output_shapes();
       for (std::size_t i = 0; i < prog_output_shapes.size(); ++i) {
+        if (prog_output_shapes[i].dynamic()) {
+          continue;
+        }
         auto out_len = prog_output_shapes[i].lengths();
         options.set_input_parameter_shape(output_names[i], out_len);
       }
@@ -1531,6 +1587,18 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
       migraphx::program_parameters m;
       auto prog_output_shapes = prog.get_output_shapes();
       std::vector<std::size_t> prog_output_indices;
+      void* rocm_stream = nullptr;
+      Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream));
+      std::lock_guard<std::mutex> lock(*(mgx_state->mgx_mu_ptr));
+      // Scratch storage for dynamic outputs is stream ordered, so it stays alive until the stream
+      // drains. This also covers early returns, where no synchronization has happened yet.
+      auto release_output_buffer = [mgx_state, rocm_stream](void* buffer) {
+        ORT_IGNORE_RETURN_VALUE(HIP_CALL(hipStreamSynchronize(static_cast<hipStream_t>(rocm_stream))));
+        mgx_state->release_func(mgx_state->allocate_handle, buffer);
+      };
+      using OutputBuffer = std::unique_ptr<void, decltype(release_output_buffer)>;
+      InlinedVector<OutputBuffer> output_buffers;
+      output_buffers.reserve(prog_output_shapes.size());
       if (param_shapes.size() > 0) {
         for (auto&& name : param_shapes.names()) {
           if (map_input_name_index.count(name) > 0) {
@@ -1567,27 +1635,36 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
 
             int output_index = compute_output_index(name);
             if (output_index != -1) {
-              prog_output_indices.push_back(output_index);
               auto mgx_output_shape = prog_output_shapes[output_index];
-              auto lens = mgx_output_shape.lengths();
-              std::vector<int64_t> ort_output_shape(lens.begin(), lens.end());
-              auto output_tensor = ctx.GetOutput(output_index, ort_output_shape.data(), ort_output_shape.size());
-              void* output_data = output_tensor.GetTensorMutableRawData();
+              if (mgx_output_shape.dynamic() || !mgx_output_shape.standard()) {
+                // dynamic or non-standard layout: run into scratch storage and copy out
+                // from the runtime shape afterwards
+                auto param_shape = param_shapes[name];
+                OutputBuffer gpu_buffer(
+                    mgx_state->allocate_func(mgx_state->allocate_handle, 256, param_shape.bytes()),
+                    release_output_buffer);
+                ORT_RETURN_IF(gpu_buffer == nullptr && param_shape.bytes() > 0,
+                              "MIGraphX: failed to allocate output buffer for ", name);
+                m.add(name, migraphx::argument(param_shape, gpu_buffer.get()));
+                output_buffers.push_back(std::move(gpu_buffer));
+              } else {
+                // static standard shape: write directly into the ORT output tensor
+                prog_output_indices.push_back(output_index);
+                auto lens = mgx_output_shape.lengths();
+                std::vector<int64_t> ort_output_shape(lens.begin(), lens.end());
+                auto output_tensor = ctx.GetOutput(output_index, ort_output_shape.data(), ort_output_shape.size());
+                void* output_data = output_tensor.GetTensorMutableRawData();
 
-              // argument shape
-              auto mgx_arg_shape = param_shapes[name];
-              m.add(name, migraphx::argument(mgx_arg_shape, output_data));
+                auto mgx_arg_shape = param_shapes[name];
+                m.add(name, migraphx::argument(mgx_arg_shape, output_data));
+              }
             }
           }
         }
       }
 
+      bool needs_stream_sync = !output_buffers.empty();
       {
-        // lock to avoid race condition
-        std::lock_guard<std::mutex> lock(*(mgx_state->mgx_mu_ptr));
-
-        void* rocm_stream;
-        Ort::ThrowOnError(api->KernelContext_GetGPUComputeStream(context, &rocm_stream));
         auto prog_outputs = prog.run_async(m, static_cast<hipStream_t>(rocm_stream));
 
         // In case of input parameters are reused as output parameter call hipMemcpy
@@ -1602,15 +1679,16 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& 
             std::vector<int64_t> ort_shape{res_lens.begin(), res_lens.end()};
             auto output_tensor = ctx.GetOutput(i, ort_shape.data(), ort_shape.size());
             void* output_data = output_tensor.GetTensorMutableRawData();
-            HIP_CALL_THROW(hipMemcpyWithStream(output_data,
-                                               gpu_res.data(),
-                                               res_shape.bytes(),
-                                               hipMemcpyDeviceToDevice,
-                                               static_cast<hipStream_t>(rocm_stream)));
+            ORT_RETURN_IF_ERROR(CopyMIGraphXOutput(output_data, output_tensor.GetTensorSizeInBytes(),
+                                                   gpu_res, static_cast<hipStream_t>(rocm_stream)));
+            needs_stream_sync = true;
           }
         }
       }
 
+      if (needs_stream_sync) {
+        HIP_RETURN_IF_ERROR(hipStreamSynchronize(static_cast<hipStream_t>(rocm_stream)));
+      }
       return Status::OK();
     };
     node_compute_funcs.push_back(compute_info);
