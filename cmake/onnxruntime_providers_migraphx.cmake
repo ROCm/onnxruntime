@@ -75,7 +75,7 @@
   endif()
 
   if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    foreach(file amdmlss.dll amdmlss.pdb migraphx-hiprtc-driver.exe migraphx.dll migraphx_c.dll migraphx_cpu.dll migraphx_device.dll migraphx_gpu.dll migraphx_onnx.dll migraphx_tf.dll)
+    foreach(file amdmlss.dll amdmlss.pdb migraphx-hiprtc-driver.exe migraphx.dll migraphx_c.dll migraphx_cpu.dll migraphx_device.dll migraphx_gpu.dll migraphx_onnx.dll migraphx_rocmlir.dll migraphx_triton.dll migraphx_tf.dll)
       set(_source "${AMD_MIGRAPHX_HOME}/bin/${file}")
       if(EXISTS "${_source}")
         add_custom_command(TARGET onnxruntime_providers_migraphx
