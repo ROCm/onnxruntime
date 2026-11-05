@@ -264,9 +264,14 @@ struct MIGraphXEpFactory final : OrtEpFactory {
                                             size_t* p_num_ep_devices) noexcept {
     size_t& num_ep_devices = *p_num_ep_devices;
     auto* factory = reinterpret_cast<MIGraphXEpFactory*>(this_ptr);
+    num_ep_devices = 0;
 
     int num_hip_devices = 0;
-    HIP_CALL_THROW(hipGetDeviceCount(&num_hip_devices));
+    if (const auto status = HIP_CALL(hipGetDeviceCount(&num_hip_devices)); !status.IsOK()) {
+      // HIP initialization failures mean that the optional EP supports no devices.
+      // Provider registration must still succeed so the host can continue with another EP.
+      return nullptr;
+    }
     max_ep_devices = std::min(max_ep_devices, static_cast<size_t>(num_hip_devices));
 
     for (size_t i = 0; i < num_devices && num_ep_devices < max_ep_devices; ++i) {
