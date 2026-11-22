@@ -75,7 +75,7 @@
   endif()
 
   if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    foreach(file amdmlss.dll amdmlss.pdb migraphx-hiprtc-driver.exe migraphx.dll migraphx_c.dll migraphx_cpu.dll migraphx_device.dll migraphx_gpu.dll migraphx_onnx.dll migraphx_tf.dll)
+    foreach(file amdmlss.dll migraphx-hiprtc-driver.exe migraphx.dll migraphx_c.dll migraphx_device.dll migraphx_gpu.dll migraphx_onnx.dll)
       set(_source "${AMD_MIGRAPHX_HOME}/bin/${file}")
       if(EXISTS "${_source}")
         add_custom_command(TARGET onnxruntime_providers_migraphx
@@ -90,7 +90,7 @@
             DESTINATION ${CMAKE_INSTALL_BINDIR})
     get_property(_amdhip64_location TARGET hip::amdhip64 PROPERTY IMPORTED_LOCATION_RELEASE)
     cmake_path(GET _amdhip64_location PARENT_PATH _hipsdk_path)
-    foreach(file amd_comgr_3.dll amd_comgr0701.dll amd_comgr0702.dll amd_comgr0714.dll amd_comgr0715.dll amd_comgr0716.dll amdhip64_7.dll hiprtc0701.dll hiprtc0702.dll hiprtc0714.dll hiprtc0715.dll hiprtc0716.dll hiprtc-builtins0701.dll hiprtc-builtins0702.dll hiprtc-builtins0714.dll hiprtc-builtins0715.dll hiprtc-builtins0716.dll)
+    foreach(file amd_comgr0718.dll amdhip64_7.dll hiprtc0718.dll hiprtc-builtins0718.dll)
       set(_source "${_hipsdk_path}/${file}")
       if(EXISTS "${_source}")
         add_custom_command(TARGET onnxruntime_providers_migraphx
